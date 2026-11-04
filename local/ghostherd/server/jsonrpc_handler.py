@@ -166,6 +166,7 @@ class JsonRpcHandler:
             "herd_link": self._herd_link,
             "herd_reports": self._herd_reports,
             "herd_conversation": self._herd_conversation,
+            "herd_conversation_find": self._herd_conversation_find,
             "herd_sub_conversation": self._herd_sub_conversation,
             "herd_chat": self._herd_chat,
             "herd_meter": self._herd_meter,
@@ -654,8 +655,31 @@ class JsonRpcHandler:
             before = max(0, int(params.get("before") or 0))
         except (TypeError, ValueError):
             raise ValueError("before must be a number") from None
+        # A page of the whole conversation from entry START on -- where a
+        # find's hit is (herd_conversation_find's `i'), and the pages around.
+        start = params.get("start")
+        if start is not None:
+            try:
+                start = max(0, int(start))
+            except (TypeError, ValueError):
+                raise ValueError("start must be a number") from None
         path = str(params.get("path") or "")
-        return conversation.read(path, limit, before, owner=lambda: self._writer(transcript=path))
+        return conversation.read(path, limit, before, owner=lambda: self._writer(transcript=path), start=start)
+
+    def _herd_conversation_find(self, params: dict) -> dict:
+        """Where QUERY's words are said in the whole conversation at PATH:
+        the newest LIMIT hits, a snippet each (conversation.find).  The
+        herd's own, as herd_conversation is: the page asks, through Emacs,
+        which names the transcript from the agent; an agent's token is
+        refused, and the path is held to the CLIs' transcripts."""
+        try:
+            limit = max(1, min(conversation.FIND_HITS_MAX, int(params.get("limit") or conversation.FIND_HITS)))
+        except (TypeError, ValueError):
+            raise ValueError("limit must be a number") from None
+        query = params.get("query")
+        if not isinstance(query, str):
+            raise ValueError("query is the words to find")
+        return conversation.find(str(params.get("path") or ""), query, limit)
 
     def _herd_sub_conversation(self, params: dict) -> dict:
         """Sub-agent SUB's own conversation, under parent transcript PATH.

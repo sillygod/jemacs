@@ -33,8 +33,10 @@ FAILED_TEXT = "[ghostherd message from qa → rd]\nAsk 1a2b3c4d failed: the take
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     conv._cache.clear()
+    conv._wholes.clear()
     yield tmp_path
     conv._cache.clear()
+    conv._wholes.clear()
 
 
 def _write(path: Path, records) -> str:

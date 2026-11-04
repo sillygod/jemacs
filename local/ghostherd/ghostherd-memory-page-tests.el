@@ -623,6 +623,86 @@ of shrinking back to the default."
       (ghostherd-memory-page--room-tick)
       (should (= (length requests) n)))))
 
+(ert-deftest ghostherd-test-room-find-asks-the-sidecar-for-the-agents-transcript ()
+  "A find goes to the sidecar for the transcript Emacs knows the agent by --
+never a path the page sends -- and its hits reach the page field by field,
+SEQ as it came."
+  (ghostherd-test--with-room
+    (setq reply (lambda (_m _p)
+                  '(:total 7 :capped t :entries 1200 :query "搜尋"
+                    :hits ((:i 41 :role "user" :kind "prompt" :who "" :ts "2026-11-01T01:00:00Z"
+                            :head "請幫我搜尋" :snippet "…請幫我搜尋舊的對話…" :text "never sent")
+                           (:i 1180 :role "herd" :kind "ask" :to "qa" :ts nil :head "Check it"
+                            :snippet "It passes" :part "answer")))))
+    (ghostherd-memory-page--handle
+     '((op . "room-find") (name . "claude-api") (q . "搜尋") (seq . 12) (path . "/etc/passwd")))
+    (should (equal (car (last requests)) `("herd_conversation_find" (:path ,file :query "搜尋"))))
+    (let* ((p (ghostherd-test--call calls "foundConversation"))
+           (hits (append (plist-get p :hits) nil)))
+      (should (equal (list (plist-get p :name) (plist-get p :q) (plist-get p :seq)
+                           (plist-get p :total) (plist-get p :capped) (plist-get p :entries))
+                     '("claude-api" "搜尋" 12 7 t 1200)))
+      (should (vectorp (plist-get p :hits)))
+      (should (equal (mapcar (lambda (h) (plist-get h :i)) hits) '(41 1180)))
+      (should (equal (plist-get (car hits) :snippet) "…請幫我搜尋舊的對話…"))
+      (should (equal (plist-get (car hits) :head) "請幫我搜尋"))
+      (should (equal (plist-get (cadr hits) :part) "answer"))
+      ;; What it does not name does not reach the page.
+      (should-not (plist-member (car hits) :text)))))
+
+(ert-deftest ghostherd-test-room-find-without-a-transcript-says-so ()
+  "An agent with no conversation known, or none of that name, is answered
+at once, and the sidecar is not asked; a failed find says why."
+  (ghostherd-test--with-room
+    (setq transcript nil)
+    (ghostherd-memory-page--handle '((op . "room-find") (name . "claude-api") (q . "x y") (seq . 3)))
+    (should-not requests)
+    (should (equal (plist-get (ghostherd-test--call calls "foundConversation") :error)
+                   "no conversation known for it yet"))
+    (ghostherd-memory-page--handle '((op . "room-find") (name . "nobody") (q . "x y") (seq . 4)))
+    (should-not requests)
+    (should (eql (plist-get (ghostherd-test--call calls "foundConversation") :seq) 4))
+    (setq transcript file fail "Method not found: herd_conversation_find")
+    (ghostherd-memory-page--handle '((op . "room-find") (name . "claude-api") (q . "x y") (seq . 5)))
+    (should (string-match-p "older than the room"
+                            (plist-get (ghostherd-test--call calls "foundConversation") :error)))))
+
+(ert-deftest ghostherd-test-room-at-reads-the-page-holding-a-hit ()
+  "A page of the whole conversation from entry START, LIMIT held to the
+sidecar's 200, sent with where it is and whether more lie either side."
+  (ghostherd-test--with-room
+    (setq reply (lambda (_m _p)
+                  ;; As the reply is parsed: false is nil.
+                  '(:start 100 :total 1200 :earlier t :later nil :before 0
+                    :entries ((:role "user" :kind "prompt" :text "請幫我搜尋" :ts "t")))))
+    (ghostherd-memory-page--handle
+     '((op . "room-at") (name . "claude-api") (start . 100) (limit . 60) (seq . 9)))
+    (should (equal (car (last requests)) `("herd_conversation" (:path ,file :start 100 :limit 60))))
+    (let ((p (ghostherd-test--call calls "atConversation")))
+      (should (equal (list (plist-get p :name) (plist-get p :seq) (plist-get p :start)
+                           (plist-get p :total) (plist-get p :earlier) (plist-get p :later))
+                     '("claude-api" 9 100 1200 t :json-false)))
+      (should (equal (plist-get (aref (plist-get p :entries) 0) :text) "請幫我搜尋")))
+    (ghostherd-memory-page--handle
+     '((op . "room-at") (name . "claude-api") (start . 0) (limit . 5000) (seq . 10)))
+    (should (equal (car (last requests)) `("herd_conversation" (:path ,file :start 0 :limit 200))))
+    ;; No place, no read.
+    (let ((n (length requests)))
+      (ghostherd-memory-page--handle '((op . "room-at") (name . "claude-api") (start . "x") (seq . 11)))
+      (should (= (length requests) n)))))
+
+(ert-deftest ghostherd-test-page-find-opens-the-rooms-find-bar ()
+  "M-x ghostherd-page-find: the open room's find bar, through the page;
+without a room open there is nothing to find in."
+  (ghostherd-test--with-room
+    (cl-letf (((symbol-function 'xwapp-live-p) (lambda (_app) t))
+              ((symbol-function 'xwapp-session) (lambda (_app) nil)))
+      (let ((ghostherd-memory-page--app 'app))
+        (ghostherd-page-find)
+        (should (assoc "openFind" calls))
+        (let ((ghostherd-memory-page--room nil))
+          (should-error (ghostherd-page-find) :type 'user-error))))))
+
 (ert-deftest ghostherd-test-chat-load-earlier-asks-for-more ()
   "The chat's `load earlier' grows its one limit, passed on to herd_chat."
   (ghostherd-test--with-room

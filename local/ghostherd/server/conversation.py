@@ -18,6 +18,8 @@ import json
 import os
 import re
 import shlex
+import threading
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -704,7 +706,14 @@ def _read(real: Path, cli: str, limit: int, reader, key: str,
         if not cut or len(thread.entries) >= before + limit or window >= TAIL_MAX:
             break
         window *= 4
-    entries, more = thread.done(limit, before)
+    if before and cut and len(thread.entries) < before + limit:
+        # A `load earlier' page past the tail we read: from the whole
+        # conversation, as a find reads it -- its count from the end is
+        # the same, so a page of it is the page asked for.
+        entries, more = _whole(real, reader, key, lambda t: _page(t.entries, limit, before))
+        cut = False  # read from the start: `earlier' is whether more precede
+    else:
+        entries, more = thread.done(limit, before)
     # The images what an agent wrote names: as recorded, or copied now when
     # still as they were then.  Cached with the rest, so once a change.
     images.attach(entries, at_of=lambda e: _epoch(e.get("ts")), owner=owner)
@@ -727,11 +736,215 @@ def _read(real: Path, cli: str, limit: int, reader, key: str,
     return out
 
 
-def read(path: str, limit: int = LIMIT, before: int = 0, owner=None) -> dict[str, Any]:
+def read(path: str, limit: int = LIMIT, before: int = 0, owner=None,
+         start: int | None = None) -> dict[str, Any]:
     """A page of LIMIT entries of transcript PATH ending BEFORE from the
-    newest (BEFORE 0 is the newest LIMIT).  OWNER gives whose it is (`_read')."""
+    newest (BEFORE 0 is the newest LIMIT) -- or, given START, the page of
+    the whole conversation from its entry START on (a find's `i').  OWNER
+    gives whose it is (`_read')."""
     real, cli = locate(path)
+    if start is not None:
+        return _read_at(real, cli, limit, READERS[cli], str(real), start, owner)
     return _read(real, cli, limit, READERS[cli], str(real), before, owner)
+
+
+# ---- The whole conversation, and finding in it ---------------------------------
+#
+# The room shows a conversation's tail and pages back from it; a find looks
+# through all of it.  The whole is parsed from the start once, the same way
+# the tail is (the same reader, the same Thread), then only what was written
+# since: transcripts grow by appending, so its entries keep their place,
+# counted from the start -- what a find's hit is, and what a page at it asks
+# for.  Read a chunk at a time, so a transcript of hundreds of megabytes is
+# never held whole.  A few are kept, the most recently used.
+
+# A megabyte at a time: bigger chunks leave more behind in the allocator --
+# a whole of 147 MB parsed in 8 MB chunks grew the process's footprint by
+# 35 MB, in 1 MB chunks by 24 MB, and was no slower (0.5 s).
+WHOLE_CHUNK = 1024 * 1024
+WHOLE_MAX = 4
+# What identifies the file a whole was read from, read again each time: a
+# transcript rewritten (not appended to) is read again from the start.
+WHOLE_HEAD = 1024
+FIND_HITS = 100
+FIND_HITS_MAX = 300
+SNIPPET = 160      # characters of a hit's snippet, whitespace collapsed
+SNIPPET_LEAD = 50  # of them before the first match
+HIT_HEAD = 24      # of the entry's own text, for the page to know it by
+
+
+class _Read:
+    "A transcript parsed from its start up to OFFSET, and how to know it again."
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.thread: Thread | None = None
+        self.offset = 0
+        self.ino = 0
+        self.head = b""
+
+
+_wholes: OrderedDict[str, _Read] = OrderedDict()
+_wholes_lock = threading.Lock()
+
+
+def _whole(real: Path, reader, key: str, fn):
+    """FN of the whole conversation of REAL -- a Thread parsed by READER
+    from its start through its last whole line -- cached under KEY and
+    brought up to date first.  FN runs with it held, so another call does
+    not add to it meanwhile."""
+    with _wholes_lock:
+        w = _wholes.get(key)
+        if w is None:
+            w = _wholes[key] = _Read()
+            while len(_wholes) > WHOLE_MAX:
+                _wholes.popitem(last=False)
+        _wholes.move_to_end(key)
+    with w.lock:
+        with real.open("rb") as f:
+            st = os.fstat(f.fileno())
+            head = f.read(WHOLE_HEAD)
+            if (w.thread is None or st.st_ino != w.ino or st.st_size < w.offset
+                    or head[: len(w.head)] != w.head[: len(head)]):
+                w.thread, w.offset, w.ino = Thread(real), 0, st.st_ino
+            w.head = head
+            f.seek(w.offset)
+            carry = b""
+            while True:
+                chunk = f.read(WHOLE_CHUNK)
+                if not chunk:
+                    break
+                data = carry + chunk
+                end = data.rfind(b"\n") + 1
+                carry = data[end:]
+                if end:
+                    # Only whole lines: one still being written waits for
+                    # the next read, from where these end.
+                    lines = data[:end].decode("utf-8", "replace").splitlines()
+                    reader(_records(l for l in lines if l.strip()), w.thread)
+                    w.offset += end
+        return fn(w.thread)
+
+
+def _shown(e: dict[str, Any]) -> dict[str, Any]:
+    "Entry E as a page shows it: a copy, its merge key left out."
+    out = {k: v for k, v in e.items() if k != "key"}
+    if isinstance(out.get("tools"), list):
+        out["tools"] = [dict(t) for t in out["tools"]]
+    return out
+
+
+def _page(entries: list[dict[str, Any]], limit: int, before: int) -> tuple[list[dict[str, Any]], bool]:
+    "`Thread.done' of a whole conversation: copies, it goes on."
+    n = len(entries)
+    end = max(0, n - max(0, before))
+    start = max(0, end - limit)
+    return [_shown(e) for e in entries[start:end]], start > 0
+
+
+def _read_at(real: Path, cli: str, limit: int, reader, key: str, start: int,
+             owner=None) -> dict[str, Any]:
+    """The page of LIMIT entries of the whole conversation of REAL from its
+    entry START: where a find's hit is, and the pages around it."""
+    def page(t: Thread):
+        n = len(t.entries)
+        s = max(0, min(start, n))
+        return n, s, [_shown(e) for e in t.entries[s:s + limit]]
+
+    total, s, entries = _whole(real, reader, key, page)
+    images.attach(entries, at_of=lambda e: _epoch(e.get("ts")), owner=owner)
+    return {
+        "path": key,
+        "cli": cli,
+        "entries": entries,
+        "start": s,
+        "total": total,
+        "earlier": s > 0,
+        "later": s + len(entries) < total,
+        "before": total - s - len(entries),
+        "limit": limit,
+        "mtime": real.stat().st_mtime,
+    }
+
+
+def find_terms(query: str) -> list[str]:
+    """The words QUERY is found by: as the page highlights them (termRe),
+    two characters or more, or any one not ASCII -- a CJK word is often a
+    single one.  Each once, in the order given."""
+    out: list[str] = []
+    for t in (query or "").split():
+        if (len(t) >= 2 or not t.isascii()) and t.lower() not in (o.lower() for o in out):
+            out.append(t)
+    return out
+
+
+def _searchable(e: dict[str, Any]) -> tuple[str, str]:
+    """What of entry E a find looks in -- what the room shows of it as said,
+    not a tool call -- as (its text, an answer shown under it)."""
+    role = e.get("role")
+    if role == "tools":
+        return "", ""
+    text = e.get("text") or ""
+    if role == "sub" and e.get("title"):
+        text = e["title"] + "\n" + text
+    return text, (e.get("answer") or "") if role == "herd" else ""
+
+
+def _snippet(flat: str, at: int) -> str:
+    start = max(0, at - SNIPPET_LEAD)
+    end = min(len(flat), start + SNIPPET)
+    return ("…" if start else "") + flat[start:end] + ("…" if end < len(flat) else "")
+
+
+def find(path: str, query: str, limit: int = FIND_HITS) -> dict[str, Any]:
+    """Where QUERY's words are said in the whole conversation of transcript
+    PATH: entries holding every one of them (case aside; a substring, so a
+    CJK word needs no tokenizer), what the room shows of each -- what was
+    said, not tool calls.  The newest LIMIT hits, oldest first, each its
+    place (`i', counted from the start, what `read(start=...)' takes), who
+    said it, when, and a snippet around the first word found -- never the
+    entry whole.  TOTAL counts them all; CAPPED says there were more."""
+    real, cli = locate(path)
+    terms = find_terms(query)
+    out: dict[str, Any] = {"path": str(real), "cli": cli, "query": query or "", "terms": terms,
+                           "hits": [], "total": 0, "capped": False, "entries": 0}
+    if not terms:
+        return out
+    lows = [t.lower() for t in terms]
+    rx = re.compile("|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True)), re.I)
+
+    def run(t: Thread) -> None:
+        entries = t.entries
+        hits = []
+        total = 0
+        for i in range(len(entries) - 1, -1, -1):
+            e = entries[i]
+            text, answer = _searchable(e)
+            said = text + "\n\n" + answer if answer else text
+            if not said:
+                continue
+            low = said.lower()
+            if not all(w in low for w in lows):
+                continue
+            total += 1
+            if len(hits) >= limit:
+                continue
+            flat_text = " ".join(text.split())
+            flat = (flat_text + " " + " ".join(answer.split())).strip() if answer else flat_text
+            m = rx.search(flat)
+            at = m.start() if m else 0
+            hit = {"i": i, "role": e.get("role") or "", "kind": e.get("kind") or "",
+                   "who": e.get("who") or "", "to": e.get("to") or "", "ask": e.get("ask") or "",
+                   "ts": e.get("ts"), "head": (e.get("text") or "")[:HIT_HEAD],
+                   "snippet": _snippet(flat, at)}
+            if answer and at > len(flat_text):
+                hit["part"] = "answer"
+            hits.append(hit)
+        hits.reverse()
+        out.update(hits=hits, total=total, capped=total > len(hits), entries=len(entries))
+
+    _whole(real, READERS[cli], str(real), run)
+    return out
 
 
 def edited(path: str, root: str | None = None, limit: int = LIMIT) -> dict[str, Any]:

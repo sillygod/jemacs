@@ -2488,9 +2488,10 @@ are the other tabs (below, and "What happened while you were away").
   speaks (the Log's lane colour).  A column has its own prompt box, Esc
   and 1 / 2 / 3, and can show the screen instead.  When a conversation
   has more turns than the initial tail, /Load earlier/ at the top of
-  the column expands how far back is read, a page at a time up to the
-  sidecar's cap (where a note points to the transcript for anything
-  older), and keeps that expanded depth across polls.  The transcript is
+  the column expands how far back is read, a page at a time back to
+  the conversation's start --- past the tail the sidecar reads, from the
+  whole of it, as a find reads it --- and keeps that expanded depth
+  across polls.  The transcript is
   the one the agent's hooks name, or the conversation it was started
   on (=-r ID=, =--conversation ID=); a fresh agent without hooks shows
   its screen and says why.  Emacs looks every two seconds; the sidecar
@@ -2506,6 +2507,28 @@ are the other tabs (below, and "What happened while you were away").
   the one named by =@name= at its start, images and ⌘V as in any box.
   The sidecar builds the timeline from the agents' transcripts, so it
   starts with everything they already said.
+- Find, in the strip over a column or the chat (the magnifier at its
+  end; =/= in a room once the page has the keyboard, =M-x
+  ghostherd-page-find= --- =SPC a h f= --- from Emacs, which also sends
+  it the keys): words looked for in the agent's whole conversation, not
+  only what the room has loaded --- the column's agent, or in the chat
+  the one its box writes to.  Case aside, as written (Chinese needs no
+  spaces), every word in the same entry; in what the room shows as said
+  --- yours, the agent's, the herd's asks and answers, a sub-agent's
+  report --- never a tool call or its output.  The strip turns into a
+  bar: the words, a count (=3/17=), ↑ for an earlier hit (Enter), ↓ for
+  a later one (Shift+Enter), ✕.  The count opens the list of hits, newest
+  first: who said each, when, its words marked in a snippet --- the quick
+  look, open as you type.  Going to a hit the view holds scrolls to it,
+  flashes it, marks its words, unfolds it; one further back loads the
+  page of the conversation around it in place of the latest, with /Load
+  earlier/ and /Load later/ around it and /Back to latest/ at its foot
+  (✕ goes back too) --- what the agent says meanwhile is kept, out of
+  sight, and nothing moves the page you are reading.  Esc closes the
+  list, then the bar.  The list ends in /Search all sessions/, the same
+  words in the Search tab.  The sidecar parses a transcript whole the
+  first time (some 0.6 s for 150 MB), then only what was added; it keeps
+  the four last looked in, the newest 100 hits of each find.
 - Copy, on each turn in the columns and the chat --- yours, an
   agent's, an ask and its answer each --- copies what was said as it
   was written: an agent's markdown rather than the page's drawing of
