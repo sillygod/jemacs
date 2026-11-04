@@ -89,7 +89,7 @@ async function open(s, ctx, page) {
   page = page || (await ctx.newPage());
   const reqs = [];
   const t0 = Date.now();
-  const short = (u) => u.replace(/^https?:\/\/[^/]+\/[0-9a-f]{32}\//, "/").replace(/\?page=[0-9a-f]+/, "");
+  const short = (u) => u.replace(/^https?:\/\/[^/]+\/[0-9a-f]{32}\//, "/").replace(/\?.*$/, "");
   const ended = (r) => {
     const at = Date.now() - t0;
     reqs.push(Promise.all([r.sizes().catch(() => null), r.response().catch(() => null)]).then(([sz, rs]) => ({

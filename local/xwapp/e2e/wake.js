@@ -15,8 +15,8 @@
 // (its xwapp, ghostherd/ui and pr-view), the same measures, of it.
 const fs = require("fs");
 const path = require("path");
-const { start, watch, until, sleep, log, BOX, PHONE } = require("./appslib");
-const { measure, text, fresh, pageOf, NAME, copyTree, herdFile, shows } = require("./wakelib");
+const { start, watch, phoneEyes, until, sleep, log, BOX, PHONE } = require("./appslib");
+const { measure, text, fresh, pageOf, NAME, copyTree, herdFile, shows, settled } = require("./wakelib");
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
 (async () => {
@@ -26,6 +26,7 @@ const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "F
     const intents = (op) => log().filter((w) => w && w.intent && (!op || w.intent.op === op)).map((w) => w.intent);
     try {
       const ctx = await s.browser.newContext(PHONE);
+      await phoneEyes(ctx);
       const errors = [];
       const tab = await ctx.newPage();
       watch(tab, errors);
@@ -37,7 +38,10 @@ const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "F
       });
       const scroll = await tab.evaluate(() => document.getElementById("app").scrollTop);
 
-      // Asleep, past the gone.
+      // Asleep, past the gone -- once the page has only its next under
+      // way, as a phone put down does: what it sends once drawn (its
+      // timings) cut, WebKit would log the cut, as it does any POST's.
+      check("before it sleeps, the page has only its next under way", await settled(tab));
       s.sleep();
       check("asleep, the page is let go, and the app closed", await until(() => pageOf(s.dir) === "nil" && log().includes("closed"), 10000),
         pageOf(s.dir));
@@ -59,7 +63,7 @@ const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "F
       const again = log().slice(0).filter((w) => w && w.intent).slice(before).map((w) => w.intent.op);
       check("the app was opened again for it, and it asked again for what it shows",
         log().includes("reopened") && again.includes("ready") && again.includes("herd-watch") && again.includes("threads-peek"), again);
-      check("a soft hello, the app's again", after.some((t) => /\/hello\?page=[0-9a-f]+&soft=1$/.test(t.path) && t.status === 204) &&
+      check("a soft hello, the app's again", after.some((t) => /\/hello\?page=[0-9a-f]+(&n=\d+)?&soft=1$/.test(t.path) && t.status === 204) &&
         pageOf(s.dir) !== "nil");
       check("no notice left", !(await tab.$("#xw-notice")));
       check("an intent goes on as before", await (async () => {

@@ -2248,5 +2248,377 @@ policy -- in the browser when that is where pages go."
         (let ((xwapp-browser nil))
           (should-error (xwapp-show-file app "guide.html" "docs") :type 'user-error))))))
 
+;;; How long the page took
+
+(defconst xwapp-test--page-id "0123456789abcdef")
+
+(defmacro xwapp-test--timing (&rest body)
+  "BODY in `xwapp-test--with-browser', the page served through the proxy
+\(`box', its headers), its timings and the ring of requests afresh, kept
+in `root' (`xwapp-timing-file').  Tailscale is played: `looks' counts
+the times it is asked; it says `status'.  `told' gathers what
+`xwapp-timing-functions' are told."
+  (declare (indent 0))
+  `(xwapp-test--with-browser
+     (let* ((xwapp-remote-hosts (list xwapp-test--box))
+            (xwapp-remote-users (list "me@example.com"))
+            (xwapp-timing t)
+            (xwapp-timing-slow 1.5)
+            (xwapp-timing-file (expand-file-name "timings/timings.eld" root))
+            (xwapp--timing-save t)
+            (xwapp--timing-keep-slow 100)
+            (xwapp--timing-keep-normal 20)
+            (xwapp--timings nil)
+            (xwapp--timings-loaded nil)
+            (xwapp--timing-id 0)
+            (xwapp--reqs-max 256)
+            (xwapp--reqs (make-vector 256 nil))
+            (xwapp--reqs-at 0)
+            (xwapp--timing-clocks nil)
+            (xwapp--tailscale-said nil)
+            (xwapp--tailscale-waiting nil)
+            (xwapp-tailscale-program "tailscale")
+            (looks 0)
+            (status nil)
+            (told nil)
+            (xwapp-timing-functions (list (lambda (_app r) (push r told))))
+            (box (xwapp-test--from-box "me@example.com")))
+       (ignore looks status told box)
+       (xwapp--put app :reopen #'xwapp-test--keep-reopen)
+       (xwapp-test--proxy-up)
+       (cl-letf (((symbol-function 'xwapp--tailscale-run)
+                  (lambda (then) (cl-incf looks) (funcall then status))))
+         ,@body))))
+
+(defun xwapp-test--whole (method path &optional body headers transport)
+  "The whole response to METHOD PATH, head and body, as bytes."
+  (let ((cell (xwapp-test--ask method path body headers transport))
+        (out ""))
+    (set-process-filter (cdr cell) (lambda (_p s) (setq out (concat out s))))
+    (with-timeout (10 (error "No answer"))
+      (while (process-live-p (cdr cell))
+        (accept-process-output nil 0.02)))
+    out))
+
+(defun xwapp-test--kit (app call n &optional more)
+  "The path of the kit's CALL (hello, next, intent) numbered N, of the
+page `xwapp-test--page-id', under APP's secret; MORE, more of its query."
+  (xwapp-test--at app (format "%s?page=%s&n=%d%s" call xwapp-test--page-id n (or more ""))))
+
+(ert-deftest xwapp-test-timing-each-request-is-timed ()
+  "Each request Emacs serves is timed, in a ring: when its bytes came,
+when its answer began and when its last byte was out; a `next', when
+Emacs had calls for it; an intent, its op and its handler.  The kit's
+are known by their page and number.  No path is kept with the secret."
+  (xwapp-test--timing
+    (should (equal (car (xwapp-test--do "POST" (xwapp-test--kit app "hello" 1) "{}" box 'proxy)) 204))
+    (should (equal (car (xwapp-test--do "GET" (xwapp-test--at app "app/ui/app.js") nil box 'proxy)) 200))
+    (should (equal (car (xwapp-test--do "POST" (xwapp-test--kit app "intent" 2) "{\"op\":\"refresh\"}" box 'proxy)) 204))
+    (xwapp-test--turn)
+    ;; The greeting waits: this one is answered with it.
+    (should (equal (car (xwapp-test--do "GET" (xwapp-test--kit app "next" 3) nil box 'proxy)) 200))
+    (let* ((reqs (xwapp--reqs-list))
+           (by (lambda (p) (seq-find (lambda (r) (equal (plist-get r :path) p)) reqs)))
+           (hello (funcall by "hello")) (file (funcall by "app/ui/app.js"))
+           (intent (funcall by "intent")) (next (funcall by "next")))
+      (should (= (length reqs) 4))
+      (dolist (r reqs)
+        (should (eq (plist-get r :app) app))
+        (should (eq (plist-get r :via) 'proxy))
+        (should (<= (plist-get r :t0) (plist-get r :t1) (plist-get r :t2) (plist-get r :t3)))
+        (should-not (string-search (xwapp--secret app) (plist-get r :path))))
+      (should (equal (mapcar (lambda (r) (plist-get r :n)) (list hello file intent next)) '(1 nil 2 3)))
+      (should (equal (plist-get next :page) xwapp-test--page-id))
+      (should (equal (plist-get intent :op) "refresh"))
+      (should (equal (alist-get 'op (car intents)) "refresh"))
+      (should (<= (plist-get intent :t2) (plist-get intent :th) (plist-get intent :tw)))
+      (should (<= (plist-get next :t1) (plist-get next :tf) (plist-get next :t2)))
+      (should (= (plist-get file :code) 200))
+      (should (> (plist-get file :bytes) 0)))))
+
+(ert-deftest xwapp-test-timing-ring-keeps-the-latest ()
+  "The ring keeps the latest `xwapp--reqs-max' requests, the latest first."
+  (let ((xwapp--reqs-max 3) (xwapp--reqs (make-vector 3 nil)) (xwapp--reqs-at 0))
+    (dotimes (i 5) (xwapp--reqs-note (list :n i)))
+    (should (equal (mapcar (lambda (r) (plist-get r :n)) (xwapp--reqs-list)) '(4 3 2)))))
+
+(ert-deftest xwapp-test-timing-hello-says-so-and-a-wake-is-answered-at-once ()
+  "The hello says Emacs takes the page's timings, and from when they are
+slow, in ms (Xwapp-Timing); nothing when `xwapp-timing' is nil -- as an
+Emacs from before says nothing.  A `next' asked with wake=1 is answered
+at once, calls or none; one without is held."
+  (xwapp-test--timing
+    (let ((raw (xwapp-test--whole "POST" (xwapp-test--kit app "hello" 1) "{}" box 'proxy)))
+      (should (string-prefix-p "HTTP/1.1 204" raw))
+      (should (equal (xwapp-test--header raw "Xwapp-Timing") "1500")))
+    (let ((xwapp-timing nil))
+      (should-not (xwapp-test--header (xwapp-test--whole "POST" (xwapp-test--kit app "hello" 2) "{}" box 'proxy)
+                                      "Xwapp-Timing")))
+    ;; The greeting, out of the way.
+    (should (equal (car (xwapp-test--do "GET" (xwapp-test--kit app "next" 3) nil box 'proxy)) 200))
+    (let ((held (xwapp-test--ask "GET" (xwapp-test--kit app "next" 4) nil box 'proxy)))
+      (xwapp-test--turn 0.3)
+      (should-not (car held))
+      (let ((start (float-time))
+            (woke (xwapp-test--do "GET" (xwapp-test--kit app "next" 5 "&wake=1") nil box 'proxy)))
+        (should (equal woke '(200 . "[]")))
+        (should (< (- (float-time) start) 0.5))
+        ;; The one it was asked over, answered too, empty.
+        (should (equal (xwapp-test--answer held) '(200 . "[]")))))))
+
+(defun xwapp-test--emacs-side (app path n page t0 &rest more)
+  "A request of APP's page PAGE to PATH, numbered N, as Emacs timed it:
+read at T0, answered as MORE says (:tf :t2 :t3 ...), or at once."
+  (let ((r (apply #'list :app app :via 'proxy :path path :n n :page page
+                  :t0 t0 :t1 t0 :gc 0.0 more)))
+    (unless (plist-get r :t2) (plist-put r :t2 t0))
+    (unless (plist-get r :t3) (plist-put r :t3 (plist-get r :t2)))
+    (plist-put r :code 200)
+    (xwapp--reqs-note r)
+    r))
+
+(defun xwapp-test--moment (kind base d reqs &optional marks)
+  "The kit's intent for a moment of KIND begun at BASE (seconds), D long,
+of REQS (alists in ms, as the page sends them) and MARKS."
+  `((op . "xwapp-timing") (k . ,kind) (at . ,(* 1000 base)) (d . ,(* 1000 d)) (end . "ready")
+    (m . ,(or marks '((boot . 300) (hello . 400)))) (r . ,reqs)))
+
+(defun xwapp-test--its (record cat)
+  "The seconds RECORD's moment waited on CAT."
+  (alist-get cat (plist-get record :sum)))
+
+(defun xwapp-test--a-moment (app base &rest how)
+  "Take a moment of APP's page begun at BASE: its hello sent at 0.1 s and
+answered at 2.2 s, an intent and a `next' after.  HOW says when Emacs
+read the hello (:hello-at, from BASE) and when the intent went and came
+\(:intent-there, :intent-back, each way); its own request, that of the
+record, has the address HOW's :from.  The record, as kept."
+  (let* ((page xwapp-test--page-id)
+         (hello-at (or (plist-get how :hello-at) 2.15))
+         (there (or (plist-get how :intent-there) 0.05))
+         (back (or (plist-get how :intent-back) 0.05))
+         (d (or (plist-get how :d) 2.6))
+         (own (list :app app :via 'proxy :path "intent" :n 9 :page page
+                               :fwd (plist-get how :from))))
+    (xwapp-test--emacs-side app "hello" 1 page (+ base hello-at))
+    (xwapp-test--emacs-side app "intent" 2 page (+ base 2.25 there))
+    (xwapp-test--emacs-side app "next" 3 page (+ base 2.25 there)
+                            :tf (+ base 2.25 there 0.1) :t2 (+ base 2.25 there 0.1))
+    (xwapp--timing-take
+     app (xwapp-test--moment
+          "open" base d
+          `(((p . "hello") (n . 1) (s . 100) (q . 0) (w . 2100) (dl . 5))
+            ((p . "intent") (n . 2) (s . 2250) (q . 0) (w . ,(round (* 1000 (+ there back)))) (dl . 0))
+            ((p . "next") (n . 3) (s . 2250) (q . 0) (w . ,(round (* 1000 (+ there back 0.1)))) (dl . 0))))
+     own)
+    (car xwapp--timings)))
+
+(ert-deftest xwapp-test-timing-emacs-busy-shows-as-emacs-busy ()
+  "A request that reached Emacs while it was busy -- read 2 s after it
+was sent, its answer back as fast as ever -- is Emacs busy, not the
+network: the page's clock and Emacs's are lined up by the quickest
+round trip, and the way there past the way back is Emacs's."
+  (xwapp-test--timing
+    (let* ((base (- (float-time) 10))
+           (r (xwapp-test--a-moment app base :hello-at 2.15)))
+      (should r)
+      (should (plist-get r :slow))
+      (should (equal (plist-get r :kind) "open"))
+      (should (< (abs (plist-get r :offset)) 0.002))
+      (should (< 1.9 (xwapp-test--its r 'busy) 2.1))
+      (should (< (xwapp-test--its r 'net) 0.3))
+      (should (string-prefix-p "open 2.6 s: Emacs busy 2.0 s" (xwapp-timing-summary r)))
+      (let ((hello (seq-find (lambda (q) (equal (plist-get q :p) "hello")) (plist-get r :reqs))))
+        (should (< 1.9 (plist-get hello :busy) 2.1)))
+      ;; From the proxy, slow: tailscale asked, though it knows no device.
+      (should (= looks 1)))))
+
+(ert-deftest xwapp-test-timing-a-busy-wake-by-the-clock-kept ()
+  "A wake whose every request waited on a busy Emacs has no quick round
+trip to line the clocks up by: the device's of late is used -- kept from
+its open -- and its wait is Emacs busy.  With none kept, it cannot be
+told from a slow network, and is not said to be Emacs."
+  (xwapp-test--timing
+    (let* ((base (- (float-time) 20))
+           (wake (lambda (at)
+                   ;; Its next, sent at AT+0.01, read 2 s late, back at once.
+                   (xwapp-test--emacs-side app "next" 7 xwapp-test--page-id (+ at 2.05))
+                   (xwapp--timing-take
+                    app (xwapp-test--moment "wake" at 2.1
+                                            '(((p . "next") (n . 7) (s . 10) (q . 0) (w . 2080) (dl . 0))))
+                    (list :app app :via 'proxy :path "intent" :n 8 :page xwapp-test--page-id))
+                   (car xwapp--timings))))
+      (let ((r (funcall wake base)))
+        (should (plist-get r :slow))
+        (should (< (xwapp-test--its r 'busy) 0.1))
+        (should (equal (plist-get r :clock) "own")))
+      (xwapp-test--a-moment app (+ base 5) :hello-at 0.15 :d 0.9)
+      (let ((r (funcall wake (+ base 10))))
+        (should (equal (plist-get r :clock) "kept"))
+        (should (< (abs (plist-get r :offset)) 0.002))
+        (should (< 1.9 (xwapp-test--its r 'busy) 2.1))
+        (should (string-match-p "clock [-+]0\\.00[0-9] (kept)" (xwapp-timing-describe r)))))))
+
+(ert-deftest xwapp-test-timing-a-slow-network-shows-as-network ()
+  "A link slow both ways -- the hello a second there and a second back,
+the intent too -- is the network, and Emacs not busy."
+  (xwapp-test--timing
+    (let* ((base (- (float-time) 10))
+           (r (xwapp-test--a-moment app base :hello-at 1.15 :intent-there 1.0 :intent-back 1.0 :d 4.6)))
+      (should (plist-get r :slow))
+      (should (< (abs (plist-get r :offset)) 0.002))
+      (should (< (xwapp-test--its r 'busy) 0.05))
+      (should (> (xwapp-test--its r 'net) 3.5))
+      (should (string-prefix-p "open 4.6 s: network" (xwapp-timing-summary r))))))
+
+(defun xwapp-test--tailnet (addr relay)
+  "Tailscale's status, as its JSON parses, with the phone at ADDR -- \"\"
+when not straight -- through RELAY's DERP."
+  `((Self (HostName . "the-mac"))
+    (Peer (nodekey:aa (DNSName . "iphone171.tail0.ts.net.") (HostName . "localhost") (OS . "iOS")
+                      (TailscaleIPs "100.94.115.122" "fd7a:115c:a1e0::1") (CurAddr . ,addr)
+                      (Relay . ,relay) (PeerRelay . "") (Active . t))
+          (nodekey:bb (DNSName . "desk.tail0.ts.net.") (HostName . "desk") (OS . "macOS")
+                      (TailscaleIPs "100.64.0.2") (CurAddr . "") (Relay . "tok") (Active . t)))))
+
+(ert-deftest xwapp-test-timing-a-relay-is-said ()
+  "A slow moment from another device says how tailscale reaches it now --
+relayed, and through which DERP; straight, and on a LAN -- the device
+known by the address the proxy says the request came from.  Tailscale
+is asked once in `xwapp--tailscale-fresh' seconds, and not for a moment
+that was not slow."
+  (xwapp-test--timing
+    (let ((base (- (float-time) 10)))
+      (setq status (xwapp-test--tailnet "" "hkg"))
+      (let ((r (xwapp-test--a-moment app base :hello-at 1.15 :intent-there 1.0 :intent-back 1.0 :d 4.6
+                                     :from "100.94.115.122")))
+        (should (equal (plist-get r :peer) '(:name "iphone171" :os "ios" :path "relay" :relay "hkg" :lan nil)))
+        (should (string-suffix-p " · relay hkg" (xwapp-timing-summary r)))
+        (should (string-match-p "iphone171 relay hkg" (xwapp-timing-describe r))))
+      ;; Straight now -- but what tailscale said is fresh still.
+      (setq status (xwapp-test--tailnet "192.168.1.20:41641" "hkg"))
+      (xwapp-test--a-moment app (+ base 5) :hello-at 1.15 :intent-there 1.0 :intent-back 1.0 :d 4.6
+                            :from "100.94.115.122")
+      (should (= looks 1))
+      (setq xwapp--tailscale-said nil)
+      (let ((r (xwapp-test--a-moment app (+ base 8) :hello-at 1.15 :intent-there 1.0 :intent-back 1.0 :d 4.6
+                                     :from "100.94.115.122")))
+        (should (= looks 2))
+        (should (equal (plist-get (plist-get r :peer) :path) "direct"))
+        (should (string-suffix-p " · direct, LAN" (xwapp-timing-summary r))))
+      ;; A quick one: kept, not slow, tailscale not asked.
+      (let ((r (xwapp-test--a-moment app (+ base 9) :hello-at 0.15 :d 0.9)))
+        (should-not (plist-get r :slow))
+        (should-not (plist-get r :peer))
+        (should (= looks 2))))))
+
+(ert-deftest xwapp-test-timing-kept-bounded-and-over-a-restart ()
+  "The slow records and the others are kept apart, the latest of each up
+to their bounds, in `xwapp-timing-file' as well -- yours alone -- and
+read back from it after a restart, the next id past theirs."
+  (xwapp-test--timing
+    (let ((xwapp--timing-keep-slow 2)
+          (xwapp--timing-keep-normal 1)
+          (base (- (float-time) 100)))
+      (dotimes (i 3) (xwapp-test--a-moment app (+ base (* 10 i)) :hello-at 2.15))
+      (dotimes (i 2) (xwapp-test--a-moment app (+ base 50 (* 10 i)) :hello-at 0.15 :d 0.9))
+      (should (equal (mapcar (lambda (r) (plist-get r :id)) xwapp--timings) '(5 3 2)))
+      (should (equal (mapcar (lambda (r) (plist-get r :slow)) xwapp--timings) '(nil t t)))
+      (should (= (logand (file-modes xwapp-timing-file) #o077) 0))
+      (let ((kept xwapp--timings))
+        (setq xwapp--timings nil xwapp--timings-loaded nil xwapp--timing-id 0)
+        (xwapp--timings-load)
+        (should (equal xwapp--timings kept))
+        (should (= xwapp--timing-id 5))))))
+
+(ert-deftest xwapp-test-timing-the-kits-intent-goes-to-the-kit ()
+  "The page's timings come as the kit's intent: taken by xwapp, the app
+not handed it -- nor, when `xwapp-timing' is nil, anyone."
+  (xwapp-test--timing
+    (should (equal (car (xwapp-test--do "POST" (xwapp-test--kit app "hello" 1) "{}" box 'proxy)) 204))
+    (let ((now (round (* 1000 (float-time)))))
+      (should (equal (car (xwapp-test--do "POST" (xwapp-test--kit app "intent" 2)
+                                          (json-encode (xwapp-test--moment "wake" (/ (- now 900) 1000.0) 0.4 []))
+                                          box 'proxy))
+                     204))
+      (xwapp-test--turn 0.2)
+      (should (= (length told) 1))
+      (should (equal (plist-get (car told) :kind) "wake"))
+      (should (eq (plist-get (car told) :via) 'proxy))
+      ;; The same sent again -- its first sending cut after Emacs had it: kept once.
+      (xwapp-test--do "POST" (xwapp-test--kit app "intent" 3)
+                      (json-encode (xwapp-test--moment "wake" (/ (- now 900) 1000.0) 0.4 []))
+                      box 'proxy)
+      (xwapp-test--turn 0.2)
+      (should (= (length told) 1))
+      (should (= (length xwapp--timings) 1))
+      (let ((xwapp-timing nil))
+        (xwapp-test--do "POST" (xwapp-test--kit app "intent" 4)
+                        (json-encode (xwapp-test--moment "wake" (/ (- now 500) 1000.0) 0.4 []))
+                        box 'proxy)
+        (xwapp-test--turn 0.2))
+      (should (= (length told) 1))
+      (should-not intents))))
+
+(ert-deftest xwapp-test-timing-never-keeps-a-secret ()
+  "No record -- kept, in the file, told, or said -- holds the page's
+secret, whatever the page sends: the secret in a path plain, in upper
+case or %-escaped, as a mark's name.  The requests Emacs kept are
+without it.  And a record is kept all the same: this fails if a secret
+gets through, and if the record is dropped for one."
+  (xwapp-test--timing
+    (let* ((secret (xwapp--secret app))
+           (escaped (mapconcat (lambda (c) (format "%%%02X" c)) secret ""))
+           (base (- (float-time) 10)))
+      (xwapp-test--do "GET" (xwapp-test--at app "app/ui/app.js") nil box 'proxy)
+      (xwapp-test--do "GET" (xwapp-test--at app (concat "app/ui/" secret ".js")) nil box 'proxy)
+      (dolist (r (xwapp--reqs-list))
+        (should-not (string-search secret (downcase (plist-get r :path)))))
+      (xwapp--timing-take
+       app (xwapp-test--moment
+            "open" base 2.0
+            `(((p . ,(concat "app/ui/" secret ".js")) (s . 10) (q . 0) (w . 50) (dl . 1))
+              ((p . ,(upcase secret)) (s . 20) (q . 0) (w . 50) (dl . 1))
+              ((p . ,(concat "app/ui/" escaped)) (s . 30) (q . 0) (w . 50) (dl . 1))
+              ((p . "app/ui/app.js") (s . 40) (q . 0) (w . 50) (dl . 1)))
+            `((,(intern secret) . 5) (,(intern (concat "a" secret)) . 6) (hello . 7)))
+       (list :app app :via 'proxy :path "intent" :n 1 :page xwapp-test--page-id))
+      (should (= (length told) 1))
+      (should (= (length xwapp--timings) 1))
+      (let ((leaks (lambda (s)
+                     (let ((s (downcase (url-unhex-string s))))
+                       (or (string-search secret s) (xwapp--holds-secret-p s))))))
+        (dolist (r (append told xwapp--timings))
+          (let ((print-length nil) (print-level nil))
+            (should-not (funcall leaks (prin1-to-string r))))
+          (should-not (funcall leaks (xwapp-timing-summary r)))
+          (should-not (funcall leaks (xwapp-timing-describe r))))
+        (should-not (funcall leaks (with-temp-buffer (insert-file-contents xwapp-timing-file) (buffer-string)))))
+      ;; What was not the secret is kept as it was.
+      (should (member "app/ui/app.js" (mapcar (lambda (q) (plist-get q :p)) (plist-get (car told) :reqs))))
+      (should (equal (mapcar #'car (plist-get (car told) :marks)) '("hello"))))))
+
+(ert-deftest xwapp-test-timing-summary-read-back ()
+  "What a summary line says the moment waited on is read back from it,
+as written."
+  (should (equal (xwapp-timing-summary-phases
+                  "slow open 3.4 s: network 2.1 s · Emacs busy 0.6 s · page 0.5 s · relay hkg")
+                 '((net "network" 2.1) (busy "Emacs busy" 0.6) (page "page" 0.5))))
+  (let ((r (list :kind "wake" :d 2.3 :sum '((net . 0.2) (busy . 0.0) (emacs . 1.8) (prep . 0.2) (page . 0.1)))))
+    (should (equal (xwapp-timing-summary r) "wake 2.3 s: Emacs answering 1.8 s · network 0.2 s · Emacs preparing 0.2 s · page 0.1 s"))
+    (should (equal (mapcar #'car (xwapp-timing-summary-phases (xwapp-timing-summary r)))
+                   '(emacs net prep page)))))
+
+(ert-deftest xwapp-test-timing-tailscale-peer ()
+  "The peer a request came from, by its tailnet address; or the one
+active peer, when the proxy said none -- not when there are two."
+  (let ((status (xwapp-test--tailnet "" "hkg")))
+    (should (equal (plist-get (xwapp--tailscale-peer status "100.94.115.122") :name) "iphone171"))
+    (should-not (xwapp--tailscale-peer status nil))
+    (should-not (xwapp--tailscale-peer status "100.1.1.1"))
+    (should (xwapp--tailscale-private-p "192.168.1.20:41641"))
+    (should (xwapp--tailscale-private-p "172.20.0.4:41641"))
+    (should-not (xwapp--tailscale-private-p "203.0.113.9:41641"))))
+
 (provide 'xwapp-tests)
 ;;; xwapp-tests.el ends here

@@ -21,7 +21,12 @@
  *                        come back where it is when Emacs let it go and
  *                        can have it again, rather than load again: it is
  *                        called then, to ask Emacs again for what the page
- *                        shows (see "In a web browser")
+ *                        shows (see "In a web browser"); OPTS.ready true:
+ *                        the app calls XW.ready once its first view is
+ *                        drawn, which ends its load's timing
+ *   XW.mark(name)        a moment of the page's load or wake, for its
+ *                        timings (see "How long it took"): a-z0-9-
+ *   XW.ready(name)       that, and the page is ready: its load is over
  *   XW.sanitizer(opts)   a sanitize(html) keeping a whitelist only
  *   XW.browser           true in a web browser, false in Emacs's xwidget
  *   XW.elsewhere         true on another device, through the proxy
@@ -321,6 +326,14 @@
   // On another device already, through the proxy.
   const ELSEWHERE = BROWSER && !/^(127\.0\.0\.1|localhost)$/.test(location.hostname);
   const ROOT = "/" + location.pathname.split("/")[1] + "/";
+  // S with no secret in it: the page's own, nor any 32 hex digits, which
+  // a secret is.  For what the page tells of itself (its timings).
+  function unsecret(s) {
+    s = String(s).replace(/[0-9a-f]{32,}/gi, "…");
+    const secret = ROOT.slice(1, -1).toLowerCase();
+    if (secret) s = s.split(secret).join("…");
+    return s.slice(0, 120);
+  }
   const SOFT = "xwapp-soft"; // sessionStorage: this load is the page coming back
   // Hidden this long, the page may have slept: what it had asking, asks again.
   const WAKE_AWAY = 1000;
@@ -369,6 +382,46 @@
     }
   }
 
+  // ---- How long it took -------------------------------------------------
+  //
+  // A phone's page is "sometimes" slow, and a slow moment is over before
+  // anyone looks.  So the page times its moments and sends the timings
+  // to Emacs, which joins them with its own and keeps them -- the slow
+  // ones above all (xwapp.el, "How long the page took").  A moment is:
+  //
+  //   open, reload  from the tap -- the navigation's start -- until the
+  //                 page is ready: when the app says so (XW.ready, its
+  //                 bridge made with {ready: true}), else once Emacs's
+  //                 first calls have run
+  //   wake          from the page shown again after a while hidden (or
+  //                 back from the back-forward cache, or online again)
+  //                 to Emacs's answer to a next asked after it -- asked
+  //                 with wake=1, which Emacs answers at once
+  //   intent        an intent Emacs was slow to answer, the page shown
+  //
+  // ended early when the page is hidden ("hidden"), or after a minute
+  // ("cap").  Its marks: boot (the kit run), dcl, hello, intent and next
+  // (the first answered), and the app's (XW.mark); and each request it
+  // made, from Resource Timing: connecting, the wait for the first byte,
+  // the rest, the bytes -- the page's files all, the kit's calls only the
+  // first of each, the one that ended it and a slow one.  The kit's
+  // requests are numbered (n=), for Emacs to know each by.  Sent only to
+  // an Emacs whose hello said it takes them, and from when they are slow
+  // (Xwapp-Timing, in ms): an Emacs from before says nothing, and is sent
+  // nothing.  Paths after the secret alone: no secret, nothing shown.
+  // Nothing runs while the page is idle: a moment is begun and ended by
+  // the events that make it, and read once it is over.
+
+  // The served bridge's marks, once there is one.
+  let moments = null;
+  const MARK = /^[a-z][a-z0-9-]{0,23}$/;
+  function mark(name) {
+    if (moments && MARK.test(String(name))) moments.mark(String(name));
+  }
+  function ready(name) {
+    if (moments && MARK.test(String(name))) moments.ready(String(name));
+  }
+
   let served = null;
   function servedBridge(opts) {
     if (served) return served;
@@ -376,6 +429,18 @@
       (b) => b.toString(16).padStart(2, "0")).join("");
     const back = opts && typeof opts.back === "function" ? opts.back : null;
     let soft = comingBack();
+    // Its moments (see "How long it took").
+    const perf = window.performance;
+    const timeable = !!(perf && perf.now && perf.getEntriesByType);
+    const byApp = !!(opts && opts.ready);   // the app says when it is ready
+    const SLOW_REQ = 300;   // ms: a call of the kit's this slow is listed
+    const CAP = 60000;      // ms: a moment not over by then ends
+    const REQS = 40;        // requests a record lists at most
+    let slowMs = null;      // Emacs's word, with its hello: it takes them
+    let moment = null;      // {k, t0, base, marks, first, last, why, away}
+    let numbered = 0;       // the kit's requests so far
+    let wakeNext = false;   // the next asked after a wake: wake=1
+    let hiddenLast = -1;    // when the page was last hidden
     const outbox = [];
     let hello = false, greeting = false, polling = false, over = false;
     // The intent going now, of OUTBOX: it leaves it once Emacs has it.
@@ -392,15 +457,18 @@
     // it asked before is of the page as it was.
     let era = 0;
 
-    function ask(path, body, signal) {
+    // TAG, if given, is told the request's number, as tag.n.
+    function ask(path, body, signal, tag) {
       const opts = body === undefined ? {} : {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       };
       if (signal) opts.signal = signal;
-      const also = path === "hello" && soft ? "&soft=1" : "";
-      return fetch(ROOT + path + "?page=" + page + also, opts).then((r) => {
+      const n = ++numbered;
+      if (tag) tag.n = n;
+      const also = (path === "hello" && soft ? "&soft=1" : "") + (path === "next" && wakeNext ? "&wake=1" : "");
+      return fetch(ROOT + path + "?page=" + page + "&n=" + n + also, opts).then((r) => {
         if (r.ok) return r;
         return r.json().catch(() => ({})).then((said) => {
           const e = new Error("HTTP " + r.status);
@@ -483,9 +551,18 @@
     // asking now was asked before it slept, and is asked again.  A try
     // that waits goes now; the backoff stays as it is, for the tries
     // after it, should this one fail too.
-    function wake(stale) {
+    // WHY it woke, and AWAY, how long it was hidden, for its moment.
+    function wake(stale, why, away) {
       if (over) return;
-      if (stale) letPollGo();
+      if (stale) {
+        letPollGo();
+        wakeNext = true;
+        if (timeable) {
+          // What the moment asks is all the timings it needs.
+          try { perf.clearResourceTimings(); } catch (_) {}
+          begin("wake", perf.now(), { why: why, away: away });
+        }
+      }
       if (retry) {
         clearTimeout(retry);
         retry = null;
@@ -495,14 +572,141 @@
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") {
         hiddenAt = Date.now();
+        if (timeable) hiddenLast = perf.now();
+        end("hidden");
         return;
       }
       const away = hiddenAt;
       hiddenAt = 0;
-      wake(!!away && Date.now() - away >= WAKE_AWAY && polledAt <= away);
+      wake(!!away && Date.now() - away >= WAKE_AWAY && polledAt <= away, "visible", away ? Date.now() - away : 0);
     });
-    window.addEventListener("pageshow", (e) => { if (e.persisted) wake(true); });
-    window.addEventListener("online", () => wake(true));
+    window.addEventListener("pageshow", (e) => { if (e.persisted) wake(true, "pageshow"); });
+    window.addEventListener("online", () => wake(true, "online"));
+    // A long while idle, the browser's timings fill up: emptied then --
+    // or, in a moment, given room until it is over.
+    if (timeable && perf.addEventListener) {
+      perf.addEventListener("resourcetimingbufferfull", () => {
+        try {
+          if (moment) perf.setResourceTimingBufferSize(1000);
+          else perf.clearResourceTimings();
+        } catch (_) {}
+      });
+    }
+
+    function begin(k, t0, extra) {
+      if (moment) clearTimeout(moment.cap);
+      moment = Object.assign({ k: k, t0: t0, base: Date.now() - perf.now(), marks: {}, first: {}, last: 0 },
+                             extra || {});
+      moment.cap = setTimeout(() => end("cap"), Math.max(0, CAP - (perf.now() - t0)));
+    }
+    function markNow(name) {
+      if (moment && !(name in moment.marks)) moment.marks[name] = Math.max(0, Math.round(perf.now() - moment.t0));
+    }
+    // The moment over, HOW; LAST, the number of the request that ended it.
+    function end(how, last) {
+      const m = moment;
+      if (!m) return;
+      moment = null;
+      clearTimeout(m.cap);
+      if (last) m.last = last;
+      if (slowMs !== null) sendTimings(m, perf.now(), how);
+    }
+    function loading() {
+      return moment && (moment.k === "open" || moment.k === "reload");
+    }
+    // The app's word: it is ready -- the end of its load, when it said it
+    // would say so.
+    function readyNow(name) {
+      if (!moment) return;
+      markNow(name);
+      if (loading() && byApp) end("ready");
+    }
+    function intentAnswered(op, t, n) {
+      if (!timeable) return;
+      if (moment) {
+        if (!moment.first.intent) moment.first.intent = n;
+        markNow("intent");
+        return;
+      }
+      const now = perf.now();
+      if (slowMs !== null && op !== "xwapp-timing" && now - t >= slowMs && hiddenLast < t) {
+        sendTimings({ k: "intent", t0: t, base: Date.now() - now, marks: {}, first: { intent: n }, last: n },
+                    now, "answered");
+      }
+    }
+    // A next answered, TAG its own, with COUNT calls, which have run.
+    function nextAnswered(tag, count) {
+      if (!moment) return;
+      if (count && !moment.first.next) {
+        moment.first.next = tag.n;
+        moment.marks.next = Math.max(0, Math.round(tag.at - moment.t0));
+      }
+      if (moment.k === "wake" && tag.wake) end("next", tag.n);
+      else if (loading() && !byApp && count) end("next", tag.n);
+    }
+    // A request of the page's, from Resource Timing, as sent: its path
+    // after the secret -- of a file served by name, its set alone -- and
+    // its times, ms from the moment's start.  Null when not the page's.
+    function timedReq(e, m) {
+      let u;
+      try {
+        u = new URL(e.name, location.href);
+      } catch (_) {
+        return null;
+      }
+      if (u.origin !== location.origin || u.pathname.indexOf(ROOT) !== 0) return null;
+      let p = u.pathname.slice(ROOT.length);
+      const kit = /^(hello|next|intent)$/.test(p);
+      if (/^\.[a-z][a-z0-9-]*\//.test(p)) p = p.split("/")[0] + "/…";
+      const ms = (x) => Math.max(0, Math.round(x));
+      const sent = e.requestStart > 0 ? e.requestStart : e.startTime;
+      const first = e.responseStart > 0 ? e.responseStart : e.responseEnd;
+      const r = { p: unsecret(p), s: ms(e.startTime - m.t0), q: ms(sent - e.startTime), w: ms(first - sent),
+                  dl: ms(e.responseEnd - first) };
+      if (kit && Number(u.searchParams.get("n")) > 0) r.n = Number(u.searchParams.get("n"));
+      if (e.domainLookupEnd > e.domainLookupStart) r.dns = ms(e.domainLookupEnd - e.domainLookupStart);
+      if (e.connectEnd > e.connectStart) r.tcp = ms(e.connectEnd - e.connectStart);
+      if (e.secureConnectionStart > 0 && e.connectEnd > e.secureConnectionStart) r.tls = ms(e.connectEnd - e.secureConnectionStart);
+      if (e.transferSize > 0) r.b = e.transferSize;
+      else if (e.encodedBodySize > 0) r.b = e.encodedBodySize;
+      if (e.encodedBodySize > 0 && e.decodedBodySize > e.encodedBodySize) r.z = 1;
+      if (!kit && e.transferSize === 0 && e.decodedBodySize > 0) r.c = 1;
+      return r;
+    }
+    function listed(r, e, m) {
+      if (r.p === "hello") return true;
+      if (r.p === "next") return r.n === m.first.next || r.n === m.last || r.dl >= SLOW_REQ;
+      if (r.p === "intent") return r.n === m.first.intent || r.n === m.last || e.duration >= SLOW_REQ;
+      return loadingKind(m.k) || e.duration >= SLOW_REQ;
+    }
+    function loadingKind(k) {
+      return k === "open" || k === "reload";
+    }
+    // Moment M, over at UPTO, HOW, sent to Emacs as the kit's intent.
+    function sendTimings(m, upTo, how) {
+      const reqs = [];
+      let omit = 0;
+      const navs = loadingKind(m.k) ? perf.getEntriesByType("navigation") : [];
+      if (navs[0] && navs[0].domContentLoadedEventEnd > 0 && !("dcl" in m.marks)) {
+        m.marks.dcl = Math.round(navs[0].domContentLoadedEventEnd - m.t0);
+      }
+      navs.concat(perf.getEntriesByType("resource")).forEach((e) => {
+        if (e.startTime < m.t0 - 1 || e.startTime > upTo) return;
+        const r = timedReq(e, m);
+        if (!r) return;
+        if (!listed(r, e, m) || reqs.length >= REQS) omit++;
+        else reqs.push(r);
+      });
+      try { perf.clearResourceTimings(); } catch (_) {}
+      const rec = { op: "xwapp-timing", k: m.k, at: Math.round(m.base + m.t0), d: Math.max(0, Math.round(upTo - m.t0)),
+                    end: how, m: m.marks, r: reqs };
+      if (omit) rec.omit = omit;
+      if (m.why) rec.why = m.why;
+      if (m.away) rec.away = Math.round(m.away);
+      outbox.push({ intent: rec });
+      pump();
+    }
+    moments = { mark: markNow, ready: readyNow };
     function connect() {
       if (hello) {
         if (waiting) {
@@ -518,6 +722,9 @@
       ask("hello", {}).then((r) => {
         greeting = false;
         const made = r.headers.get("Xwapp-Ui");
+        const slow = r.headers.get("Xwapp-Timing");
+        slowMs = slow && /^\d{1,7}$/.test(slow) ? Number(slow) : null;
+        if (timeable) markNow("hello");
         // Back, but loaded before the files Emacs serves now: loads again,
         // as the app's page, which it is.
         if (returning && !(ui && made === ui)) {
@@ -593,11 +800,13 @@
     // it was, and not taken, goes again, now.
     function pump() {
       if (!hello || sending || over || retry || !outbox.length) return;
-      const rec = (sending = outbox[0]), mine = era;
-      ask("intent", rec.intent).then(() => {
+      const rec = (sending = outbox[0]), mine = era, tag = {};
+      const t = timeable ? perf.now() : 0;
+      ask("intent", rec.intent, undefined, tag).then(() => {
         sending = null;
         sent(rec);
         answered();
+        intentAnswered(rec.intent.op, t, tag.n);
         pump();
       }, (e) => {
         sending = null;
@@ -644,15 +853,19 @@
       polling = true;
       const mine = (poll = new AbortController());
       polledAt = Date.now();
-      ask("next", undefined, mine.signal).then((r) => r.json()).then((calls) => {
+      mine.wake = wakeNext;
+      ask("next", undefined, mine.signal, mine).then((r) => r.json()).then((calls) => {
         if (mine !== poll) {
           calls.forEach(run);
           return;
         }
         poll = null;
         polling = false;
+        if (mine.wake) wakeNext = false;
+        if (timeable) mine.at = perf.now();
         answered();
         calls.forEach(run);
+        if (timeable) nextAnswered(mine, calls.length);
         next();
       }, (e) => {
         if (mine !== poll) return;
@@ -679,8 +892,16 @@
     document.addEventListener("visibilitychange", look);
     window.addEventListener("focus", look);
     window.addEventListener("blur", look);
-    look();
 
+    // Its load is a moment, from the navigation's start: a reload, when
+    // the browser reloaded it or it came back after Emacs let it go.
+    if (timeable && document.visibilityState === "visible") {
+      const nav = perf.getEntriesByType("navigation")[0];
+      begin(soft || (nav && nav.type === "reload") ? "reload" : "open", 0, soft ? { why: "back" } : null);
+      markNow("boot");
+    }
+
+    look();
     connect();
 
     served = function emit(op, extra, lost) {
@@ -1144,5 +1365,7 @@
     openApp: openApp,
     kit: kit,
     file: file,
+    mark: mark,
+    ready: ready,
   });
 })();
