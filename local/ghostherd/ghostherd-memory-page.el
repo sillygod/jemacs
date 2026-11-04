@@ -43,6 +43,7 @@
 (declare-function pr-view-remote "pr-view" (dir))
 (declare-function clickup-view-task-brief "clickup-view" (id callback))
 (declare-function clickup-view-task "clickup-view" (id))
+(declare-function jwebkit-edit "jwebkit" ())
 
 (defgroup ghostherd-memory-page nil
   "The memory page."
@@ -2987,6 +2988,92 @@ tail, this fills older history a page at a time (`load earlier')."
              (lambda (e) (funcall send :entries [] :error (ghostherd-memory-page--sidecar-error e))))
           (error (funcall send :entries [] :error (error-message-string err))))))))
 
+(defun ghostherd-memory-page--find-hit (h)
+  "A find's hit H, from the sidecar, as the page takes it, field by
+field: where it is said, by whom, when, and a snippet -- never the entry."
+  (let ((str #'ghostherd-memory-page--str))
+    (list :i (and (natnump (plist-get h :i)) (plist-get h :i))
+          :role (funcall str (plist-get h :role))
+          :kind (funcall str (plist-get h :kind))
+          :who (funcall str (plist-get h :who))
+          :to (funcall str (plist-get h :to))
+          :ask (funcall str (plist-get h :ask))
+          :ts (plist-get h :ts)
+          :head (funcall str (plist-get h :head))
+          :snippet (funcall str (plist-get h :snippet))
+          :part (funcall str (plist-get h :part)))))
+
+(defun ghostherd-memory-page--room-path (intent)
+  "The transcript of the agent INTENT names, or nil: named here, from
+the agent, never taken from the page -- as the room reads it."
+  (when-let* ((name (ghostherd-memory-page--str (alist-get 'name intent)))
+              (s (ghostherd-get name)))
+    (ghostherd-session-transcript s)))
+
+(defun ghostherd-memory-page--room-find (intent)
+  "Find Q's words in agent NAME's whole conversation -- the sidecar reads
+all of it, not the tail the room shows -- and send the page where they
+are said, a snippet each (`foundConversation').  SEQ goes back as it
+came, so the page keeps the answer to its latest words only."
+  (let* ((name (ghostherd-memory-page--str (alist-get 'name intent)))
+         (q (alist-get 'q intent))
+         (seq (alist-get 'seq intent))
+         (path (ghostherd-memory-page--room-path intent)))
+    (when (and name (stringp q))
+      (let ((send (lambda (&rest fields)
+                    (ghostherd-memory-page--js
+                     "foundConversation"
+                     (append (list :name name :q q :seq (and (numberp seq) seq)) fields)))))
+        (if (not path)
+            (funcall send :hits [] :total 0 :error "no conversation known for it yet")
+          (condition-case err
+              (ghostherd-memory-request-async
+               "herd_conversation_find"
+               (lambda (r)
+                 (funcall send
+                          :total (and (natnump (plist-get r :total)) (plist-get r :total))
+                          :capped (if (plist-get r :capped) t :json-false)
+                          :entries (and (natnump (plist-get r :entries)) (plist-get r :entries))
+                          :hits (ghostherd-memory-page--vec
+                                 (mapcar #'ghostherd-memory-page--find-hit (plist-get r :hits)))))
+               (list :path path :query q)
+               (lambda (e) (funcall send :hits [] :error (ghostherd-memory-page--sidecar-error e))))
+            (error (funcall send :hits [] :error (error-message-string err)))))))))
+
+(defun ghostherd-memory-page--room-at (intent)
+  "Read the page of agent NAME's whole conversation from its entry START,
+LIMIT entries -- where a find's hit is, or the page before or after one
+shown -- and send it to the page (`atConversation'), SEQ as it came."
+  (let* ((name (ghostherd-memory-page--str (alist-get 'name intent)))
+         (start (alist-get 'start intent))
+         (limit (alist-get 'limit intent))
+         (seq (alist-get 'seq intent))
+         (path (ghostherd-memory-page--room-path intent)))
+    (when (and name (natnump start))
+      (let ((send (lambda (&rest fields)
+                    (ghostherd-memory-page--js
+                     "atConversation"
+                     (append (list :name name :seq (and (numberp seq) seq)) fields)))))
+        (if (not path)
+            (funcall send :entries [] :error "no conversation known for it yet")
+          (condition-case err
+              (ghostherd-memory-request-async
+               "herd_conversation"
+               (lambda (r)
+                 (let ((num (lambda (k) (and (natnump (plist-get r k)) (plist-get r k)))))
+                   (funcall send
+                            :start (funcall num :start)
+                            :total (funcall num :total)
+                            :earlier (if (plist-get r :earlier) t :json-false)
+                            :later (if (plist-get r :later) t :json-false)
+                            :entries (ghostherd-memory-page--vec
+                                      (mapcar #'ghostherd-memory-page--room-entry
+                                              (plist-get r :entries))))))
+               (append (list :path path :start start)
+                       (and (natnump limit) (> limit 0) (list :limit (min limit 200))))
+               (lambda (e) (funcall send :entries [] :error (ghostherd-memory-page--sidecar-error e))))
+            (error (funcall send :entries [] :error (error-message-string err)))))))))
+
 (defun ghostherd-memory-page--chat-earlier (intent)
   "Read one earlier page of the room's merged chat -- a page ending BEFORE
 from the newest -- and send it to the page to prepend."
@@ -3995,6 +4082,8 @@ user's state (or none) and push."
         ("lint-remove" (ghostherd-memory-page--lint-remove intent))
         ("room-watch" (ghostherd-memory-page--room-open intent))
         ("room-earlier" (ghostherd-memory-page--room-earlier intent))
+        ("room-find" (ghostherd-memory-page--room-find intent))
+        ("room-at" (ghostherd-memory-page--room-at intent))
         ("chat-earlier" (ghostherd-memory-page--chat-earlier intent))
         ("room-close" (ghostherd-memory-page--room-close))
         ("sub-watch" (ghostherd-memory-page--sub-watch intent))
@@ -4084,6 +4173,24 @@ forgot which project\"."
 The overlay's operations are there too, for when the mouse is in hand."
   (interactive)
   (ghostherd-memory-page--open "agents"))
+
+;;;###autoload
+(defun ghostherd-page-find ()
+  "Find words in the conversation of the room open on the herd page.
+Opens the room's find bar -- in the column last used, or the chat's --
+and, with the page in Emacs, sends it the keys you type (`jwebkit-edit'),
+so the words go into the bar.  The page's own key for it is /, which
+the page sees only once it has the keyboard: in Emacs, normal state
+keeps / for its own find in the page's text."
+  (interactive)
+  (let ((app ghostherd-memory-page--app))
+    (unless (and app (xwapp-live-p app) ghostherd-memory-page--room)
+      (user-error "Open a room on the herd page first"))
+    (when-let* ((buf (and (xwapp-session app) (xwapp-buffer app))))
+      (pop-to-buffer buf))
+    (ghostherd-memory-page--js "openFind" nil)
+    (when (and (fboundp 'jwebkit-edit) (derived-mode-p 'xwidget-webkit-mode))
+      (jwebkit-edit))))
 
 ;;;###autoload
 (defun ghostherd-log-page ()
