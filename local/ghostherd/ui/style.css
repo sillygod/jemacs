@@ -400,8 +400,15 @@ mark.here { background: var(--warn); color: #0e1116; }
 }
 .msg-body code { font-family: var(--mono); font-size: 12px; }
 .msg-body :not(pre) > code { background: var(--chip); border-radius: 4px; padding: 1px 4px; }
-.msg-body table { border-collapse: collapse; margin: 6px 0; }
-.msg-body th, .msg-body td { border: 1px solid var(--line); padding: 3px 8px; }
+/* A table no wider than its message: wider than that, it scrolls sideways
+   in its own box -- never the column or the page -- and no cell is
+   squeezed to a letter a line.  The box is the table itself (display:
+   block; its rows in an anonymous table inside), and the words in a cell
+   break only where words break: an ancestor's overflow-wrap: anywhere
+   (a column's .rbody) lets a cell's least width fall to one character. */
+.msg-body table { display: block; width: max-content; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 6px 0;
+  overflow-wrap: break-word; word-break: normal; }
+.msg-body th, .msg-body td { border: 1px solid var(--line); padding: 3px 8px; min-width: 4.5em; }
 .msg-body blockquote { margin: 6px 0; padding-left: 10px; border-left: 2px solid var(--line); color: var(--muted); }
 .msg-body a { color: var(--accent); }
 .msg-body h1, .msg-body h2, .msg-body h3 { font-size: 14px; margin: 10px 0 4px; }
