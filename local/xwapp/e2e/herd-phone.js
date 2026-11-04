@@ -110,9 +110,11 @@ const herd = () => {
       await ctx.close();
     }
 
-    // ---- The desktop is unchanged: no phone-only folding or icons ----
+    // ---- A wide desktop column is unchanged: no phone-only folding or
+    // icons.  (Narrow ones, 3 to 5 across, have a short head of their
+    // own: herd-room-compact.js.)  Three columns of ~700 px. ----
     {
-      const { ctx, page } = await phonePage(browser, { context: DESK });
+      const { ctx, page } = await phonePage(browser, { context: Object.assign({}, DESK, { viewport: { width: 2200, height: 900 } }) });
       const tap = (s) => page.click(s);
       await page.evaluate((hd) => { GM.showView("agents"); GM.renderHerd(hd); }, HERD);
       await sleep(140);

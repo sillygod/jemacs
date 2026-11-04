@@ -1352,6 +1352,8 @@
     find: {}, away: {}, findSeq: 0, lastCol: null,
     // Checkouts whose every task is shown, not two.
     workOpen: new Set(),
+    // Narrow columns (by name) whose chips line is opened past its one line.
+    chipsOpen: new Set(),
   };
 
   const IMAGE_BUTTON = '<button type="button" class="ghost small" data-act="a:image" ' +
@@ -2682,28 +2684,124 @@
     }
     if (a.loginContinue) acts.push(LOGIN_CONTINUE_BUTTON);
     if (a.carryOn) acts.push(CARRY_ON_BUTTON);
+    // Only Esc and Screen: a narrow column draws them as icons on its
+    // first line, and the row they leave takes no room.
+    const onlySec = !acts.length;
     acts.push('<button type="button" class="ghost small sec" data-act="a:agent-interrupt" title="Send Escape">Esc</button>');
     const conv = herdNow.convs[name];
     if (!(conv && conv.none)) {
-      acts.push('<button type="button" class="ghost small sec" data-act="a:room-screen">' +
-        (herdNow.roomScreen.has(name) ? "Conversation" : "Screen") + "</button>");
+      const scr = herdNow.roomScreen.has(name);
+      acts.push('<button type="button" class="ghost small sec' + (scr ? " scr-on" : "") + '" data-act="a:room-screen" title="' +
+        (scr ? "Back to its conversation" : "Its screen, as the terminal shows it") + '">' + (scr ? "Conversation" : "Screen") + "</button>");
     }
     const expanded = herdNow.cardOpen.has(name);
     const cx = '<button type="button" class="cx" data-act="a:card-expand" title="' +
       (expanded ? "Less" : "More: notes, chips, branch, Esc / Screen") + '">' + (expanded ? "▴" : "▾") + "</button>";
-    return '<div class="amain">' + stateBadge(a.state) +
+    const work = (a.work ? workHtml(a.work) : "") + linksHtml(a);
+    return '<div class="amain">' + stateBadge(a.state, a.reason) +
       '<span class="rdot" style="color:' + sessionColor(name) + '" title="Its colour in every column">●</span>' +
       agentName(name) + agentBadge(a.kind) + leadBadge(a) + backgroundHtml(a) +
       (a.startedBy ? '<span class="det startedby" title="Started by ' + esc(a.startedBy) + ' through herd start">by ' + esc(a.startedBy) + "</span>" : "") +
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span>" + cx + "</div>" +
-      meterHtml(a) + modelFormHtml(a) + reasonHtml(a) + continueHtml(a) + unsentHtml(a) + goneHtml(a) +
+      meterHtml(a) + modelFormHtml(a) + sayHtml(a, asks) + reasonHtml(a) + continueHtml(a) + unsentHtml(a) + goneHtml(a) +
       (asks && asks.length ? '<div class="aasks">' + asks.map((k) => askLine(k, name)).join("") + "</div>" : "") +
       guardHtml(name) +
-      (a.work ? workHtml(a.work) : "") + linksHtml(a) + menu +
-      '<div class="aacts">' + acts.join("") + "</div>";
+      (work ? '<div class="wline">' + work + '<button type="button" class="linkish wfit" data-act="a:chips-more" hidden></button></div>' : "") +
+      menu + '<div class="aacts' + (onlySec ? " onlysec" : "") + '">' + acts.join("") + "</div>";
   }
+
+  // A narrow column's head (style.css, .rcol.narrow) says in one line
+  // what the wide one says in several: its open asks -- the first, and
+  // how many more -- else what it is doing, else its notes; the rest of
+  // them in its title.  A press opens the whole head (the ▾).  A blocked
+  // agent's menu is not this line's: it keeps its own block.
+  function sayHtml(a, asks) {
+    asks = asks || [];
+    const menu = a.state === "blocked" && a.prompt && a.prompt.question;
+    const reason = a.reason && a.reason !== "—" && !menu ? a.reason : "";
+    const doing = reason && a.state !== "idle" ? reason : "";
+    const by = a.startedBy ? "by " + a.startedBy : "";
+    const text = doing || a.notes || reason || by;
+    const lines = [];
+    if (a.notes) lines.push("Notes: " + a.notes);
+    if (reason) lines.push(a.state + ": " + reason);
+    if (by) lines.push("Started by " + a.startedBy + " through herd start");
+    asks.forEach((k) => lines.push((k.to === a.name ? "ask from " + k.from : "ask to " + (k.to || leaf(k.project || ""))) +
+      " (" + k.status + "): " + ((k.status === "answered" ? k.replyHead : k.head) || "")));
+    if (!asks.length && !text) return "";
+    const inner = asks.length
+      ? askLine(asks[0], a.name) + (asks.length > 1 ? '<span class="rmore">+' + (asks.length - 1) + "</span>" : "")
+      : '<span class="rtext">' + esc(text) + "</span>";
+    return '<div class="rsay" data-act="a:card-expand" title="' + esc(lines.concat(["Press for the whole head"]).join("\n")) + '">' +
+      inner + "</div>";
+  }
+
+  // A narrow column's chips: one line, those that do not fit (and those
+  // the line held back behind +N) counted on one +N at its end, which
+  // opens them all.  Read after the heads are drawn, all columns at once:
+  // their chips reset, then measured, then cut -- one layout each way.
+  function fitChips(cols) {
+    const lines = cols.map((col) => {
+      const line = col.querySelector(".rtop .wline");
+      if (!line) return null;
+      const fit = line.querySelector(".wfit");
+      const chips = [...line.querySelectorAll(".wline > .work > *:not(.wmore)")];
+      chips.forEach((c) => c.classList.remove("wcut"));
+      // Held back by the line's own +N, as the wide head has it.
+      const held = [...line.querySelectorAll(".wmore")].reduce((n, b) => n + (+(/^\+(\d+)$/.exec(b.textContent) || [0, 0])[1]), 0);
+      const narrow = getComputedStyle(line).getPropertyValue("--narrow").trim() === "1";
+      const open = col.classList.contains("chips-open");
+      // Shown while measured, at its widest, so its room is kept.
+      fit.hidden = !narrow;
+      fit.textContent = open ? "less" : "+" + (held + chips.length);
+      return { line, fit, chips, held, narrow, open };
+    });
+    const cuts = lines.map((l) => {
+      if (!l || !l.narrow || l.open) return [];
+      const shown = l.chips.filter((c) => c.getClientRects().length);
+      if (!shown.length) return [];
+      const right = l.line.getBoundingClientRect().right;
+      const over = shown[shown.length - 1].getBoundingClientRect().right > right;
+      // Room for +N too, when there is to be one.
+      const limit = over || l.held ? right - l.fit.getBoundingClientRect().width - 6 : right;
+      // The first that runs past it, and every chip after it.
+      const at = shown.findIndex((c) => c.getBoundingClientRect().right > limit);
+      return at < 0 ? [] : shown.slice(at);
+    });
+    lines.forEach((l, i) => {
+      if (!l || !l.narrow || l.open) return;
+      cuts[i].forEach((c) => c.classList.add("wcut"));
+      const n = l.held + cuts[i].length;
+      l.fit.hidden = !n;
+      l.fit.textContent = "+" + n;
+      l.fit.title = n + " more: " + cuts[i].map((c) => c.title || c.textContent.trim()).filter(Boolean).join(" · ");
+    });
+  }
+
+  // A column is narrow by its own width, not by how many there are: 640
+  // px or less, which at the desk gives it the short head (style.css).
+  // Measured, not a container query: a column, or a part of one, that is
+  // a size container has WebKit lay it out short now and then as its
+  // words are replaced, and the conversation beside it, at its end, has
+  // its scroll cut by as much (herd-subs.js: the sub-agents' strip that
+  // appears leaves it above its end).  Its width changes with the window
+  // and the columns beside it; then its chips are fitted again.  Told
+  // before the first paint, so a room never shows the wide head first.
+  const NARROW_COL = 640;
+  const narrowCols = new WeakMap();
+  const colsResize = typeof ResizeObserver === "function"
+    ? new ResizeObserver((es) => {
+      const cols = es.map((e) => e.target).filter((c) => c.isConnected);
+      es.forEach((e) => {
+        const narrow = e.contentRect.width <= NARROW_COL;
+        narrowCols.set(e.target, narrow);
+        e.target.classList.toggle("narrow", narrow);
+      });
+      fitChips(cols);
+    })
+    : null;
 
   function toolsSummary(tools) {
     const counts = new Map();
@@ -3902,6 +4000,10 @@
       room.setAttribute("data-key", key);
       if (chat) renderChatBody();
       else agents.forEach(renderRoomBody);
+      if (colsResize && !chat) {
+        colsResize.disconnect();
+        room.querySelectorAll(".rcol").forEach((c) => colsResize.observe(c));
+      }
       if (typingKey) setTimeout(() => { const i = findInput(typingKey); if (i) i.focus(); }, 0);
     }
     room.querySelector(".rsum").innerHTML = summary;
@@ -3917,7 +4019,8 @@
     }
     agents.forEach((a) => {
       const col = roomColumn(a.name);
-      col.className = "rcol s-" + a.state + (herdNow.cardOpen.has(a.name) ? " expanded" : "");
+      col.className = "rcol s-" + a.state + (herdNow.cardOpen.has(a.name) ? " expanded" : "") +
+        (herdNow.chipsOpen.has(a.name) ? " chips-open" : "") + (narrowCols.get(col) ? " narrow" : "");
       col.querySelector(".rtop").innerHTML = roomTop(a, asksFor(a.name, asks));
       const body = col.querySelector(".rbody");
       if ((body.getAttribute("data-subs") || "") !== subsKey(a)) {
@@ -3928,6 +4031,7 @@
       suggestIn(col, a.name, promptHint(a.name));
       renderColJump(a.name);
     });
+    fitChips(agents.map((a) => roomColumn(a.name)).filter(Boolean));
   }
 
   function onAgentAction(act, el) {
@@ -4010,6 +4114,17 @@
       watchRoom();
       const a = roomAgents().find((x) => x.name === name);
       if (a) renderRoomBody(a);
+      return renderRoom();
+    }
+    // A narrow column's +N: every chip, the line wrapping -- the wide
+    // head's +N of each part opened with it -- or, as "less", one line again.
+    if (act === "chips-more") {
+      const a = agentByName(name);
+      const keys = ["links|" + name].concat(a && a.work && a.work.branch ? [a.work.root + "|" + a.work.branch] : []);
+      const open = !herdNow.chipsOpen.has(name);
+      if (open) herdNow.chipsOpen.add(name);
+      else herdNow.chipsOpen.delete(name);
+      keys.forEach((k) => (open ? herdNow.workOpen.add(k) : herdNow.workOpen.delete(k)));
       return renderRoom();
     }
     if (act === "card-expand") {
@@ -4788,8 +4903,10 @@
       : '<p class="empty">No agent did anything in this ' + (herd.zoom ? "half hour" : "range") + ".</p>";
   }
 
-  function stateBadge(s) {
-    return '<span class="st st-' + esc(s) + '">' + esc(s) + "</span>";
+  // WHY, when given, is its title: what the herd read off its screen.
+  function stateBadge(s, why) {
+    return '<span class="st st-' + esc(s) + '"' + (why && why !== "—" ? ' title="' + esc(s + ": " + why) + '"' : "") + ">" +
+      esc(s) + "</span>";
   }
 
   // A slow load's bar: what it waited on, each its share, in the order
@@ -7166,7 +7283,10 @@
       // Whether it has a conversation decides its Screen button -- in a
       // column: one that comes as the room turns to its chat has none.
       const col = roomColumn(a.name);
-      if (col) col.querySelector(".rtop").innerHTML = roomTop(a, asksFor(a.name, (herdNow.data && herdNow.data.asks) || []));
+      if (col) {
+        col.querySelector(".rtop").innerHTML = roomTop(a, asksFor(a.name, (herdNow.data && herdNow.data.asks) || []));
+        fitChips([col]);
+      }
     },
 
     // An older page for a column (from `load earlier'): prepended to it.
