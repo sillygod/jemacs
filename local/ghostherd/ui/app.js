@@ -1297,6 +1297,12 @@
     // pending flag while a `load earlier' fired to reach an older one; and a
     // transient note ("older than what is loaded") on a view's jump line.
     jump: { chat: null, col: {} }, jumpPend: null, jumpNote: {},
+    // The find bar each strip turns into (by key: "col:NAME", or "chat"):
+    // its words, the agent searched, the sidecar's answer, the hit gone
+    // to, its list open -- and, for a strip whose body shows a page of the
+    // whole conversation at a hit instead of the live tail, that page.
+    // The column last pointed at, for / and Emacs's key to open in.
+    find: {}, away: {}, findSeq: 0, lastCol: null,
     // Checkouts whose every task is shown, not two.
     workOpen: new Set(),
   };
@@ -2506,6 +2512,8 @@
     herdNow.chat = null;
     herdNow.subView = null;
     herdNow.subConv = null;
+    herdNow.find = {};
+    herdNow.away = {};
     app.innerHTML = "";
     chrome();
     watchRoom(true); // a (re)open: Emacs re-sends the conversation
@@ -2685,8 +2693,14 @@
   const SUB_LONG = 600;
 
   // Each agent has one colour wherever it speaks, the Log's lane colour:
-  // an entry's bar is whoever said it.  You are the blue.
+  // an entry's bar is whoever said it.  You are the blue.  Each carries
+  // its place in what its body was drawn from (data-i): where a jump to
+  // one of yours, or to a find's hit, finds it.
   function entryHtml(e, i, name, kind, keyns) {
+    return entryInner(e, i, name, kind, keyns).replace('<div class="ent', '<div data-i="' + i + '" class="ent');
+  }
+
+  function entryInner(e, i, name, kind, keyns) {
     const from = e.who && e.who !== "user" ? e.who : "";
     const color = from ? sessionColor(from) : "";
     const bar = color ? ' style="border-left-color:' + color + '"' : "";
@@ -2756,7 +2770,7 @@
         imagesHtml(e.images) + traceHtml(e.trace) + "</div>";
     }
     if (e.kind === "message" && from) return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from, "", e.ts, color, copyButton(i, e.text)) + plainBody(e.text) + "</div>";
-    return '<div class="ent you" data-i="' + i + '">' + entHead("You", "", e.ts, "", copyButton(i, e.text)) + herdNotes(e) + plainBody(e.text) + "</div>";
+    return '<div class="ent you">' + entHead("You", "", e.ts, "", copyButton(i, e.text)) + herdNotes(e) + plainBody(e.text) + "</div>";
   }
 
   // `Load earlier' when there is more to show and the limit can still grow;
@@ -2828,7 +2842,7 @@
     }
     // A continuation of what is held: freeze while reading history (the tail
     // catches up when you return to the foot), else align and append.
-    if (scrolledUp(roomColumn(name) && roomColumn(name).querySelector(".rbody"))) return false;
+    if (!herdNow.away[findKey(name)] && scrolledUp(roomColumn(name) && roomColumn(name).querySelector(".rbody"))) return false;
     prev.entries = trimHead(prev.entries.slice(0, i).concat(recent));
     return true;
   }
@@ -2870,7 +2884,7 @@
     if (!recent.length) return false;
     const i = lastIndexOfSig(prev.entries, recent[0]);
     if (i < 0) { herdNow.chat = Object.assign({ entries: recent.slice(), more: !!p.earlier, loading: false, paged: false }, meta); return true; }
-    if (scrolledUp(app.querySelector(".chat .cbody"))) return false;
+    if (!herdNow.away.chat && scrolledUp(app.querySelector(".chat .cbody"))) return false;
     prev.entries = trimHead(prev.entries.slice(0, i).concat(recent));
     return true;
   }
@@ -2900,6 +2914,11 @@
     const col = roomColumn(a.name);
     const body = col && col.querySelector(".rbody");
     if (!body) return;
+    if (herdNow.away[findKey(a.name)]) {
+      renderAwayBody(findKey(a.name), body);
+      return renderColJump(a.name);
+    }
+    body.removeAttribute("data-away");
     const first = !body.hasAttribute("data-drawn");
     const prevLen = (drawn.get(body) || []).length;
     const entries = (herdNow.convs[a.name] && herdNow.convs[a.name].entries) || [];
@@ -2914,6 +2933,7 @@
       body.scrollTop = keep + (body.scrollHeight - oldHeight);
       herdNow.earlierPending.delete(a.name);
     } else body.scrollTop = keep;
+    markHit(findKey(a.name));
     renderColJump(a.name);
     const conv = herdNow.convs[a.name];
     if (herdNow.jumpPend === "col:" + a.name && conv && !conv.loading) {
@@ -3007,6 +3027,13 @@
     delete herdNow.attach[was];
     foot.setAttribute("data-name", to);
     foot.querySelector(".chat-to").value = to;
+    const F = herdNow.find.chat;
+    if (F && F.open && F.name !== chatFindAgent()) {
+      if (herdNow.away.chat) backToLatest("chat");
+      F.res = null;
+      F.cur = -1;
+      runFind("chat");
+    }
     suggestIn(foot, to, chatHint(to));
     renderAttach(to);
     renderChatMeter();
@@ -3094,6 +3121,11 @@
   function renderChatBody() {
     const body = app.querySelector(".chat .cbody");
     if (!body) return;
+    if (herdNow.away.chat) {
+      renderAwayBody("chat", body);
+      return renderChatJump();
+    }
+    body.removeAttribute("data-away");
     const c = herdNow.chat;
     const first = !body.hasAttribute("data-drawn");
     const prevLen = (drawn.get(body) || []).length;
@@ -3120,6 +3152,7 @@
       body.scrollTop = keep + (body.scrollHeight - oldHeight);
       herdNow.chatEarlierPending = false;
     } else body.scrollTop = keep;
+    markHit("chat");
     renderChatJump();
     // A `load earlier' fired to reach an older "You" has arrived: step to it.
     if (herdNow.jumpPend === "chat" && c && !c.loading) {
@@ -3157,9 +3190,12 @@
     return k < 0 ? 0 : k;
   }
 
-  function jumpBarHtml(list, curTs, conv, note) {
-    if (note) return '<div class="jump"><span class="jnote">' + esc(note) + "</span></div>";
-    if (!list.length) return "";
+  // EXTRA goes at the strip's end: its find button, there with nothing
+  // of yours to jump to too.
+  function jumpBarHtml(list, curTs, conv, note, extra) {
+    extra = extra || "";
+    if (note) return '<div class="jump"><span class="jnote">' + esc(note) + "</span>" + extra + "</div>";
+    if (!list.length) return extra ? '<div class="jump"><span class="jfill"></span>' + extra + "</div>" : "";
     const k = youAt(list, curTs), cur = list[k];
     const older = k < list.length - 1 || !!(conv && conv.more);
     return '<div class="jump">' +
@@ -3168,14 +3204,16 @@
       (list.length > 1 ? '<span class="jpos">' + (list.length - k) + "/" + list.length + "</span>" : "") +
       '<button type="button" class="jstep" data-act="a:jump-prev"' + (older ? "" : " disabled") + ' title="Earlier question">↑</button>' +
       '<button type="button" class="jstep" data-act="a:jump-next"' + (k > 0 ? "" : " disabled") + ' title="Later question">↓</button>' +
-      "</div>";
+      extra + "</div>";
   }
 
   function renderChatJump() {
     const bar = app.querySelector(".chat .cjump");
     if (!bar) return;
+    if (findOpen("chat")) return renderFindBar("chat", bar);
     bar.innerHTML = jumpBarHtml(youItems((herdNow.chat && herdNow.chat.entries) || []),
-      herdNow.jump.chat, herdNow.chat, herdNow.jumpNote.chat);
+      herdNow.jump.chat, herdNow.chat, herdNow.jumpNote.chat,
+      herdNow.chat && !herdNow.chat.error && chatFindAgent() ? findButton("chat") : "");
   }
 
   function flashMsg(body, sel) {
@@ -3197,9 +3235,11 @@
   function renderColJump(name) {
     const col = roomColumn(name), bar = col && col.querySelector(".rjump");
     if (!bar) return;
+    if (findOpen(findKey(name))) return renderFindBar(findKey(name), bar);
     const conv = herdNow.convs[name];
     bar.innerHTML = jumpBarHtml(youItems((conv && conv.entries) || []),
-      herdNow.jump.col[name], conv, herdNow.jumpNote["col:" + name]);
+      herdNow.jump.col[name], conv, herdNow.jumpNote["col:" + name],
+      conv && !conv.none && !conv.error ? findButton(findKey(name)) : "");
   }
 
   function colJump(name, dir) {
@@ -3248,6 +3288,532 @@
     }
   }
 
+  // ---- Find in a conversation --------------------------------------------
+  //
+  // The strip's magnifier turns it into a find bar: the words, how many
+  // entries hold them all ("3/17"), ↑/↓ through them, ✕.  The sidecar looks
+  // through the agent's WHOLE conversation (room-find, herd_conversation_find),
+  // not just the tail the room holds, in what the room shows as said -- not
+  // tool calls.  The count opens a list of the hits, a snippet each with who
+  // and when: the quick look.  Going to a hit scrolls to it, flashes it and
+  // marks its words, unfolded, when the body holds it; else the page of the
+  // conversation holding it is read (room-at) and shown in the body instead
+  // of the live tail, until "Back to latest" (or ✕) -- the live tail goes on
+  // being merged meanwhile, unseen, so nothing moves the page being read.
+  // A column finds in its agent; the chat in the agent its box writes to.
+
+  const FIND_PAGE = 60;     // entries of a page read at a hit
+  const FIND_BEFORE = 20;   // of them before it
+  const FIND_WAIT = 280;    // ms after the last key before the words go
+  const FIND_ICON = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.6" ' +
+    'fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10.3 10.3 14.2 14.2" stroke="currentColor" ' +
+    'stroke-width="1.8" stroke-linecap="round"/></svg>';
+
+  function findKey(name) { return name ? "col:" + name : "chat"; }
+
+  // Whom the chat's find looks in: the agent its box writes to, else its first.
+  function chatFindAgent() {
+    const agents = roomAgents();
+    const to = agents.length ? chatTo(agents) : "";
+    return agents.some((a) => a.name === to) ? to : (agents[0] && agents[0].name) || "";
+  }
+
+  function findAgentOf(key) { return key === "chat" ? chatFindAgent() : key.slice(4); }
+  function findOpen(key) { const F = herdNow.find[key]; return !!(F && F.open); }
+
+  function findStrip(key) {
+    if (key === "chat") return app.querySelector(".chat .cjump");
+    const col = roomColumn(key.slice(4));
+    return col && col.querySelector(".rjump");
+  }
+
+  function findBody(key) {
+    if (key === "chat") return app.querySelector(".chat .cbody");
+    const col = roomColumn(key.slice(4));
+    return col && col.querySelector(".rbody");
+  }
+
+  function renderStripOf(key) {
+    if (key === "chat") renderChatJump();
+    else renderColJump(key.slice(4));
+  }
+
+  function renderBodyOf(key) {
+    if (key === "chat") return renderChatBody();
+    const a = roomAgents().find((x) => x.name === key.slice(4));
+    if (a) renderRoomBody(a);
+  }
+
+  function findButton(key) {
+    return '<button type="button" class="jstep jfind" data-act="a:find-open" data-fkey="' + esc(key) + '" ' +
+      'title="Find in this conversation, all of it (/)" aria-label="Find in this conversation">' + FIND_ICON + "</button>";
+  }
+
+  // Where / (and Emacs's M-x ghostherd-page-find) opens it: the chat's, or
+  // the column last pointed at -- else the first, the lead's.
+  function defaultFindKey() {
+    if (!herdNow.room) return null;
+    if (roomIsChat()) return chatFindAgent() ? "chat" : null;
+    const agents = roomAgents();
+    const name = agents.some((a) => a.name === herdNow.lastCol) ? herdNow.lastCol : agents[0] && agents[0].name;
+    return name ? findKey(name) : null;
+  }
+
+  function openFind(key) {
+    if (!key) return;
+    let F = herdNow.find[key];
+    if (!F) F = herdNow.find[key] = { q: "", name: findAgentOf(key), res: null, busy: false, cur: -1, list: false, seq: 0 };
+    F.open = true;
+    herdNow.findLast = key;
+    renderStripOf(key);
+    const input = findInput(key);
+    if (input) { input.focus(); input.select(); }
+    // Opened again on the words it had: found again, the conversation
+    // having gone on since.
+    if (F.q.trim() && F.res) { F.res = null; F.cur = -1; runFind(key); }
+  }
+
+  function findInput(key) {
+    const bar = findStrip(key);
+    return bar && bar.querySelector(".fq");
+  }
+
+  function closeFind(key) {
+    const F = herdNow.find[key];
+    if (!F || !F.open) return;
+    F.open = false;
+    F.list = false;
+    F.pend = null;
+    clearTimeout(F.timer);
+    F.timer = null;
+    if (herdNow.away[key]) backToLatest(key);
+    else {
+      renderStripOf(key);
+      clearMarks(findBody(key));
+    }
+  }
+
+  // Esc anywhere in the room: the open list, then the open find bar.
+  function findEscape() {
+    const keys = Object.keys(herdNow.find).filter(findOpen);
+    if (!keys.length) return false;
+    const listed = keys.find((k) => herdNow.find[k].list);
+    if (listed) { herdNow.find[listed].list = false; renderStripOf(listed); return true; }
+    closeFind(keys.includes(herdNow.findLast) ? herdNow.findLast : keys[0]);
+    return true;
+  }
+
+  // The bar, drawn once and then only its count, buttons and list redrawn:
+  // its box keeps the words being typed, an IME's composition too.
+  function renderFindBar(key, bar) {
+    const F = herdNow.find[key];
+    let fb = bar.querySelector(".jump.find");
+    if (!fb || fb.getAttribute("data-fkey") !== key) {
+      bar.innerHTML = '<div class="jump find" data-fkey="' + esc(key) + '">' +
+        '<input class="fq" type="search" enterkeyhint="search" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">' +
+        '<button type="button" class="fcount" data-act="a:find-list" data-fkey="' + esc(key) + '" aria-haspopup="true"></button>' +
+        '<button type="button" class="jstep" data-act="a:find-prev" data-fkey="' + esc(key) + '" title="Earlier hit (Enter)">↑</button>' +
+        '<button type="button" class="jstep" data-act="a:find-next" data-fkey="' + esc(key) + '" title="Later hit (Shift+Enter)">↓</button>' +
+        '<button type="button" class="jstep fclose" data-act="a:find-close" data-fkey="' + esc(key) + '" title="Close (Esc)">✕</button>' +
+        '</div><div class="fnote" hidden></div><div class="flist" hidden></div>';
+      fb = bar.querySelector(".jump.find");
+      const input = fb.querySelector(".fq");
+      input.value = F.q;
+      wireFindInput(key, input);
+    }
+    const input = fb.querySelector(".fq");
+    const who = F.name || findAgentOf(key);
+    input.placeholder = who ? "Find in " + who + "’s conversation" : "Find in this conversation";
+    const st = findStatus(F);
+    const count = fb.querySelector(".fcount");
+    count.textContent = st.text;
+    count.title = st.title || "";
+    count.className = "fcount" + (st.none ? " none" : "") + (st.busy ? " busy" : "");
+    count.disabled = !F.res;
+    count.setAttribute("aria-expanded", F.list ? "true" : "false");
+    const hits = (F.res && F.res.hits) || [];
+    fb.querySelector('[data-act="a:find-prev"]').disabled = !hits.length || (F.cur === 0 && !F.res.capped);
+    fb.querySelector('[data-act="a:find-next"]').disabled = !hits.length || F.cur === hits.length - 1;
+    const note = bar.querySelector(".fnote");
+    note.hidden = !F.note;
+    note.textContent = F.note || "";
+    const list = bar.querySelector(".flist");
+    list.hidden = !(F.list && F.res);
+    if (!list.hidden) {
+      list.innerHTML = findListHtml(key, F);
+      const on = list.querySelector(".fhit.on");
+      if (on) on.scrollIntoView({ block: "nearest" });
+    } else list.innerHTML = "";
+  }
+
+  function findStatus(F) {
+    const q = F.q.trim();
+    if (!termRe(q)) return { text: "" };
+    if (F.timer || F.busy || !F.res || F.res.q !== q) return { text: "…", busy: true };
+    if (F.res.error) return { text: "!", title: "Could not find: " + F.res.error, none: true };
+    const N = F.res.total, n = F.res.hits.length;
+    if (!N) return { text: "0", none: true, title: "Not said in " + F.res.name + "’s conversation" };
+    const all = N + (N === 1 ? " entry says it" : " entries say it") + " -- the list";
+    if (F.cur < 0) return { text: String(N), title: all };
+    return { text: (N - n + F.cur + 1) + "/" + N, title: all };
+  }
+
+  function wireFindInput(key, input) {
+    const F = () => herdNow.find[key];
+    input.addEventListener("compositionstart", () => { if (F()) F().composing = true; });
+    input.addEventListener("compositionend", () => {
+      if (!F()) return;
+      F().composing = false;
+      findSoon(key, input.value);
+    });
+    input.addEventListener("input", (ev) => {
+      if (!F() || ev.isComposing || F().composing) return;
+      findSoon(key, input.value);
+    });
+    input.addEventListener("keydown", (ev) => {
+      // A key that ends an IME's composition is the IME's, not ours.
+      if (ev.isComposing || ev.keyCode === 229 || !F()) return;
+      if (ev.key === "Enter") findStep(key, ev.shiftKey ? -1 : 1);
+      else if (ev.key === "ArrowUp" || ev.key === "ArrowDown") findStep(key, ev.key === "ArrowUp" ? 1 : -1);
+      else if (ev.key === "Escape") findEscape();
+      else return;
+      ev.preventDefault();
+      ev.stopPropagation();
+    });
+  }
+
+  function findSoon(key, q) {
+    const F = herdNow.find[key];
+    if (!F) return;
+    F.q = q;
+    clearTimeout(F.timer);
+    F.timer = setTimeout(() => runFind(key), FIND_WAIT);
+    renderStripOf(key);
+  }
+
+  // Send the words, unless they are what was last answered; THEN, when
+  // given, once the answer is in.
+  function runFind(key, then) {
+    const F = herdNow.find[key];
+    if (!F) return;
+    clearTimeout(F.timer);
+    F.timer = null;
+    const q = F.q.trim();
+    const name = findAgentOf(key);
+    if (!termRe(q) || !name) {
+      F.res = null; F.cur = -1; F.list = false; F.busy = false; F.seq = ++herdNow.findSeq;
+      return renderStripOf(key);
+    }
+    if (F.res && F.res.q === q && F.res.name === name && !F.busy) return then ? then() : renderStripOf(key);
+    F.name = name;
+    F.asked = q;
+    F.seq = ++herdNow.findSeq;
+    F.busy = true;
+    F.then = then || null;
+    emit("room-find", { project: herdNow.room, name, q, seq: F.seq });
+    renderStripOf(key);
+  }
+
+  function noteFind(key, msg) {
+    const F = herdNow.find[key];
+    if (!F) return;
+    F.note = msg;
+    renderStripOf(key);
+    setTimeout(() => { if (F.note === msg) { F.note = ""; renderStripOf(key); } }, 2800);
+  }
+
+  // DIR 1 is an earlier hit (↑, Enter), -1 a later one; from none gone to
+  // yet, either is the newest.
+  function findStep(key, dir) {
+    const F = herdNow.find[key];
+    if (!F) return;
+    const q = F.q.trim();
+    if (F.timer || F.busy || !F.res || F.res.q !== q || F.res.name !== findAgentOf(key)) {
+      if (!termRe(q)) return;
+      const again = () => findStep(key, dir);
+      if (F.busy && !F.timer && F.asked === q) { F.then = again; return; }
+      return runFind(key, again);
+    }
+    const hits = F.res.hits;
+    if (F.res.error) return noteFind(key, "Could not find: " + F.res.error);
+    if (!hits.length) return noteFind(key, "Not said in " + F.res.name + "’s conversation");
+    const k = F.cur < 0 ? hits.length - 1 : F.cur - dir;
+    if (k < 0) return noteFind(key, F.res.capped ? "Earlier hits are past the newest " + hits.length + ": add a word" : "No earlier hit");
+    if (k >= hits.length) return noteFind(key, "No later hit");
+    findGo(key, k);
+  }
+
+  // Who said hit H, as its entry's head says it in NAME's column.
+  function hitWho(h, name) {
+    if (h.role === "assistant") return name;
+    if (h.role === "sub") return "↩ " + (h.who || "sub-agent");
+    if (h.role === "herd") return h.kind === "reply" ? name + " ⇢ answers " + (h.ask || "")
+      : h.part === "answer" ? "⇠ " + (h.to || "") + " answered" : name + " ⇢ " + (h.to || "?");
+    if (h.kind === "ask") return "⇠ " + (h.who || "") + " asks";
+    if (h.kind === "answer") return "⇠ " + (h.who || "") + " answered";
+    if (h.kind === "message" && h.who) return "⇠ " + h.who;
+    return "You";
+  }
+
+  function hitColor(h, name) {
+    if (h.role === "assistant" || (h.role === "herd" && h.part !== "answer") || h.role === "sub") return sessionColor(name);
+    if (h.role === "herd") return sessionColor(h.to || "");
+    return h.who ? sessionColor(h.who) : "";
+  }
+
+  function findListHtml(key, F) {
+    const res = F.res;
+    const re = termRe(res.q);
+    const hits = res.hits, N = res.total, first = N - hits.length;
+    const all = '<div class="ffoot"><button type="button" class="linkish" data-act="a:find-all" data-fkey="' + esc(key) + '">' +
+      "Search all sessions for “" + esc(res.q) + "” →</button></div>";
+    if (res.error) return '<div class="fsum error">Could not find: ' + esc(res.error) + "</div>" + all;
+    if (!N) return '<div class="fsum">Not said in ' + esc(res.name) + "’s conversation.</div>" + all;
+    const rows = [];
+    for (let k = hits.length - 1; k >= 0; k--) {
+      const h = hits[k];
+      const color = hitColor(h, res.name);
+      rows.push('<button type="button" class="fhit' + (k === F.cur ? " on" : "") + '" data-act="a:find-go" data-fkey="' + esc(key) + '" data-k="' + k + '">' +
+        '<span class="fhead"><span class="fwho"' + (color ? ' style="color:' + color + '"' : "") + ">" + esc(hitWho(h, res.name)) + "</span>" +
+        (h.ts ? '<span class="fwhen" title="' + esc(fullTime(h.ts)) + '">' + esc(when(h.ts)) + "</span>" : "") +
+        '<span class="fnum">' + (first + k + 1) + "</span></span>" +
+        '<span class="fsnip">' + hl(h.snippet || "", re) + "</span></button>");
+    }
+    return '<div class="fsum">' + N + (N === 1 ? " entry says it" : " entries say it") + " in " + esc(res.name) + "’s conversation" +
+      (res.capped ? " · the newest " + hits.length + " here" : "") + "</div>" + rows.join("") + all;
+  }
+
+  // Where hit H is among what KEY's live view holds: its index there, or -1.
+  // The page of the tail and the find were read apart, so by what the entry
+  // is -- when, whose, its start -- the nearest its place when several.
+  function heldIndex(key, h) {
+    const F = herdNow.find[key];
+    if (key === "chat") {
+      const items = (herdNow.chat && herdNow.chat.entries) || [];
+      for (let j = items.length - 1; j >= 0; j--) {
+        const e = items[j];
+        if (e.agent === F.res.name && (e.ts || null) === (h.ts || null) && String(e.text || "").startsWith(h.head || "")) return j;
+      }
+      return -1;
+    }
+    const held = (herdNow.convs[key.slice(4)] || {}).entries || [];
+    const fromEnd = (F.res.entries || 0) - 1 - h.i;
+    let best = -1;
+    held.forEach((e, j) => {
+      if ((e.ts || null) !== (h.ts || null) || (e.role || "") !== (h.role || "") || (e.kind || "") !== (h.kind || "")) return;
+      if (!String(e.text || "").startsWith(h.head || "")) return;
+      if (best < 0 || Math.abs(held.length - 1 - j - fromEnd) < Math.abs(held.length - 1 - best - fromEnd)) best = j;
+    });
+    return best;
+  }
+
+  // The selector of hit H in KEY's body as it is drawn now, or null.
+  function hitSel(key, h) {
+    const A = herdNow.away[key];
+    if (A) return h.i >= A.start && h.i < A.start + A.entries.length ? '.ent[data-i="' + (h.i - A.start) + '"]' : null;
+    const j = heldIndex(key, h);
+    return j < 0 ? null : (key === "chat" ? ".cmsg" : ".ent") + '[data-i="' + j + '"]';
+  }
+
+  function findGo(key, k) {
+    const F = herdNow.find[key];
+    const h = F.res.hits[k];
+    if (!h) return;
+    F.cur = k;
+    F.list = false;
+    renderStripOf(key);
+    const body = findBody(key);
+    const A = herdNow.away[key];
+    const sel = (!A || A.name === F.res.name) ? hitSel(key, h) : null;
+    if (sel && showHit(body, sel, termRe(F.res.q))) return;
+    loadAt(key, F.res.name, Math.max(0, h.i - FIND_BEFORE), "jump", h.i);
+  }
+
+  // Read the page of NAME's whole conversation from entry START: HOW is
+  // "jump" (to entry FOCUS), "earlier" or "later" (beside the page shown).
+  function loadAt(key, name, start, how, focus) {
+    const F = herdNow.find[key];
+    if (!F) return;
+    F.pend = { seq: ++herdNow.findSeq, how, focus, name };
+    const A = herdNow.away[key];
+    if (A && how !== "jump") { A.loading = how; renderBodyOf(key); }
+    emit("room-at", { project: herdNow.room, name, start, limit: FIND_PAGE, seq: F.pend.seq });
+  }
+
+  function awayStep(key, how) {
+    const A = herdNow.away[key];
+    if (!A || A.loading || herdNow.find[key] && herdNow.find[key].pend) return;
+    if (how === "earlier" && A.earlier) loadAt(key, A.name, Math.max(0, A.start - FIND_PAGE), how);
+    else if (how === "later" && A.later) loadAt(key, A.name, A.start + A.entries.length, how);
+  }
+
+  // A page read at a hit, or beside one: shown, or added to what is shown.
+  function tookAt(p) {
+    const key = Object.keys(herdNow.find).find((k) => herdNow.find[k].pend && herdNow.find[k].pend.seq === p.seq);
+    if (!key) return;
+    const F = herdNow.find[key], pend = F.pend;
+    F.pend = null;
+    let A = herdNow.away[key];
+    if (A) A.loading = "";
+    if (p.error) {
+      noteFind(key, "Could not read it: " + p.error);
+      if (A) renderBodyOf(key);
+      return;
+    }
+    const page = p.entries || [];
+    const start = p.start || 0;
+    if (pend.how === "jump" || !A || A.name !== pend.name) {
+      if (!page.length) return noteFind(key, "That part of the conversation is gone from its transcript");
+      A = herdNow.away[key] = { name: pend.name, entries: page, start, scroll: "focus", focus: pend.focus };
+      F.open = true;
+    } else if (pend.how === "earlier") {
+      // Places from the start do not move as the conversation grows: what
+      // overlaps what is shown is known exactly.
+      A.entries = page.slice(0, Math.max(0, Math.min(page.length, A.start - start))).concat(A.entries);
+      A.start = Math.min(A.start, start);
+      if (A.entries.length > MAX_HELD) A.entries = A.entries.slice(0, MAX_HELD);
+      A.scroll = "earlier";
+    } else {
+      const end = A.start + A.entries.length;
+      A.entries = A.entries.concat(page.slice(Math.max(0, end - start)));
+      if (A.entries.length > MAX_HELD) {
+        const drop = A.entries.length - MAX_HELD;
+        A.entries = A.entries.slice(drop);
+        A.start += drop;
+      }
+    }
+    A.total = p.total || 0;
+    A.earlier = A.start > 0;
+    A.later = A.start + A.entries.length < A.total;
+    renderBodyOf(key);
+  }
+
+  function backToLatest(key) {
+    if (!herdNow.away[key]) return;
+    delete herdNow.away[key];
+    const F = herdNow.find[key];
+    if (F) F.pend = null;
+    const body = findBody(key);
+    if (body) body.removeAttribute("data-drawn");  // drawn anew, at its foot
+    renderBodyOf(key);
+    renderStripOf(key);
+  }
+
+  function awayHtml(key, A, kind) {
+    const fk = ' data-fkey="' + esc(key) + '"';
+    const range = A.entries.length ? (A.start + 1).toLocaleString() + "–" + (A.start + A.entries.length).toLocaleString() +
+      " of " + (A.total || 0).toLocaleString() : "";
+    const top = A.loading === "earlier" ? '<div class="loadmore"><button type="button" class="ghost small" disabled>Loading earlier…</button></div>'
+      : A.earlier ? '<div class="loadmore"><button type="button" class="ghost small" data-act="a:away-earlier"' + fk + ">Load earlier</button></div>"
+      : '<p class="rnote">Start of the conversation.</p>';
+    const foot = A.loading === "later" ? '<div class="loadmore"><button type="button" class="ghost small" disabled>Loading later…</button></div>'
+      : A.later ? '<div class="loadmore"><button type="button" class="ghost small" data-act="a:away-later"' + fk + ">Load later</button></div>"
+      : "";
+    return '<div class="away"><p class="rnote awayhead">Earlier in ' + esc(A.name) + "’s conversation · entries " + range + "</p>" + top +
+      A.entries.map((e, j) => entryHtml(e, j, A.name, kind, "away:" + key)).join("") + foot +
+      '<div class="awayback"><button type="button" class="primary small" data-act="a:away-back"' + fk + ">↓ Back to latest</button></div></div>";
+  }
+
+  // KEY's body showing its page away from the tail: where the reader was,
+  // or at the hit just gone to, or held across a page added above.
+  function renderAwayBody(key, body) {
+    const A = herdNow.away[key];
+    const a = roomAgents().find((x) => x.name === A.name);
+    const oldHeight = body.scrollHeight, keep = body.scrollTop;
+    body.innerHTML = awayHtml(key, A, (a && a.kind) || "");
+    drawn.set(body, A.entries);
+    body.setAttribute("data-away", "1");
+    const how = A.scroll;
+    A.scroll = null;
+    const F = herdNow.find[key];
+    if (how === "focus" && showHit(body, '.ent[data-i="' + (A.focus - A.start) + '"]', F && F.res ? termRe(F.res.q) : null)) return;
+    body.scrollTop = how === "earlier" ? keep + (body.scrollHeight - oldHeight) : keep;
+    markHit(key);
+  }
+
+  // Unfold EL if it is a long message folded, as its "more" would.
+  function unfold(el) {
+    if (!el.classList.contains("folded")) return;
+    const more = el.querySelector('[data-act="a:chat-more"], [data-act="a:sub-more"]');
+    if (more) {
+      (more.getAttribute("data-act") === "a:chat-more" ? herdNow.chatOpen : herdNow.subOpen).add(more.getAttribute("data-key"));
+      more.textContent = "less";
+    }
+    el.classList.remove("folded");
+  }
+
+  function clearMarks(body) {
+    if (!body) return;
+    body.querySelectorAll("mark.fm").forEach((m) => {
+      const parent = m.parentNode;
+      m.replaceWith(document.createTextNode(m.textContent));
+      if (parent) parent.normalize();
+    });
+  }
+
+  function markIn(el, re) {
+    if (!re) return;
+    el.querySelectorAll(".ebody").forEach((b) => markTerms(b, re));
+    el.querySelectorAll("mark:not(.fm)").forEach((m) => m.classList.add("fm"));
+  }
+
+  // Hit EL (by SEL in BODY): unfolded, its words marked, the first in sight,
+  // flashed.  False when the body does not hold it.
+  function showHit(body, sel, re) {
+    const el = body && body.querySelector(sel);
+    if (!el) return false;
+    clearMarks(body);
+    unfold(el);
+    markIn(el, re);
+    (el.querySelector("mark.fm") || el).scrollIntoView({ block: "center" });
+    el.classList.remove("flash");
+    void el.offsetWidth;
+    el.classList.add("flash");
+    return true;
+  }
+
+  // A body drawn again keeps the hit gone to marked (not moved to).
+  function markHit(key) {
+    const F = herdNow.find[key];
+    if (!F || !F.open || !F.res || F.cur < 0) return;
+    const h = F.res.hits[F.cur];
+    const body = findBody(key);
+    const sel = h && body && hitSel(key, h);
+    const el = sel && body.querySelector(sel);
+    if (el) markIn(el, termRe(F.res.q));
+  }
+
+  // The same words in the Search tab, over every session imported.
+  function findAll(key) {
+    const F = herdNow.find[key];
+    const q = (F && F.q.trim()) || "";
+    closeRoomState();
+    query = q;
+    hits = null;
+    showSearch();
+    if (q) search(true);
+  }
+
+  function onFindAction(act, el) {
+    const key = el.getAttribute("data-fkey") || (el.closest("[data-fkey]") || { getAttribute: () => "" }).getAttribute("data-fkey");
+    if (!key) return;
+    const F = herdNow.find[key];
+    if (act === "find-open") return openFind(key);
+    if (act === "away-back") return backToLatest(key);
+    if (act === "away-earlier") return awayStep(key, "earlier");
+    if (act === "away-later") return awayStep(key, "later");
+    if (!F) return;
+    if (act === "find-close") return closeFind(key);
+    if (act === "find-prev") return findStep(key, 1);
+    if (act === "find-next") return findStep(key, -1);
+    if (act === "find-all") return findAll(key);
+    if (act === "find-go") return findGo(key, +el.getAttribute("data-k"));
+    if (act === "find-list") {
+      F.list = !F.list && !!F.res;
+      return renderStripOf(key);
+    }
+  }
+
   function renderRoom() {
     const project = herdNow.room;
     const agents = roomAgents();
@@ -3265,6 +3831,8 @@
     const key = project + "\n" + (primary ? "primary" : chat ? "chat" : "columns") + "\n" + agents.map((a) => a.name).join("\n");
     let room = app.querySelector(".room");
     if (!room || room.getAttribute("data-key") !== key) {
+      const typing = document.activeElement && document.activeElement.closest && document.activeElement.closest(".jump.find");
+      const typingKey = typing && typing.getAttribute("data-fkey");
       const views = [["columns", "Columns"], ["chat", "Chat"]].map(([v, label]) =>
         '<button type="button" class="ghost small' + (herdNow.roomView === v ? " on" : "") + '" data-act="a:room-view" data-view="' + v + '">' +
         label + "</button>").join("");
@@ -3287,6 +3855,7 @@
       room.setAttribute("data-key", key);
       if (chat) renderChatBody();
       else agents.forEach(renderRoomBody);
+      if (typingKey) setTimeout(() => { const i = findInput(typingKey); if (i) i.focus(); }, 0);
     }
     room.querySelector(".rsum").innerHTML = summary;
     const rwork = room.querySelector(".rwork");
@@ -3321,6 +3890,7 @@
       else herdNow.tallyOpen.add(key);
       return GM.renderHerdAgain();
     }
+    if (/^(find|away)-/.test(act)) return onFindAction(act, el);
     const row = el.closest(PROMPT_ROW + ", .cmeter");
     const name = row && row.getAttribute("data-name");
     const group = el.closest(".pgroup");
@@ -3404,6 +3974,7 @@
       const key = el.getAttribute("data-key");
       if (herdNow.subOpen.has(key)) herdNow.subOpen.delete(key);
       else herdNow.subOpen.add(key);
+      if (el.closest(".chat .cbody")) return renderChatBody();
       const a = roomAgents().find((x) => x.name === name);
       const body = row && row.querySelector(".rbody");
       const keep = body ? body.scrollTop : 0;
@@ -3466,6 +4037,7 @@
         if (nb) nb.scrollTop = skeep;
         return;
       }
+      if (el.closest(".chat .cbody")) return renderChatBody();
       const a = roomAgents().find((x) => x.name === name);
       const body = row && row.querySelector(".rbody");
       const keep = body ? body.scrollTop : 0;
@@ -3921,6 +4493,21 @@
   };
   app.addEventListener("focusout", drawHeld);
   window.addEventListener("pointerdown", () => { pressing = true; }, true);
+  // In a room: the column pointed at is where / opens the find; a press
+  // outside an open hit list closes it.
+  app.addEventListener("pointerdown", (ev) => {
+    if (!herdNow.room) return;
+    const col = ev.target.closest && ev.target.closest(".rcol");
+    if (col) herdNow.lastCol = col.getAttribute("data-name");
+    Object.keys(herdNow.find).forEach((k) => {
+      const F = herdNow.find[k];
+      if (!F.list) return;
+      const strip = findStrip(k);
+      if (strip && strip.contains(ev.target)) return;
+      F.list = false;
+      renderStripOf(k);
+    });
+  });
   window.addEventListener("pointerup", released, true);
   window.addEventListener("pointercancel", released, true);
   window.addEventListener("blur", released);
@@ -5118,7 +5705,12 @@
       }
       return;
     }
-    if (ev.key === "/" && view !== "source") {
+    if (ev.key === "/" && view === "agents" && herdNow.room) {
+      const key = defaultFindKey();
+      if (key) { openFind(key); ev.preventDefault(); }
+    } else if (ev.key === "Escape" && view === "agents" && herdNow.room && !herdNow.subView && findEscape()) {
+      ev.preventDefault();
+    } else if (ev.key === "/" && view !== "source") {
       const input = $("q") || $("sess-filter") || $("log-filter") || $("docs-filter") || $("mem-filter");
       if (input) {
         input.focus();
@@ -6259,7 +6851,7 @@
     setChat: (p) => {
       if (!p || !herdNow.room || p.project !== herdNow.room) return;
       const changed = mergeRecentChat(p);
-      if (roomIsChat() && changed) renderChatBody();
+      if (roomIsChat() && changed && !herdNow.away.chat) renderChatBody();
     },
 
     // An older page of the chat timeline (from `load earlier'): prepended.
@@ -6508,7 +7100,8 @@
       if (view !== "agents") return;
       const a = roomAgents().find((x) => x.name === p.name);
       if (!a) return;
-      if (changed) renderRoomBody(a);
+      // A body showing a page of the conversation at a hit stays as it is.
+      if (changed && !herdNow.away[findKey(a.name)]) renderRoomBody(a);
       // Whether it has a conversation decides its Screen button -- in a
       // column: one that comes as the room turns to its chat has none.
       const col = roomColumn(a.name);
@@ -6522,6 +7115,38 @@
       if (view !== "agents") return;
       const a = roomAgents().find((x) => x.name === p.name);
       if (a) renderRoomBody(a);
+    },
+
+    // Where a find's words are said in an agent's whole conversation.
+    foundConversation: (p) => {
+      if (!p) return;
+      const key = Object.keys(herdNow.find).find((k) => herdNow.find[k].seq === p.seq);
+      if (!key) return;
+      const F = herdNow.find[key];
+      F.busy = false;
+      const q = String(p.q || "").trim();
+      const hits = Array.isArray(p.hits) ? p.hits : [];
+      // The hit gone to stays the one gone to when the same words are
+      // found again.
+      const was = F.res && F.res.q === q && F.cur >= 0 && F.res.hits[F.cur] ? F.res.hits[F.cur].i : null;
+      F.res = { q, name: p.name, hits, total: p.total || hits.length, capped: !!p.capped, entries: p.entries || 0,
+                error: p.error ? String(p.error) : "" };
+      F.cur = was == null ? -1 : hits.findIndex((h) => h.i === was);
+      const then = F.then;
+      F.then = null;
+      // The quick look, as the words are typed: the list, until a hit is gone to.
+      const input = findInput(key);
+      if (!then && F.open && F.cur < 0 && input && document.activeElement === input) F.list = true;
+      if (then) then();
+      else renderStripOf(key);
+    },
+
+    // A page of an agent's whole conversation, at a find's hit or beside it.
+    atConversation: (p) => { if (p) tookAt(p); },
+
+    // Emacs's M-x ghostherd-page-find: the find bar, as / opens it.
+    openFind: () => {
+      if (view === "agents" && herdNow.room) openFind(defaultFindKey());
     },
 
     setSubConversation: (p) => {
