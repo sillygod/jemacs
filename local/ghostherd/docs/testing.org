@@ -348,6 +348,26 @@ corpus.
 | 5 | =C-u SPC a h /= in another project | restricted to that root |
 | 6 | =bin/ghostherd memory search "agy-ghost-commit"= | JSON hits, no recap dumps |
 
+** T17 — Your own =!= command, and no one else's
+
+ERT drives the send path on a recording backend
+(=ghostherd-test-shell-mode-only-from-the-user= and its neighbours);
+what it cannot stage is each CLI's own shell mode.  Scratch claude, grok
+and agy, each in its own window of a scratch tmux socket
+(=tmux -L gh-scratch-bang=, started with the =GHOSTHERD_*= and =TMUX*=
+variables unset), driven by a batch Emacs with =ghostherd-tmux-socket=
+set to it and sessions built with =:backend 'tmux :host-id NAME= ---
+never the user's agents.  Last run 2026-11-04 (claude 2.1.318, grok
+1.0.70, agy 1.4.12): all of it, on all three.
+
+| Step | Action | Expected |
+|------+--------+----------|
+| 1 | =(ghostherd-send s "!echo x" nil)= | the box holds =␣!echo x= as words, not shell mode |
+| 2 | =(ghostherd-user-shell-command s "! echo $((6*7))")= | =!= typed, shell mode shown, the command pasted and run: =42= on screen; log =← ! echo $((6*7))= |
+| 3 | =!= typed in the pane by hand, then =(ghostherd-send s "hi" t)= | refused: "input box is in shell mode"; Backspace leaves it |
+| 4 | "draft words" typed in the box, then step 2 with =!ls= | not run; the =!= taken back, the draft as it was; told "has text in it" |
+| 5 | agy fresh, its box near the top of a 40-row pane | as 1--4: the whole pane is read, not a tail |
+
 * Dogfood log
 
 Screen rules are heuristics against a UI that changes between releases,

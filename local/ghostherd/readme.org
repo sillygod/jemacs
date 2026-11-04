@@ -519,6 +519,40 @@ Three things worth knowing:
   vocabulary, and anything unlisted is passed through unchanged, so the
   host's full key set stays reachable.
 
+** Your own =!= command
+
+claude, grok and agy each have a shell mode: =!= typed on an empty
+prompt makes the input box a command line (=!= where its =❯= was), and
+what is submitted there runs in the agent's shell *asking no
+permission* --- no hook sees it, no guard.  It is how you run the
+command an agent asks you to (=! bash /tmp/…/check.sh=).
+
+What you send from the herd page --- an agent's card, the room, an
+Inbox reply, to an agent, its lead or primary --- or from
+=ghostherd-prompt-interactive= / the sidebar's prompt, when its very
+first character is =!= and a command follows on that line, runs
+there: the herd types =!= as a key, waits for the box to show shell
+mode, pastes the rest and presses Return.  Several lines run as one
+script.  A space before the =!= sends it as words.  Not to a lead or
+primary that is not up: a command starts no agent.  No lead notes or
+owed role go before it; they wait for your next message.  A box with
+your draft in it takes the =!= as a character --- it is taken back,
+and you are told to clear the box.  The herd log keeps your words
+(=← ! bash …=).
+
+That path is yours alone.  Everything else the herd pastes --- an
+ask, a message, a handoff, a relay's brief, a nudge, Telegram, an
+agent's =ghostherd-prompt= --- goes through =ghostherd--host-send-text=,
+which never opens shell mode: a paste is not typing (grok and agy take a
+pasted =!= as text), but claude takes a paste that /begins/ with =!= as
+its shell mode, so a leading =!= gets a space before it; and a box
+already in shell mode --- you typed =!= in the terminal and left it ---
+takes nothing (an error says so; mail waits).
+=ghostherd-test-shell-mode-only-from-the-user= drives every agent path
+with =!touch …= and checks, from the source, that only your commands
+reach the =!= branch.  Measured 2026-11-04: claude 2.1.318, grok
+1.0.70, agy 1.4.12.
+
 * Waiting
 
 =ghostherd-wait= watches the state machine, which only knows the five states

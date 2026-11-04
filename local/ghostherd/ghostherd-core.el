@@ -66,6 +66,7 @@ made an unanchored `> \=' match the transcript.")
      :fork-args ("--fork-session")
      :transcript "~/.claude/projects/*/%s.jsonl"
      :prompt-replaces-input t
+     :shell-mode t
      ;; "✽ Bloviating… (37s · ↓ 3.3k tokens)": its verb picked at
      ;; random, its glyph one of these; past tense once the turn is over
      ;; ("✻ Baked for 1s").  A narrow pane cuts `esc to interrupt' off
@@ -132,6 +133,7 @@ made an unanchored `> \=' match the transcript.")
      :resume-args ("-r" "%s")
      :fork-args ("--fork-session")
      :transcript "~/.grok/sessions/*/%s/chat_history.jsonl"
+     :shell-mode t
      ;; grok's menus take its input box's place too: its question card
      ;; ("Tab:next answer  │  Esc:scrollback") was drawn with no box under
      ;; it, and its docs say the four blocking cards -- question, MCP form,
@@ -192,6 +194,7 @@ made an unanchored `> \=' match the transcript.")
      :resume-args ("--conversation" "%s")
      :transcript "~/.gemini/antigravity-cli/brain/%s/.system_generated/logs/transcript.jsonl"
      :prompt-replaces-input t
+     :shell-mode t
      ;; A panel paged over the conversation -- `/usage', which the herd
      ;; itself types to read agy's quota -- ends "↑/↓ Scroll · pgup/pgdown
      ;; Page · ctrl+end Bottom · ctrl+home Top · esc Close", no input box
@@ -258,6 +261,12 @@ Each entry is (KIND . PLIST) with keys:
                 pattern matched the conversation, not a prompt -- an
                 agent that wrote \"permission\" is not asking for it.
                 Seen of claude and agy, and of grok's question card.
+:shell-mode     non-nil when the CLI has a shell mode: `!' typed on its empty
+                prompt makes the box a command line, `!' in the prompt
+                sign's place, and what is submitted there runs in its shell
+                asking no permission.  The user's own `!' command, sent
+                from the herd page or Emacs, runs there
+                (`ghostherd-user-shell-command'); claude, grok and agy.
 :scrolled       a regexp for what the CLI draws over its view while you
                 have it scrolled back -- asked of the few lines just above
                 its input box (`ghostherd--scrolled-back-p').  The screen

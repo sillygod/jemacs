@@ -1092,13 +1092,16 @@ an agent view is still attributed to that agent."
                        s body :submit t)))
 
 (defun ghostherd-sidebar-prompt ()
-  "Prompt the session at point."
+  "Prompt the session at point.
+A `!' command runs in its CLI's shell mode (`ghostherd-user-shell-command')."
   (interactive)
   (when-let* ((s (ghostherd--sidebar-session-at-point))
               (body (read-string
                      (format "Prompt %s: " (ghostherd-session-name s)))))
-    (ghostherd-prompt s body)
-    (message "Prompted %s" (ghostherd-session-name s))))
+    (if (ghostherd-user-shell-command s body)
+        (message "Running it in %s's shell" (ghostherd-session-name s))
+      (ghostherd-prompt s body)
+      (message "Prompted %s" (ghostherd-session-name s)))))
 
 (defun ghostherd-sidebar-mark-state ()
   "Manually mark state for session at point."
