@@ -1210,6 +1210,7 @@ starts in the stopped one's project resumes that conversation."
         (should (equal (plist-get (car items) :kind) "lead-stopped"))
         (should (equal (plist-get (car items) :group) "fyi"))
         (should (string-prefix-p "lead-stopped:lead-fox:" (plist-get (car items) :id)))
+        (should (< (abs (- (plist-get (car items) :at) (* 1000 (float-time)))) 60000))
         (should (string-match-p "resumes it\\.\\'" (plist-get (car items) :body))))
       ;; Later, a handoff to fox: its new lead resumes the kept conversation.
       (let* ((ghostherd-handoff-lead-alive-max 8)

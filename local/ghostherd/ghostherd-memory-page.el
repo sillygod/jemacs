@@ -959,7 +959,10 @@ many meters came back together."
         :project (ghostherd-memory-page--str (plist-get a :project))
         :fromProject (ghostherd-memory-page--str (plist-get a :from_project))
         ;; Its asker runs behind the herd's guard.
-        :guarded (if (eq (plist-get a :guarded) t) t :json-false)))
+        :guarded (if (eq (plist-get a :guarded) t) t :json-false)
+        ;; A handoff with no lead yet, waiting for a slot -- not for its
+        ;; lead to start.
+        :waiting (if (eq (plist-get a :waiting) t) t :json-false)))
 
 ;;; The hooks each CLI runs
 
@@ -4120,7 +4123,7 @@ for another (`ghostherd--handoff-stops'): an Update each, saying why."
             (at (plist-get s :at)))
        (ghostherd-inbox--item
         (format "lead-stopped:%s:%d" name (round (* 1000 (or at 0)))) 'lead-stopped
-        name "" project (format "Stopped %s to make room" name) (and at (seconds-to-time at))
+        name "" project (format "Stopped %s to make room" name) (and at (* 1000.0 at))
         :whyLabel "The herd stopped a lead it started for a handoff"
         :body (concat (capitalize (substring (plist-get s :why) 0 1)) (substring (plist-get s :why) 1) "."
                       (if (plist-get s :resume)

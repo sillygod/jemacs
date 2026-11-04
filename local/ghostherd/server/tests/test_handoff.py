@@ -573,6 +573,9 @@ def test_past_the_cap_a_handoff_waits_its_turn_first_come_first_served(world, mo
     assert (c["waiting"], c["ahead"]) == (True, 0)      # joins parker's place in line
     assert "1 lead at work on handoffs, 1 at most (lead-fox)" in a["why"]
     assert _commands(h) == []                            # nothing started past the cap
+    # The page's cards: waiting for a slot, not for a start.
+    assert {k["id"]: k["waiting"] for k in h.recent_asks()["asks"]}[a["id"]] is True
+    assert {k["id"]: k["waiting"] for k in h.recent_asks()["asks"]}[busy["id"]] is False
     # Its sender is told the same, by `herd status' / --wait.
     got = h.get_ask(a["id"])
     assert (got["status"], got["to"], got["waiting"], got["ahead"]) == ("queued", "", True, 0)
@@ -591,6 +594,7 @@ def test_past_the_cap_a_handoff_waits_its_turn_first_come_first_served(world, mo
     out = h.tick(sessions=snap)
     [(cid, session, args)] = _commands(h)
     assert json.loads(args)["project"] == more["parker"] and session == "lead-ghost"
+    assert {k["id"]: k["waiting"] for k in h.recent_asks()["asks"]}[a["id"]] is False   # starting now
     assert [c["op"] for c in out["commands"]] == ["handoff"]
     assert h.get_ask(b["id"])["waiting"] is True
     # parker's lead starts and owes both its handoffs: leopard still waits.

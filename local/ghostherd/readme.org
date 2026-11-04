@@ -1105,13 +1105,52 @@ lead hands it off; any other agent says it in its answer.
 (=ghostherd-project-kind= in its =.dir-locals.el=) or
 =ghostherd-lead-kind= --- and hands it the work; one start however many
 handoffs wait on it.  Refused for a directory that does not exist or is
-not a git checkout, when =ghostherd-handoff-may-start-lead= is nil, and
-past =ghostherd-handoff-lead-max= (3) leads the herd started for
-handoffs and still up --- the user decides then.  The new lead's notes
-say for whom; the sender did not =herd start= it and cannot stop it.  It
-is pushed to your phone (=lead-started=) under the same rules as any
-push --- while you are away; at the desk the page shows it.  A lead on a
-CLI that takes no role as it starts (agy) reads it after its first ask.
+not a git checkout, and when =ghostherd-handoff-may-start-lead= is nil.
+The new lead's notes say for whom; the sender did not =herd start= it
+and cannot stop it.  It is pushed to your phone (=lead-started=) under
+the same rules as any push --- while you are away; at the desk the page
+shows it.  A lead on a CLI that takes no role as it starts (agy) reads
+it after its first ask.
+
+*Two caps, and a queue past them* (ask 0ade8eeb).  A lead nobody asked
+for spends quota where you may not be looking, so the leads the herd
+starts for handoffs are capped --- by those *at work*, owing a handoff
+delivered or queued to them its answer (=ghostherd-handoff-lead-max=,
+3); one that answered and sits idle costs memory, not quota, and does
+not count.  Past it a handoff to a project with no lead is *queued*, not
+refused: first come first served, it starts that lead when a slot frees
+--- a lead answering, dying or stopping, or the cap raised.  Its sender
+is told it is queued, how many are ahead and why, and not to hand it off
+again; with =--wait= a status line as its place changes.  =herd cancel=
+withdraws it; a project that got a lead meanwhile (you started one)
+takes its handoffs at once.  The second cap is on those *up* at all
+(=ghostherd-handoff-lead-alive-max=, 8): starting one past it first
+stops the lead the herd started that has been idle longest and owes
+nothing --- no open ask to it, none of its own, no live agent it
+started, not blocked nor at work, no draft in its box, you not looking
+at it --- logged (=life=) with why, and an Update in the Inbox.  With
+none such, the handoff waits.  A lead you started is never counted nor
+stopped.  The stopped lead's conversation is kept by project
+(=ghostherd-handoff-leads-file=), and the next lead the herd starts
+there resumes it --- on the same CLI, while it is on disk and no agent
+is on it (=ghostherd-handoff-lead-resume=).
+
+The queue is the sidecar's: the handoffs waiting with no taker, in
+=herd.sqlite=, so an Emacs restart neither loses nor repeats one; one
+place decides when a lead starts (=HerdStore._admit_handoffs=).  Emacs
+says the caps on each tick --- which no agent's token reaches --- and
+marks the leads it started for handoffs in the snapshot (=handoffBy=,
+kept on the tmux recipe so they survive a restart) with what only it
+sees (=held=: a draft, you looking).  It makes the stop, asking again
+whether the lead still owes nothing, and says =wait= if not.
+
+*On the Agents tab* the caps are set, from the desk or the phone: at work
+N of its cap and up M of its cap, each a − / + and a field to type in,
+then the handoffs waiting (from → project, waiting since, how many
+ahead).  Emacs takes a cap only as a whole number in range (at work
+1--10, up 1--30, at work not above up), says why not under the caps, and
+saves it with =customize-save-variable=; a raised cap starts what waits
+at once.  Only the page sets them (=ghostherd-handoff-set-cap=).
 
 *On the page.* The sender's card: "⇢ waiting on unnoiac (handoff)" ---
 "· starting its lead" meanwhile; the taker's: "⇠ ghost is waiting

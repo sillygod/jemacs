@@ -1300,6 +1300,9 @@
   const RANK = { blocked: 0, working: 1, starting: 2, waiting: 3, done: 4, idle: 5, dead: 6 };
   let herdNow = {
     data: null, screens: {}, open: new Set(), more: new Set(), hooksOpen: new Set(), tallyOpen: new Set(),
+    // The handoff caps as the user set them and Emacs has not yet said
+    // ({field: {v, at}}), and why Emacs last refused one.
+    slots: { pending: {}, err: "" },
     compose: {}, composing: new Set(), notes: null, capture: null, newFor: null, pending: false,
     // What the open forms say, kept here as the prompts are: the page is
     // drawn again every 5s and on news, and a form drawn from nothing
@@ -1392,7 +1395,7 @@
       watching = true;
       emit("herd-watch");
     }
-    app.innerHTML = '<div class="page wide"><div id="usage" class="usage"></div><div id="primarybar"></div><div id="herd"></div></div>';
+    app.innerHTML = '<div class="page wide"><div id="usage" class="usage"></div><div id="slots"></div><div id="primarybar"></div><div id="herd"></div></div>';
     renderAgents();
   }
 
@@ -1538,6 +1541,93 @@
     }).join("");
   }
 
+  // ---- The leads the herd starts for handoffs ------------------------------
+  //
+  // Its two caps, the user's: how many such leads may be at work at once
+  // -- owe a handoff its answer; past it a handoff waits its turn -- and
+  // how many may be up at all, idle ones too; past it the herd stops the
+  // one idle longest that owes nothing.  Each beside what is in use now,
+  // set with - / + or typed (Emacs takes only a whole number in range and
+  // says why not); then the handoffs waiting, from whom to where, since
+  // when.  The counts are the sidecar's, which keeps the queue.
+
+  function slotCap(s, field) {
+    const p = herdNow.slots.pending[field];
+    return p ? p.v : field === "working" ? s.workingCap : s.aliveCap;
+  }
+
+  function slotsHtml(s) {
+    if (!s) return "";
+    const ctl = (field, label, used, title) => {
+      const r = (field === "working" ? s.workingRange : s.aliveRange) || [1, 99];
+      const v = slotCap(s, field);
+      const n = Number(v);
+      const pend = !!herdNow.slots.pending[field];
+      return '<div class="slcap' + (s.known && used >= n ? " full" : "") + (pend ? " pending" : "") +
+        '" data-field="' + field + '" title="' + esc(title) + '">' +
+        '<span class="sllabel">' + esc(label) + "</span>" +
+        '<span class="slused">' + (s.known ? used : "–") + '</span><span class="slof">of</span>' +
+        '<span class="slstep">' +
+        '<button type="button" class="slbtn" data-act="a:slot-step" data-field="' + field + '" data-d="-1" aria-label="' +
+          esc(label + ": one fewer") + '"' + (n <= r[0] ? " disabled" : "") + ">−</button>" +
+        '<input class="slinput" type="number" inputmode="numeric" pattern="[0-9]*" step="1" min="' + r[0] + '" max="' + r[1] +
+          '" data-field="' + field + '" value="' + esc(String(v)) + '" aria-label="' + esc(label + ", at most") + '">' +
+        '<button type="button" class="slbtn" data-act="a:slot-step" data-field="' + field + '" data-d="1" aria-label="' +
+          esc(label + ": one more") + '"' + (n >= r[1] ? " disabled" : "") + ">+</button>" +
+        "</span></div>";
+    };
+    const q = s.queue || [];
+    const waitWords = (x) => {
+      if (x.starting) return "starting its lead" + (x.stop ? " · stopping " + x.stop + " to make room" : "");
+      const w = x.since ? Date.now() - x.since : 0;
+      return "waiting " + (w < 60000 ? "<1m" : span(w)) + " · " + (x.ahead ? x.ahead + " ahead" : "next");
+    };
+    const list = q.length
+      ? '<ul class="slqueue">' + q.map((x) =>
+          '<li class="slq' + (x.starting ? " starting" : "") + '" title="' + esc((x.head || "") +
+            (x.since ? "\nwaiting since " + new Date(x.since).toLocaleString() : "")) + '">' +
+          '<span class="slwho">' + esc(x.from || "user") + " → " + esc(leaf(x.project)) + "</span>" +
+          (x.asks > 1 ? '<span class="slmany">' + x.asks + " handoffs</span>" : "") +
+          '<span class="slwhen">' + esc(waitWords(x)) + "</span></li>").join("") + "</ul>"
+      : "";
+    return '<section class="slots" aria-label="Leads the herd starts for handoffs">' +
+      '<div class="slhead"><span class="sltitle">Leads for handoffs</span>' +
+      (q.length ? '<span class="slqn">' + q.length + " waiting</span>" : "") + "</div>" +
+      '<div class="slcaps">' +
+      ctl("working", "At work", s.working, "Leads the herd started for handoffs that owe one its answer.  " +
+        "Past the cap a handoff to a project with no lead waits its turn, and starts that lead when one frees.") +
+      ctl("alive", "Up", s.alive, "Leads the herd started for handoffs that are up, idle ones too.  " +
+        "Past the cap the herd stops the one idle longest that owes nothing, keeping its conversation.") +
+      "</div>" +
+      (herdNow.slots.err ? '<p class="slerr" role="alert">' + esc(herdNow.slots.err) + "</p>" : "") +
+      list + "</section>";
+  }
+
+  // Drawn with the herd -- but not over a cap being typed, unless FORCE.
+  function renderSlots(force) {
+    const box = $("slots");
+    if (!box) return;
+    const a = document.activeElement;
+    if (!force && a && a.classList && a.classList.contains("slinput")) return;
+    const s = herdNow.data && herdNow.data.handoffSlots;
+    // A cap Emacs now says is what was asked, or asked long enough ago
+    // that no word is coming, is no longer waited on.
+    Object.keys(herdNow.slots.pending).forEach((f) => {
+      const p = herdNow.slots.pending[f];
+      if ((s && Number(p.v) === (f === "working" ? s.workingCap : s.aliveCap)) || Date.now() - p.at > 8000) {
+        delete herdNow.slots.pending[f];
+      }
+    });
+    box.innerHTML = slotsHtml(s);
+  }
+
+  function setSlotCap(field, value) {
+    herdNow.slots.pending[field] = { v: value, at: Date.now() };
+    herdNow.slots.err = "";
+    emit("handoff-caps", { field, value });
+    renderSlots(true);
+  }
+
   // The asks an agent is in: open ones either way, and for an asker the
   // answers of the last ten minutes.
   function asksFor(name, asks) {
@@ -1550,10 +1640,12 @@
   }
 
   // Who takes ask K, in words: its taker -- for a handoff, with the
-  // project it went to, or that project's lead while the herd starts it.
+  // project it went to, or that project's lead while the herd starts it,
+  // or while it waits for a slot to.
   function takerOf(k) {
     if (!k.project) return k.to;
-    return k.to ? k.to + " (" + leaf(k.project) + ")" : leaf(k.project) + "'s lead, starting";
+    return k.to ? k.to + " (" + leaf(k.project) + ")"
+      : leaf(k.project) + "'s lead, " + (k.waiting ? "queued for a slot" : "starting");
   }
 
   // A handoff: work one project's lead -- or an agent with none over it --
@@ -1567,7 +1659,7 @@
       return "⇠ " + who + " is waiting (handoff)" + (k.status === "queued" ? " · queued" : "");
     }
     if (open) return "⇢ waiting on " + there + " (handoff)" +
-      (!k.to ? " · starting its lead" : k.status === "queued" ? " · queued" : "");
+      (!k.to ? (k.waiting ? " · queued for a lead slot" : " · starting its lead") : k.status === "queued" ? " · queued" : "");
     if (k.status === "answered") return k.auto ? "⇠ " + there + "'s lead stopped without answering" : "⇠ " + there + " answered (handoff)";
     return "⇢ handoff to " + there + " " + k.status + (k.error ? ": " + k.error : "");
   }
@@ -1586,7 +1678,7 @@
     const t = open ? k.created : k.answered;
     const title = (k.project
       ? "handoff " + k.id + " from " + k.from + (k.fromProject ? " in " + k.fromProject : "") +
-        " to " + (k.to || "the lead being started") + " in " + k.project + ": " + (k.head || "")
+        " to " + (k.to || (k.waiting ? "the lead it waits a slot for" : "the lead being started")) + " in " + k.project + ": " + (k.head || "")
       : "ask " + k.id + ": " + (k.head || "")) +
       (k.guarded ? "\nFrom a guarded agent: its taker is told not to read or pass back secrets for it." : "");
     return '<div class="aask ask-' + esc(k.status) + (k.auto ? " ask-auto" : "") + (k.project ? " ask-handoff" : "") +
@@ -2356,6 +2448,7 @@
       return;
     }
     u.innerHTML = usageHtml(d.usage, d.hooks);
+    renderSlots(false);
     const pb = $("primarybar");
     if (pb) pb.innerHTML = primaryPinnedHtml(d);
     const kinds = d.kinds || [];
@@ -4035,6 +4128,12 @@
   }
 
   function onAgentAction(act, el) {
+    if (act === "slot-step") {
+      const s = herdNow.data && herdNow.data.handoffSlots;
+      const field = el.getAttribute("data-field");
+      if (!s || !field) return;
+      return setSlotCap(field, Number(slotCap(s, field)) + Number(el.getAttribute("data-d")));
+    }
     if (act === "tally") {
       const key = el.getAttribute("data-tally") || "";
       if (herdNow.tallyOpen.has(key)) herdNow.tallyOpen.delete(key);
@@ -4589,6 +4688,14 @@
   });
 
   app.addEventListener("change", (ev) => {
+    // A cap typed: sent as typed -- Emacs takes it only when sane, and
+    // says why not.
+    if (ev.target.classList && ev.target.classList.contains("slinput")) {
+      const field = ev.target.getAttribute("data-field");
+      const s = herdNow.data && herdNow.data.handoffSlots;
+      if (field && s && String(ev.target.value) !== String(slotCap(s, field))) setSlotCap(field, ev.target.value);
+      return;
+    }
     if (ev.target.classList && ev.target.classList.contains("chat-to")) setChatTo(ev.target.value);
     if (ev.target.classList && ev.target.classList.contains("new-kind")) {
       herdNow.newKind = ev.target.value;
@@ -4626,6 +4733,11 @@
   app.addEventListener("keydown", (ev) => {
     const t = ev.target;
     if (!t.classList) return;
+    if (t.classList.contains("slinput") && ev.key === "Enter") {
+      ev.preventDefault();
+      t.blur();
+      return;
+    }
     if (t.classList.contains("agent-text") && ev.key === "Tab" && !ev.shiftKey && !t.value) {
       const box = t.closest(".arow, .rcol, .cfoot");
       if (box && useSuggestion(box.getAttribute("data-name"), t)) ev.preventDefault();
@@ -7226,6 +7338,14 @@
     // again from what the page has, so what it shows by the clock -- an
     // answer of ten minutes ago, how long until a reset -- moves on.
     renderHerdAgain: () => GM.renderHerd(herdNow.data),
+
+    // Emacs would not take a handoff cap as set: why, under the caps, and
+    // the cap shown as it is.
+    slotsRefused: (p) => {
+      if (p && p.field) delete herdNow.slots.pending[p.field];
+      herdNow.slots.err = (p && p.why) || "Refused";
+      if (view === "agents" && !herdNow.room) renderSlots(true);
+    },
 
     // Where a new agent can go, for the form's project box; the current
     // project goes in it when nothing is typed yet.

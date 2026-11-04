@@ -3601,6 +3601,7 @@ class HerdStore:
         """Open asks, and those closed in the last RECENT_SECONDS.
         Caller holds `_mu`."""
         cutoff = datetime.now(timezone.utc).timestamp() - RECENT_SECONDS
+        starting = {r[0] for r in self._conn.execute("SELECT project FROM handoff_starts")}
         out = []
         for r in self._conn.execute(
             """
@@ -3640,6 +3641,9 @@ class HerdStore:
                     "from_project": r[17] or "",
                     # Sent by an agent behind the herd's guard.
                     "guarded": bool(r[18]),
+                    # A handoff with no lead yet that waits for a slot, not
+                    # for the start of its lead.
+                    "waiting": bool(r[16]) and not r[2] and r[3] == "queued" and r[16] not in starting,
                 }
             )
             if len(out) >= 50:
