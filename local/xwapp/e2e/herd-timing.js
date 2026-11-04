@@ -8,7 +8,12 @@
 //   - a quick open (wifi): a record, not slow, ended by the Inbox drawn;
 //     nothing in the Log
 //   - a nap and a wake: a wake record, its next asked with wake=1 and
-//     answered at once; and a wake while Emacs is busy: slow, Emacs busy
+//     answered at once; and a wake while Emacs is busy: slow, Emacs busy,
+//     and Emacs's own word, its herd's tick late (herd-open.el plays the
+//     poll), that it was held
+//   - a tap's intent held at the proxy: slow, read by the clocks as Emacs
+//     busy, but the tick on time says Emacs was not held; and a tap's
+//     queued behind it: its wait "queued in the page"
 //   - a slow link (poor): a slow open, its time the network's, in the Log
 //     with its bar, its phases, and among the Issues
 //   - Emacs busy when the hello lands (the proxy holds the hello while
@@ -148,7 +153,31 @@ const busyAt = (s, pred) => s.holdAt(pred, () => s.askEmacs("POST", "/e2e-stall?
       const line = rows2.find((r) => r.timing);
       check("in the Log, as it happened: a slow wake, Emacs busy, with its bar",
         line && /^slow wake [\d.]+ s: Emacs busy/.test(line.text) && line.bar >= 1, rows2.slice(0, 3));
-      logText.push(rows2.map((r) => r.text).join("\n"));
+      check("and Emacs's own word: its herd's tick ran late, Emacs held",
+        line && /· Emacs held [12]\.\d s/.test(line.text), line && line.text);
+
+      // A tap's intent held on its way to Emacs -- at the proxy, Emacs
+      // free -- and a second tap's, queued behind it in the page.
+      await sleep(1000);
+      const taps = records(s.dir).filter((r) => r.kind === "intent").length;
+      s.holdAt((r) => r.method === "POST" && /\/intent$/.test(r.path), () => sleep(STALL));
+      await page.evaluate(() => { const b = document.getElementById("btn-refresh"); b.click(); b.click(); });
+      const both = (await kept(s, "intent", taps + 2)).slice(taps);
+      both.forEach((r) => show("tap", r));
+      const [held, queued] = both;
+      check("a tap's intent held on its way: slow, read by the clocks as Emacs busy",
+        held && held.slow && most(held) === "busy" && held.d >= 2.0, held && held.sum);
+      check("the next tap's, queued behind it in the page: slow, its wait queued",
+        queued && queued.slow && most(queued) === "queue" && queued.sum.queue >= 2.0 && queued.marks.sent >= 2.0,
+        queued && { sum: queued.sum, marks: queued.marks });
+      await sleep(500);
+      const rows3 = await logRows(page);
+      const heldLine = rows3.find((r) => r.timing && /^slow intent [\d.]+ s: Emacs busy/.test(r.text));
+      check("in the Log the held one says Emacs busy -- not Emacs held: its tick ran on time",
+        heldLine && !/Emacs held/.test(heldLine.text), rows3.slice(0, 3).map((r) => r.text));
+      check("and the queued one, queued in the page",
+        rows3.some((r) => r.timing && /^slow intent [\d.]+ s: queued in the page/.test(r.text)), rows3.slice(0, 3).map((r) => r.text));
+      logText.push(rows3.map((r) => r.text).join("\n"));
       kept_.push(fs.readFileSync(path.join(s.dir, "timings.jsonl"), "utf8"), fs.readFileSync(path.join(s.dir, "timings.eld"), "utf8"));
     } finally {
       await s.stop();

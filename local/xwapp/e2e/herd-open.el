@@ -148,6 +148,11 @@
                                   "\n")
                           nil (expand-file-name "timings.jsonl" e2e-dir) t 'silent)))
 
+;; The herd's poll, played: its tick does nothing but note how late it
+;; ran (`ghostherd--note-held'), as the real one does first -- no agent
+;; here to poll, nor tmux to ask.
+(setq ghostherd--poll-timer (run-with-timer 1.5 1.5 #'ghostherd--note-held))
+
 ;; Emacs busy, on the test's word: POST /e2e-stall?ms=N on the socket is
 ;; answered at once, and Emacs then runs Lisp for N ms, reading nothing
 ;; -- as a long command, a GC or a process waited on would.

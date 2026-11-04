@@ -263,6 +263,7 @@ not logged, nor another page's."
   (skip-unless (require 'ghostherd-memory-page nil t))
   (ghostherd-tests--with-log
     (let* ((ghostherd-log-file nil)
+           (ghostherd--poll-timer nil)
            (cpu 190.0)
            (slow (list :id 7 :kind "open" :d 3.42 :slow t :via 'proxy
                        :sum '((net . 2.1) (busy . 0.6) (emacs . 0.2) (prep . 0.0) (page . 0.52))
@@ -301,6 +302,51 @@ not logged, nor another page's."
                                         (list :kind "wake" :d 2.0 :slow t :via 'local :sum '((net . 2.0)))))
     (should (equal (ghostherd-log-entry-session (car ghostherd--log)) "desk"))
     (should (equal (ghostherd-log-entry-text (car ghostherd--log)) "slow wake 2.0 s: network 2.0 s"))))
+
+(ert-deftest ghostherd-test-memory-page-a-slow-page-says-if-emacs-was-held ()
+  "The herd's poll notes a tick of its timer's that ran late -- Emacs
+held -- and a slow page's line says so when such a hold fell in its
+moment: Emacs's own word for what the page's clock infers.  A tick on
+time is said too, in the phases; with no poll running, nothing is."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-log
+    (let* ((ghostherd-log-file nil)
+           (tick (timer-create))
+           (ghostherd--poll-timer tick)
+           (ghostherd--held nil)
+           (now (float-time))
+           (record (list :kind "wake" :d 2.6 :slow t :via 'proxy :at (- now 3.0) :offset 0.0
+                         :sum '((busy . 2.5) (net . 0.1))))
+           (log (lambda (r) (cl-letf (((symbol-function 'ghostherd-memory-page--sidecar-cpu)
+                                       (lambda (then) (funcall then nil))))
+                              (ghostherd-memory-page--on-timing ghostherd-memory-page--app r))
+                  (car ghostherd--log))))
+      ;; Its timer is set for the next tick, 1.5 s on: this one was due
+      ;; 2.4 s ago.  Run by another than its timer, it notes nothing.
+      (timer-set-time tick (time-add nil -0.9) 1.5)
+      (ghostherd--note-held)
+      (should-not ghostherd--held)
+      (let ((timer-event-last tick)) (ghostherd--note-held))
+      (should (= (length ghostherd--held) 1))
+      (should (< 2.35 (cdar ghostherd--held) 2.5))
+      ;; Its moment ran from 3 s ago for 2.6 s: 2 s of the hold in it.
+      (let ((e (funcall log record)))
+        (should (string-match-p "\\`slow wake 2\\.6 s: Emacs busy 2\\.5 s · network 0\\.1 s · Emacs held 2\\.0 s\\'"
+                                (ghostherd-log-entry-text e)))
+        (should (string-match-p "\nherd's tick: Emacs held 2\\.0 s\\'" (ghostherd-log-entry-screen e)))
+        (should (ghostherd-log-issue-p e)))
+      ;; Quick, on time: not kept.
+      (timer-set-time tick (time-add nil 1.45) 1.5)
+      (let ((timer-event-last tick)) (ghostherd--note-held))
+      (should (= (length ghostherd--held) 1))
+      ;; A moment the hold was not in: on time.
+      (let ((e (funcall log (plist-put (copy-sequence record) :at (- now 60)))))
+        (should-not (string-match-p "Emacs held" (ghostherd-log-entry-text e)))
+        (should (string-match-p "\nherd's tick: on time" (ghostherd-log-entry-screen e))))
+      (let* ((ghostherd--poll-timer nil)
+             (e (funcall log record)))
+        (should-not (string-match-p "herd's tick\\|Emacs held" (concat (ghostherd-log-entry-text e)
+                                                                        (ghostherd-log-entry-screen e))))))))
 
 (ert-deftest ghostherd-test-memory-page-sidecar-cpu-is-its-tree ()
   "The sidecar's CPU is its process's and those under it -- uv runs

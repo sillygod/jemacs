@@ -2278,7 +2278,7 @@ Emacs, a test's, writes none of yours.")
 
 (defconst xwapp--timing-names
   '((net . "network") (busy . "Emacs busy") (emacs . "Emacs answering")
-    (prep . "Emacs preparing") (page . "page"))
+    (prep . "Emacs preparing") (queue . "queued in the page") (page . "page"))
   "What a moment waited on, by name: see \"How long the page took\".")
 
 (defun xwapp--timing-sec (v)
@@ -2410,14 +2410,16 @@ the moment's start; OFFSET, from `xwapp--timing-offset'."
                           :send send
                           :dlcat (if (and send (> dl 0.02) (>= send (* 0.8 dl))) 'emacs 'net)))))))
 
-(defun xwapp--timing-sum (reqs d)
+(defun xwapp--timing-sum (reqs d &optional queued)
   "How D seconds went, of REQS laid out by their :ph (`xwapp--timing-
 split'): an alist of what waited on -> seconds.  Each instant goes to
 the most telling request under way -- busy, emacs, net, prep -- and to
-the page when none is."
-  (let ((rank '((busy . 4) (emacs . 3) (net . 2) (prep . 1)))
-        (spans nil)
-        (sum (list (cons 'net 0.0) (cons 'busy 0.0) (cons 'emacs 0.0) (cons 'prep 0.0) (cons 'page 0.0))))
+the page when none is.  QUEUED, seconds from the start an intent waited
+its turn in the page, goes to queue where no request is under way."
+  (let ((rank '((busy . 4) (emacs . 3) (net . 2) (prep . 1) (queue . 0.5)))
+        (spans (and queued (> queued 0) (list (list 0 queued 'queue))))
+        (sum (list (cons 'net 0.0) (cons 'busy 0.0) (cons 'emacs 0.0) (cons 'prep 0.0)
+                   (cons 'queue 0.0) (cons 'page 0.0))))
     (dolist (r reqs)
       (let ((at (plist-get r :s))
             (ph (plist-get r :ph)))
@@ -2481,15 +2483,15 @@ the intent's own request.  Nil when INTENT is no sound one."
                                          (xwapp--timing-offset reqs base)))
              (offset (and clock (cons (nth 0 clock) (nth 1 clock))))
              (reqs (mapcar (lambda (r) (append r (list :ph (xwapp--timing-split r base offset)))) reqs))
-             (sum (xwapp--timing-sum reqs d))
-             (es (delq nil (mapcar (lambda (r) (plist-get r :e)) reqs)))
-             (gcs (delq nil (mapcar (lambda (e) (plist-get e :gc)) es)))
              (marks (let (out)
                       (dolist (m (let ((m (alist-get 'm intent))) (and (consp m) m)))
                         (when-let* ((name (xwapp--timing-word (car-safe m)))
                                     (t1 (xwapp--timing-sec (cdr-safe m))))
                           (push (cons name t1) out)))
                       (sort out (lambda (a b) (< (cdr a) (cdr b))))))
+             (sum (xwapp--timing-sum reqs d (and (equal kind "intent") (alist-get "sent" marks nil nil #'equal))))
+             (es (delq nil (mapcar (lambda (r) (plist-get r :e)) reqs)))
+             (gcs (delq nil (mapcar (lambda (e) (plist-get e :gc)) es)))
              (skew (if offset (car offset) 0)))
         (list :id (setq xwapp--timing-id (1+ xwapp--timing-id))
               :app (string-trim (xwapp-buffer-name app))

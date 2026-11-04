@@ -1023,6 +1023,7 @@ button.lt:hover, button.lt:focus-visible { color: var(--accent); text-decoration
 .ts-busy { background: #f85149; }
 .ts-emacs { background: #d29922; }
 .ts-prep { background: #a371f7; }
+.ts-queue { background: #39c5cf; }
 .ts-page { background: #3fb950; }
 .lrow .linkish { font-size: 12px; flex-shrink: 0; }
 .lrow.pinned { background: color-mix(in srgb, var(--accent) 7%, transparent); }

@@ -2598,6 +2598,24 @@ gets through, and if the record is dropped for one."
       (should (member "app/ui/app.js" (mapcar (lambda (q) (plist-get q :p)) (plist-get (car told) :reqs))))
       (should (equal (mapcar #'car (plist-get (car told) :marks)) '("hello"))))))
 
+(ert-deftest xwapp-test-timing-a-tap-queued-in-the-page ()
+  "An intent slow from when the page queued it -- its turn waited for,
+behind another -- is said to have waited queued in the page, for as long
+as its mark \"sent\" says; its own round trip, the network's."
+  (xwapp-test--timing
+    (let ((base (- (float-time) 10)))
+      (xwapp-test--emacs-side app "intent" 5 xwapp-test--page-id (+ base 2.025))
+      (xwapp--timing-take
+       app `((op . "xwapp-timing") (k . "intent") (at . ,(* 1000 base)) (d . 2050) (end . "answered")
+             (m . ((sent . 2000)))
+             (r . (((p . "intent") (n . 5) (s . 2000) (q . 0) (w . 50) (dl . 0)))))
+       (list :app app :via 'proxy :path "intent" :n 6 :page xwapp-test--page-id))
+      (let ((r (car xwapp--timings)))
+        (should (plist-get r :slow))
+        (should (< 1.99 (xwapp-test--its r 'queue) 2.01))
+        (should (string-prefix-p "intent 2.0 s: queued in the page 2.0 s · network 0.1 s" (xwapp-timing-summary r)))
+        (should (equal (mapcar #'car (xwapp-timing-summary-phases (xwapp-timing-summary r))) '(queue net)))))))
+
 (ert-deftest xwapp-test-timing-summary-read-back ()
   "What a summary line says the moment waited on is read back from it,
 as written."

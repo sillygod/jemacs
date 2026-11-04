@@ -431,14 +431,37 @@ writes the lines, so the Issues chip does not parse prose either."
 (add-hook 'xwapp-timing-functions #'ghostherd-memory-page--on-timing)
 
 (defun ghostherd-memory-page--log-timing (record cpu)
-  "Log RECORD, a slow timing of the page, with CPU, the sidecar's, or nil."
-  (let ((peer (plist-get record :peer))
-        (cpu (and (numberp cpu) (format "sidecar %d%% CPU" (round cpu)))))
+  "Log RECORD, a slow timing of the page, with CPU, the sidecar's, or nil.
+With it, whether the herd's poll found Emacs held then
+\(`ghostherd-memory-page--held'): Emacs's own word on Emacs busy, which
+the page's clock alone can only infer."
+  (let* ((peer (plist-get record :peer))
+         (held (ghostherd-memory-page--held record))
+         (said (and held (>= held ghostherd--held-min) (format "Emacs held %.1f s" held)))
+         (cpu (and (numberp cpu) (format "sidecar %d%% CPU" (round cpu)))))
     (ghostherd--log-add
      (or (plist-get peer :name) (if (eq (plist-get record :via) 'proxy) "phone" "desk"))
      'timing
-     (concat "slow " (xwapp-timing-summary record) (if cpu (concat " · " cpu) ""))
-     (concat (xwapp-timing-describe record) (if cpu (concat "\n" cpu) "")))))
+     (concat "slow " (xwapp-timing-summary record)
+             (if said (concat " · " said) "")
+             (if cpu (concat " · " cpu) ""))
+     (concat (xwapp-timing-describe record)
+             (cond (said (format "\nherd's tick: %s" said))
+                   (held "\nherd's tick: on time, Emacs not held a tick long"))
+             (if cpu (concat "\n" cpu) "")))))
+
+(defun ghostherd-memory-page--held (record)
+  "Seconds Emacs's main thread was held during RECORD's moment, as the
+herd's poll ran late then (`ghostherd--held') -- 0 when it ran on time --
+or nil when the poll is not running to say."
+  (when-let* (((timerp ghostherd--poll-timer))
+              (at (plist-get record :at))
+              ((numberp at))
+              (start (+ at (or (plist-get record :offset) 0)))
+              (end (+ start (or (plist-get record :d) 0))))
+    (let ((most 0))
+      (dolist (h ghostherd--held most)
+        (setq most (max most (- (min end (car h)) (max start (- (car h) (cdr h))))))))))
 
 (defun ghostherd-memory-page--sidecar-cpu (then)
   "Call THEN with the sidecar's CPU now, in percent of a core -- its

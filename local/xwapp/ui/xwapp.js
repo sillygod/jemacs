@@ -397,7 +397,9 @@
   //                 back from the back-forward cache, or online again)
   //                 to Emacs's answer to a next asked after it -- asked
   //                 with wake=1, which Emacs answers at once
-  //   intent        an intent Emacs was slow to answer, the page shown
+  //   intent        an intent slow to be answered, from when the page
+  //                 queued it -- its turn waited for, the mark "sent" --
+  //                 the page shown throughout
   //
   // ended early when the page is hidden ("hidden"), or after a minute
   // ("cap").  Its marks: boot (the kit run), dcl, hello, intent and next
@@ -441,6 +443,15 @@
     let numbered = 0;       // the kit's requests so far
     let wakeNext = false;   // the next asked after a wake: wake=1
     let hiddenLast = -1;    // when the page was last hidden
+    // A timing's fault must never stop the page asking: each is done so.
+    function timing(fn) {
+      if (!timeable) return;
+      try {
+        fn();
+      } catch (e) {
+        console.error(e);
+      }
+    }
     const outbox = [];
     let hello = false, greeting = false, polling = false, over = false;
     // The intent going now, of OUTBOX: it leaves it once Emacs has it.
@@ -557,11 +568,11 @@
       if (stale) {
         letPollGo();
         wakeNext = true;
-        if (timeable) {
-          // What the moment asks is all the timings it needs.
-          try { perf.clearResourceTimings(); } catch (_) {}
+        // What the moment asks is all the timings it needs.
+        timing(() => {
+          perf.clearResourceTimings();
           begin("wake", perf.now(), { why: why, away: away });
-        }
+        });
       }
       if (retry) {
         clearTimeout(retry);
@@ -572,8 +583,10 @@
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") {
         hiddenAt = Date.now();
-        if (timeable) hiddenLast = perf.now();
-        end("hidden");
+        timing(() => {
+          hiddenLast = perf.now();
+          end("hidden");
+        });
         return;
       }
       const away = hiddenAt;
@@ -597,7 +610,7 @@
       if (moment) clearTimeout(moment.cap);
       moment = Object.assign({ k: k, t0: t0, base: Date.now() - perf.now(), marks: {}, first: {}, last: 0 },
                              extra || {});
-      moment.cap = setTimeout(() => end("cap"), Math.max(0, CAP - (perf.now() - t0)));
+      moment.cap = setTimeout(() => timing(() => end("cap")), Math.max(0, CAP - (perf.now() - t0)));
     }
     function markNow(name) {
       if (moment && !(name in moment.marks)) moment.marks[name] = Math.max(0, Math.round(perf.now() - moment.t0));
@@ -621,7 +634,10 @@
       markNow(name);
       if (loading() && byApp) end("ready");
     }
-    function intentAnswered(op, t, n) {
+    // An intent answered: queued at FROM, sent at SENT, numbered N.  One
+    // slow from its queueing on is a moment of its own -- the time it
+    // waited its turn (behind another, slow or stuck) its mark "sent".
+    function intentAnswered(op, from, sent, n) {
       if (!timeable) return;
       if (moment) {
         if (!moment.first.intent) moment.first.intent = n;
@@ -629,9 +645,9 @@
         return;
       }
       const now = perf.now();
-      if (slowMs !== null && op !== "xwapp-timing" && now - t >= slowMs && hiddenLast < t) {
-        sendTimings({ k: "intent", t0: t, base: Date.now() - now, marks: {}, first: { intent: n }, last: n },
-                    now, "answered");
+      if (slowMs !== null && op !== "xwapp-timing" && now - from >= slowMs && hiddenLast < from) {
+        sendTimings({ k: "intent", t0: from, base: Date.now() - now, first: { intent: n }, last: n,
+                      marks: sent - from >= 1 ? { sent: Math.round(sent - from) } : {} }, now, "answered");
       }
     }
     // A next answered, TAG its own, with COUNT calls, which have run.
@@ -706,7 +722,7 @@
       outbox.push({ intent: rec });
       pump();
     }
-    moments = { mark: markNow, ready: readyNow };
+    moments = { mark: (name) => timing(() => markNow(name)), ready: (name) => timing(() => readyNow(name)) };
     function connect() {
       if (hello) {
         if (waiting) {
@@ -724,7 +740,7 @@
         const made = r.headers.get("Xwapp-Ui");
         const slow = r.headers.get("Xwapp-Timing");
         slowMs = slow && /^\d{1,7}$/.test(slow) ? Number(slow) : null;
-        if (timeable) markNow("hello");
+        timing(() => markNow("hello"));
         // Back, but loaded before the files Emacs serves now: loads again,
         // as the app's page, which it is.
         if (returning && !(ui && made === ui)) {
@@ -806,7 +822,7 @@
         sending = null;
         sent(rec);
         answered();
-        intentAnswered(rec.intent.op, t, tag.n);
+        timing(() => intentAnswered(rec.intent.op, rec.at || t, t, tag.n));
         pump();
       }, (e) => {
         sending = null;
@@ -865,7 +881,7 @@
         if (timeable) mine.at = perf.now();
         answered();
         calls.forEach(run);
-        if (timeable) nextAnswered(mine, calls.length);
+        timing(() => nextAnswered(mine, calls.length));
         next();
       }, (e) => {
         if (mine !== poll) return;
@@ -895,10 +911,12 @@
 
     // Its load is a moment, from the navigation's start: a reload, when
     // the browser reloaded it or it came back after Emacs let it go.
-    if (timeable && document.visibilityState === "visible") {
-      const nav = perf.getEntriesByType("navigation")[0];
-      begin(soft || (nav && nav.type === "reload") ? "reload" : "open", 0, soft ? { why: "back" } : null);
-      markNow("boot");
+    if (document.visibilityState === "visible") {
+      timing(() => {
+        const nav = perf.getEntriesByType("navigation")[0];
+        begin(soft || (nav && nav.type === "reload") ? "reload" : "open", 0, soft ? { why: "back" } : null);
+        markNow("boot");
+      });
     }
 
     look();
@@ -907,7 +925,8 @@
     served = function emit(op, extra, lost) {
       const intent = Object.assign({ op: op }, extra || {});
       if (JSON.stringify(intent).length > INTENT_MAX) return false;
-      outbox.push({ intent: intent, lost: lost });
+      // When it was queued: a slow one is timed from then.
+      outbox.push({ intent: intent, lost: lost, at: timeable ? perf.now() : 0 });
       pump();
       return true;
     };

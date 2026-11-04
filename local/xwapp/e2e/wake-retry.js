@@ -20,8 +20,10 @@ const { measure, pageOf, copyTree, herdFile, shows, settled } = require("./wakel
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
 const said = (tab) => tab.evaluate(() => window.__said.slice());
-// WebKit's word for a load it lost: its connection closed under it.
-const LOST = /^Failed to load resource: The network connection was lost\.$/;
+// WebKit's words for a load it lost: its connection closed under it --
+// for a next held a while before the cut, a host it "could not" find
+// (one cut a moment after it was asked, WebKit asks again by itself).
+const LOST = /^Failed to load resource: (The network connection was lost|A server with the specified hostname could not be found)\.$/;
 const nexts = (tab) => tab.evaluate(() => ({ now: window.__nexts.now, most: window.__nexts.most, at: window.__nexts.at.slice() }));
 
 (async () => {

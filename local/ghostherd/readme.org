@@ -2217,7 +2217,13 @@ and wake of the page in a browser --- the phone's --- and one past
 =xwapp-timing-slow= (1.5 s) is logged as =slow open 3.4 s: network 2.1 s
 · Emacs busy 0.6 s · page 0.5 s · relay hkg · sidecar 190% CPU=: what it
 waited on, longest first, how tailscale reaches the device now, and the
-sidecar's CPU then (=ps=, its process tree).  Its agent is the device
+sidecar's CPU then (=ps=, its process tree).  And Emacs's own word on
+Emacs busy, which the page's clock only infers: the herd's poll notes a
+tick it ran late (=ghostherd--held=, a subtraction a tick, no timer of
+its own), and a hold that fell in the moment is said, =· Emacs held 2.4
+s=; none, =herd's tick: on time= in its phases --- then a wait read as
+Emacs busy was on the way to Emacs, not in it.  It sees a hold of a
+tick's length (1.5 s) or more.  Its agent is the device
 (tailscale's name for it, else =phone= or =desk=); under it a bar of the
 same, and =Phases= opens its breakdown request by request, as =Screen=
 opens a screen --- kept beside it, but no screen: not counted among
