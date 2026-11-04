@@ -400,8 +400,15 @@ mark.here { background: var(--warn); color: #0e1116; }
 }
 .msg-body code { font-family: var(--mono); font-size: 12px; }
 .msg-body :not(pre) > code { background: var(--chip); border-radius: 4px; padding: 1px 4px; }
-.msg-body table { border-collapse: collapse; margin: 6px 0; }
-.msg-body th, .msg-body td { border: 1px solid var(--line); padding: 3px 8px; }
+/* A table no wider than its message: wider than that, it scrolls sideways
+   in its own box -- never the column or the page -- and no cell is
+   squeezed to a letter a line.  The box is the table itself (display:
+   block; its rows in an anonymous table inside), and the words in a cell
+   break only where words break: an ancestor's overflow-wrap: anywhere
+   (a column's .rbody) lets a cell's least width fall to one character. */
+.msg-body table { display: block; width: max-content; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 6px 0;
+  overflow-wrap: break-word; word-break: normal; }
+.msg-body th, .msg-body td { border: 1px solid var(--line); padding: 3px 8px; min-width: 4.5em; }
 .msg-body blockquote { margin: 6px 0; padding-left: 10px; border-left: 2px solid var(--line); color: var(--muted); }
 .msg-body a { color: var(--accent); }
 .msg-body h1, .msg-body h2, .msg-body h3 { font-size: 14px; margin: 10px 0 4px; }
@@ -723,6 +730,89 @@ button.pname:hover { color: var(--accent); text-decoration: underline; }
   padding: 6px 8px;
   font: inherit;
 }
+/* ---- A narrow column at the desk -------------------------------------
+   Three, four, five agents side by side: a column 640 px wide or less,
+   by its own width, not by how many there are (app.js marks it .narrow,
+   measured; a size container in the column breaks its scroll in
+   WebKit).  Its head is four short lines, the same height in every
+   column so the conversations start level: state, name, kind, time --
+   Esc and Screen as icons at its end; model, context and tokens; its
+   asks, else what it is doing, else its notes (the rest of those in that
+   line's title); its chips, one line, the rest behind +N (app.js,
+   fitChips).  ▾, or a press on the third line, opens the whole head as a
+   wide column has it.  What needs the user -- a menu to answer, /login,
+   the countdown after a sleep, a message not submitted, a guard's
+   refusal -- is never folded: it adds its lines.  The box to write in is
+   one line until it has the keyboard or words, Image an icon.  A phone,
+   one column to the screen, keeps its own (the phone's block below). */
+.rsay, .wfit { display: none; }
+.rtop .aacts .sec[data-act="a:agent-interrupt"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 2.2A6 6 0 1 1 2.2 7'/%3E%3Cpath d='M2 2l5 5M2 2h3.6M2 2v3.6'/%3E%3C/svg%3E"); }
+.rtop .aacts .sec[data-act="a:room-screen"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='1.5' y='2.5' width='13' height='11' rx='2'/%3E%3Cpath d='M4.5 6.3l2.2 1.7-2.2 1.7M8.5 10h3'/%3E%3C/svg%3E"); }
+.rtop .aacts .sec.scr-on[data-act="a:room-screen"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 2.5h9a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H7.2l-3.2 2.6V11h-.5a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1z'/%3E%3C/svg%3E"); }
+@media (min-width: 641px) {
+  .rcol.narrow .cx { display: inline-flex; align-items: center; height: 22px; padding: 0 4px; font-size: 15px; }
+  /* Each line its own height, so every head is the same: 5 + 22 + 2 +
+     22 + 2 + 18 + 2 + 22 + 5, and its border. */
+  .rcol.narrow:not(.expanded) .rtop { position: relative; min-height: 101px; padding: 5px 10px; }
+  /* Line 1: the name gives way (ellipsis) last, after what runs in the
+     background; room kept at its end for the icons. */
+  .rcol.narrow:not(.expanded) .rtop .amain { flex-wrap: nowrap; height: 22px; gap: 5px; padding-right: 54px; }
+  .rcol.narrow:not(.expanded) .rtop .amain > * { flex-shrink: 0; }
+  .rcol.narrow:not(.expanded) .rtop .amain .aname { flex: 0 0.001 auto; min-width: 4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rcol.narrow:not(.expanded) .rtop .amain .det { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rcol.narrow:not(.expanded) .rtop .amain .when { margin-left: auto; }
+  /* Its notes, and who started it, are the third line's (its text or title). */
+  .rcol.narrow:not(.expanded) .rtop .anotes, .rcol.narrow:not(.expanded) .rtop .amain .startedby { display: none; }
+  .rcol.narrow:not(.expanded) .rtop .aacts.onlysec { display: contents; }
+  .rcol.narrow:not(.expanded) .rtop .aacts .sec { position: absolute; top: 5px; right: 10px; width: 24px; height: 22px; min-height: 0; padding: 0;
+    font-size: 0; display: inline-flex; align-items: center; justify-content: center; }
+  .rcol.narrow:not(.expanded) .rtop .aacts .sec:not(:last-child) { right: 38px; }
+  .rcol.narrow:not(.expanded) .rtop .aacts .sec::before { content: ""; width: 14px; height: 14px; background: currentColor;
+    -webkit-mask: var(--icon) center / contain no-repeat; mask: var(--icon) center / contain no-repeat; }
+  /* Line 2: the model, context and tokens; the tally gives way first. */
+  .rcol.narrow:not(.expanded) .rtop .meter { margin: 2px 0 0; height: 22px; }
+  .rcol.narrow:not(.expanded) .rtop .mctx { flex: 1 1 auto; }
+  .rcol.narrow:not(.expanded) .rtop .mbar { min-width: 24px; }
+  .rcol.narrow:not(.expanded) .rtop .mtally { flex: 0 10 auto; }
+  /* Line 3. */
+  .rcol.narrow:not(.expanded) .rtop .rsay { display: flex; align-items: baseline; gap: 6px; margin-top: 2px; height: 18px; min-width: 0;
+    font-size: 12px; color: var(--muted); cursor: pointer; }
+  .rcol.narrow:not(.expanded) .rtop .rsay:hover .rtext { color: var(--text); }
+  .rcol.narrow .rsay .rtext { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rcol.narrow.s-working .rsay .rtext { color: var(--text); }
+  .rcol.narrow .rsay .aask { flex: 0 1 auto; min-width: 0; }
+  .rcol.narrow .rsay .rmore { flex-shrink: 0; color: var(--accent); }
+  .rcol.narrow:not(.expanded) .rtop .areason:not(.aprompt), .rcol.narrow:not(.expanded) .rtop .aasks { display: none; }
+  /* Line 4: the chips of both its parts -- the branch's, what its
+     conversation named -- in one line. */
+  .rcol.narrow:not(.expanded) .rtop .wline { --narrow: 1; display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; margin-top: 2px;
+    height: 22px; min-width: 0; overflow: hidden; font-size: 12px; }
+  .rcol.narrow:not(.expanded).chips-open .rtop .wline { flex-wrap: wrap; row-gap: 4px; height: auto; }
+  .rcol.narrow:not(.expanded) .rtop .wline > .work { display: contents; }
+  .rcol.narrow:not(.expanded) .rtop .wline > .work > * { flex-shrink: 0; }
+  /* A task's status is its dot's colour here, and in its title. */
+  .rcol.narrow:not(.expanded) .rtop .wline .wchip { max-width: 15em; }
+  .rcol.narrow:not(.expanded):not(.chips-open) .rtop .wline .wchip .tst { display: none; }
+  .rcol.narrow:not(.expanded) .rtop .wline .work:not(.links) > .wbranch { max-width: 13em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rcol.narrow:not(.expanded) .rtop .wline .work.links > .wbranch,
+  .rcol.narrow:not(.expanded) .rtop .wline .wmore,
+  .rcol.narrow:not(.expanded) .rtop .wline .wcut { display: none; }
+  .rcol.narrow:not(.expanded) .rtop .wfit:not([hidden]) { display: inline-flex; flex-shrink: 0; color: var(--accent); }
+  .rcol.narrow:not(.expanded) .rtop .aacts:not(.onlysec) { margin-top: 4px; }
+  /* The jump strip, level with the head. */
+  .rcol.narrow .jump { padding: 4px 10px; }
+  /* The box to write in: one line until it has the keyboard or words,
+     then as a wide column has it -- two lines, a corner to drag. */
+  .rcol.narrow .rfoot { padding: 6px 8px; gap: 5px; }
+  .rcol.narrow .rfoot textarea:placeholder-shown:not(:focus) { height: 32px; resize: none; overflow: hidden; }
+  .rcol.narrow .rfoot [data-act="a:image"], .rcol.narrow .rfoot .use { font-size: 0; width: 32px; height: 32px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center; }
+  .rcol.narrow .rfoot .use[hidden] { display: none; }
+  .rcol.narrow .rfoot [data-act="a:image"]::before { content: "🖼"; font-size: 15px; }
+  .rcol.narrow .rfoot .use::before { content: "💡"; font-size: 14px; }
+  .rcol.narrow .rfoot [data-act="a:send"] { height: 32px; padding: 0 12px; }
+}
+
 .ent { margin: 10px 0; padding-left: 8px; border-left: 2px solid var(--line); min-width: 0; }
 .ent.you { border-left-color: var(--open); }
 .ent.small, .ent.tools { border-left-color: transparent; font-size: 11.5px; color: var(--muted); margin: 4px 0; }
