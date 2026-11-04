@@ -277,11 +277,15 @@ or with no input box at its foot.  A menu -- a trust prompt, a
 permission prompt -- takes no paste, and reads the Return pressed after
 it as its answer.  The sidecar holds mail by the state Emacs last
 ticked; this is for a state that changed since, and for a dialog no
-rule reads: the box missing is enough (`ghostherd--off-prompt-p')."
-  (when-let* (((not (plist-get msg :handoff)))
-              (to (ghostherd-get (plist-get msg :to))))
-    (or (memq (ghostherd-session-state to) '(starting blocked))
-        (ghostherd--off-prompt-p to))))
+rule reads: the box missing is enough (`ghostherd--off-prompt-p').
+Any mail, a handoff too, waits while your own `!' command goes in
+(`ghostherd--shell-pending'): its box is in shell mode, which takes no
+paste of the herd's (`ghostherd--host-send-text')."
+  (when-let* ((to (ghostherd-get (plist-get msg :to))))
+    (or (gethash (ghostherd-session-id to) ghostherd--shell-pending)
+        (and (not (plist-get msg :handoff))
+             (or (memq (ghostherd-session-state to) '(starting blocked))
+                 (ghostherd--off-prompt-p to))))))
 
 (defun ghostherd--herd-deliver (result)
   "Deliver pending mail from a `herd_tick' RESULT plist.

@@ -207,13 +207,58 @@
     if (!src || !String(src).trim()) return "";
     if (window.marked && typeof window.marked.parse === "function") {
       try {
-        return sanitize(window.marked.parse(toolMarks(String(src)), { gfm: true, breaks: true }));
+        return codeCopies(sanitize(window.marked.parse(toolMarks(String(src)), { gfm: true, breaks: true })));
       } catch (e) {
         /* fall through to plain text */
       }
     }
     return '<div class="plain">' + esc(src) + "</div>";
   }
+
+  // Each code block gets a Copy, for the command an agent asks you to run.
+  // Added after the sanitizer, which keeps no button, and in the parsed
+  // markup, not the string: a "<pre" inside an attribute's value, spliced
+  // around, would let the rest of that value out as markup.  A template's
+  // content is inert -- nothing in it loads or runs.  The button is the
+  // same for every block, its label drawn by CSS, so it adds no text to
+  // the message (search marks, what a reader copies by hand); its click is
+  // found by its class (`codeText').
+  function codeCopies(html) {
+    if (html.indexOf("<pre") < 0) return html;
+    const t = document.createElement("template");
+    t.innerHTML = html;
+    t.content.querySelectorAll("pre").forEach((pre) => {
+      if (pre.parentElement && pre.parentElement.closest("pre")) return;
+      const wrap = document.createElement("div");
+      wrap.className = "codewrap";
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "codecopy";
+      b.title = "Copy the code";
+      b.setAttribute("aria-label", "Copy the code");
+      pre.replaceWith(wrap);
+      wrap.append(b, pre);
+    });
+    return t.innerHTML;
+  }
+
+  // A code block's text as written: marked ends each block with a newline
+  // of its own, which is not the block's; no language tag (it is a class).
+  function codeText(pre) {
+    return pre ? pre.textContent.replace(/\n$/, "") : "";
+  }
+
+  // In the capture phase, so a block in something that opens on a click
+  // (an Inbox row) only copies.
+  document.addEventListener("click", (ev) => {
+    const b = ev.target instanceof Element ? ev.target.closest("button.codecopy") : null;
+    if (!b) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const text = codeText(b.parentElement && b.parentElement.querySelector(":scope > pre"));
+    if (text) copy(text);
+    else setStatus("Nothing to copy", "error");
+  }, true);
 
   // Markdown markup removed, for a title or a one-line preview: the plain text
   // of what `markdown' would render, so `**x**' reads as x, not literally.

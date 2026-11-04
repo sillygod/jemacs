@@ -3488,5 +3488,60 @@ them, in the same push -- checked; and a thread's answer its own."
         (should (vectorp (plist-get msg :images)))
         (should (eq (plist-get (aref (plist-get msg :images) 0) :thumb) t))))))
 
+(ert-deftest ghostherd-test-herd-page-runs-your-bang-command ()
+  "Your `!' command from the page -- an agent's card, the room, the Inbox's
+reply, by agent, lead or primary -- runs in that agent's shell mode
+(`ghostherd-user-shell-command') and is not said to it as words; other
+words are, as before.  To a lead or primary that is not up, a command is
+refused: it starts no agent.  What goes wrong after is shown on the page."
+  (ghostherd-test--with-herd
+    (let* ((ghostherd--roles (make-hash-table :test 'equal))
+           (project (file-name-as-directory (make-temp-file "gh-bang-" t)))
+           (primary nil) ran told said)
+      (cl-letf (((symbol-function 'ghostherd-user-shell-command)
+                 (lambda (s text &optional fail)
+                   (when (ghostherd--bang-command text)
+                     (push (list (ghostherd-session-name s) text) ran)
+                     (funcall fail "it did not go into its shell mode")
+                     (ghostherd--bang-command text))))
+                ((symbol-function 'ghostherd-tell)
+                 (lambda (s text &rest _) (push (list (ghostherd-session-name s) text) told)))
+                ((symbol-function 'ghostherd-lead-say) (lambda (p text) (push (list p text) said)
+                                                         (ghostherd-get "claude-api")))
+                ((symbol-function 'ghostherd-primary-say) (lambda (text) (push (list 'primary text) said)))
+                ((symbol-function 'ghostherd--primary-up) (lambda (&rest _) primary)))
+        ;; An agent's card, the room's composer, an Inbox reply to it.
+        (ghostherd-memory-page--handle '((op . "agent-prompt") (name . "claude-api") (text . "! bash /tmp/x.sh")))
+        (should (equal ran '(("claude-api" "! bash /tmp/x.sh"))))
+        (should (equal (ghostherd-test--call calls "flash") "Running it in claude-api's shell"))
+        (should (equal (ghostherd-test--call calls "showError") "it did not go into its shell mode"))
+        (ghostherd-memory-page--handle '((op . "agent-prompt") (name . "claude-api") (text . " !not a command")))
+        (should (equal told '(("claude-api" " !not a command"))))
+        ;; To a project's lead: none up, refused, and none started.
+        (setq calls nil)
+        (ghostherd-memory-page--handle `((op . "lead-say") (project . ,project) (text . "!ls")))
+        (should (string-match-p "not up to run a command" (ghostherd-test--call calls "showError")))
+        (should-not said)
+        ;; Its lead up: run there.
+        (setf (ghostherd-session-project (ghostherd-get "claude-api")) project)
+        (puthash "claude-api" "lead" ghostherd--roles)
+        (ghostherd-memory-page--handle `((op . "lead-say") (project . ,project) (text . "!ls")))
+        (should (equal (car ran) '("claude-api" "!ls")))
+        (should-not said)
+        (ghostherd-memory-page--handle `((op . "lead-say") (project . ,project) (text . "look at it")))
+        (should (equal said `((,project "look at it"))))
+        ;; To primary: not up, refused and not started; up, run there.
+        (setq said nil calls nil)
+        (ghostherd-memory-page--handle '((op . "primary-say") (text . "!ls")))
+        (should (string-match-p "primary is not up" (ghostherd-test--call calls "showError")))
+        (should-not said)
+        (setq primary (ghostherd-get "claude-api"))
+        (ghostherd-memory-page--handle '((op . "primary-say") (text . "!uptime")))
+        (should (equal (car ran) '("claude-api" "!uptime")))
+        (should-not said)
+        (ghostherd-memory-page--handle '((op . "primary-say") (text . "morning")))
+        (should (equal said '((primary "morning"))))
+        (should (equal (length ran) 3))))))
+
 (provide 'ghostherd-memory-page-tests)
 ;;; ghostherd-memory-page-tests.el ends here

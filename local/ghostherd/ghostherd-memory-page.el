@@ -3117,8 +3117,10 @@ from the newest -- and send it to the page to prepend."
              (let ((text (alist-get 'text intent)))
                (unless (and (stringp text) (not (string-empty-p (string-trim text))))
                  (user-error "Nothing to send"))
-               (ghostherd-tell s text)
-               (format "Sent to %s" name)))
+               (if (ghostherd-memory-page--shell-command s text)
+                   (format "Running it in %s's shell" name)
+                 (ghostherd-tell s text)
+                 (format "Sent to %s" name))))
             ("agent-interrupt" (ghostherd-interrupt s) (format "Esc to %s" name))
             ("agent-login"
              ;; The card's one-click /login for an expired-login turn end.
@@ -3252,34 +3254,62 @@ attach it.  It comes from the page on another device -- a phone's photo
                     (user-error "No image came"))))
     (ghostherd-memory-page--attach name (ghostherd-save-image bytes name))))
 
+(defun ghostherd-memory-page--shell-command (s text)
+  "Run TEXT, your own words from the page, in agent S's shell mode when it
+is a `!' command (`ghostherd-user-shell-command'): non-nil when it is
+being run.  What goes wrong after this returns is shown on the page."
+  (ghostherd-user-shell-command
+   s text (lambda (why) (ghostherd-memory-page--js "showError" why))))
+
+(defun ghostherd-memory-page--say-shell-command (to text whom)
+  "Run TEXT, your words to WHOM, in agent TO's shell mode when it is a `!'
+command; non-nil when it is being run, and the page is told.  None up to
+run it -- WHOM not started -- a `user-error': a command is not a message
+to start an agent with."
+  (when (ghostherd--bang-command text)
+    (unless to
+      (user-error "%s is not up to run a command: start it, then send it again" whom))
+    (when (ghostherd-memory-page--shell-command to text)
+      (ghostherd-memory-page--js "flash" (format "Running it in %s's shell" (ghostherd-session-name to)))
+      (ghostherd-memory-page--send-herd)
+      t)))
+
 (defun ghostherd-memory-page--lead-say (intent)
-  "Say INTENT's text to its project's lead, starting the lead if need be."
+  "Say INTENT's text to its project's lead, starting the lead if need be.
+A `!' command runs in the shell of the agent it is said to -- the lead,
+or primary in primary's directory -- which must be up."
   (let ((project (alist-get 'project intent))
         (text (alist-get 'text intent)))
     (unless (and (stringp project) (file-directory-p (expand-file-name project)))
       (user-error "No project %s" project))
     (unless (and (stringp text) (not (string-empty-p (string-trim text))))
       (user-error "Nothing to send"))
-    (let* ((had (ghostherd-project-lead (ghostherd--lead-project project)))
-           (lead (ghostherd-lead-say project text)))
-      (ghostherd-memory-page--js
-       "flash" (if had
-                   (format "Sent to %s" (ghostherd-session-name lead))
-                 (format "Started %s; it gets your message once it is ready"
-                         (ghostherd-session-name lead))))
-      (ghostherd-memory-page--send-herd))))
+    (let* ((where (ghostherd--lead-project project))
+           (had (ghostherd-project-lead where)))
+      (unless (ghostherd-memory-page--say-shell-command
+               (if (ghostherd--primary-dir-p where) (ghostherd--primary-up) had)
+               text (if (ghostherd--primary-dir-p where) "primary" "Its lead"))
+        (let ((lead (ghostherd-lead-say project text)))
+          (ghostherd-memory-page--js
+           "flash" (if had
+                       (format "Sent to %s" (ghostherd-session-name lead))
+                     (format "Started %s; it gets your message once it is ready"
+                             (ghostherd-session-name lead))))
+          (ghostherd-memory-page--send-herd))))))
 
 (defun ghostherd-memory-page--primary-say (intent)
-  "Say INTENT's text to primary, starting or resuming it if need be."
+  "Say INTENT's text to primary, starting or resuming it if need be.
+A `!' command runs in primary's shell, which must be up."
   (let ((text (alist-get 'text intent))
         (up (ghostherd--primary-up)))
     (unless (and (stringp text) (not (string-empty-p (string-trim text))))
       (user-error "Nothing to send"))
-    (ghostherd-primary-say text)
-    (ghostherd-memory-page--js
-     "flash" (if up "Sent to primary"
-               "Starting primary; it gets your message once it is ready"))
-    (ghostherd-memory-page--send-herd)))
+    (unless (ghostherd-memory-page--say-shell-command up text "primary")
+      (ghostherd-primary-say text)
+      (ghostherd-memory-page--js
+       "flash" (if up "Sent to primary"
+                 "Starting primary; it gets your message once it is ready"))
+      (ghostherd-memory-page--send-herd))))
 
 (defun ghostherd-memory-page--guard-approve (intent)
   "Approve INTENT's guard request once: the agent may run that exact call again."

@@ -37,6 +37,7 @@
 (declare-function ghostel-send-string "ghostel" (string))
 (declare-function ghostel-paste-string "ghostel" (string))
 (declare-function ghostel-send-key "ghostel" (key-name &optional mods))
+(declare-function ghostherd--shell-mode-p "ghostherd-comm" (screen))
 
 ;; Internal ghostel buffer-locals (not public API, but stable enough).
 (defvar ghostel--process)
@@ -571,10 +572,32 @@ agent buffers are left alone -- or restart Emacs"
   "Return the last N lines of SESSION's screen."
   (ghostherd-backend-capture (ghostherd--backend-of session) session n))
 
+(defun ghostherd--host-pane (session)
+  "SESSION's whole visible screen, read now: its input box wherever it is
+drawn -- agy draws a short conversation's at the top of a tall pane, with
+blank rows under it that a tail of the screen is all of."
+  (ghostherd-backend-pane (ghostherd--backend-of session) session))
+
 (defun ghostherd--host-send-text (session text &optional submit)
-  "Type TEXT into SESSION, submitting when SUBMIT is non-nil."
+  "Type TEXT into SESSION, submitting when SUBMIT is non-nil.
+Never as a shell command, whoever's TEXT is -- an agent's, the herd's,
+yours: a command run in a CLI's shell mode asks no permission.  A
+leading `!' gets a space before it (`ghostherd--no-bang'), as claude
+takes a paste that begins with one as its shell mode; and an input box
+already in shell mode -- you typed `!' in the terminal -- takes nothing:
+a `user-error' says so.  The user's own `!' command goes in by
+`ghostherd-user-shell-command' alone, and every text the herd sends
+comes through here: `ghostherd-test-shell-mode-only-from-the-user'."
+  (when (ghostherd--shell-mode-p (ignore-errors (ghostherd--host-pane session)))
+    (user-error "%s's input box is in shell mode, where what is sent runs as a command: \
+leave shell mode there first, then send again" (ghostherd-session-name session)))
   (ghostherd-backend-send-text
-   (ghostherd--backend-of session) session text submit))
+   (ghostherd--backend-of session) session (ghostherd--no-bang text) submit))
+
+(defun ghostherd--no-bang (text)
+  "TEXT, with a space before it when it begins with `!': pasted so, no CLI
+takes it as its shell mode (claude does without the space)."
+  (if (string-prefix-p "!" text) (concat " " text) text))
 
 (defun ghostherd--host-send-keys (session keys)
   "Send KEYS to SESSION."

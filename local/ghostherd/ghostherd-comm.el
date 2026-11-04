@@ -173,11 +173,20 @@ tab reads the log to say who set a thread going.")
 
 (defun ghostherd-send (session text &optional submit)
   "Send TEXT to SESSION's terminal.
-When SUBMIT is non-nil, also send RET (Enter)."
+When SUBMIT is non-nil, also send RET (Enter).
+Never as a shell command: see `ghostherd--host-send-text'."
   (setq session (ghostherd-get session))
   (unless (ghostherd--session-live-p session)
     (user-error "Session host is not live"))
   (ghostherd--host-send-text session text submit)
+  (ghostherd--input-sent session text submit))
+
+(defun ghostherd--input-sent (session text submit &optional shell)
+  "Record TEXT, just sent to SESSION -- submitted when SUBMIT: when, the
+log line, the submit to make sure of, the state it puts SESSION in.
+SHELL when TEXT went into its CLI's shell mode, the user's own `!'
+command (`ghostherd--shell-command-go'): a hook may say nothing of it,
+and its box line starts with `!'.  Return TEXT."
   (puthash (ghostherd-session-id session) (float-time) ghostherd--input-at)
   ;; Logged before the state change, so the log reads in causal order:
   ;; what you sent, then what it did.
@@ -193,7 +202,7 @@ When SUBMIT is non-nil, also send RET (Enter)."
     (puthash (ghostherd-session-id session)
              (list :text text :at (float-time) :state 'pending
                    :resting (not (memq (ghostherd-session-state session) '(working blocked)))
-                   :looks ghostherd-submit-looks :clear 0 :retried nil)
+                   :looks ghostherd-submit-looks :clear 0 :retried nil :shell shell)
              ghostherd--submits))
   (unless (ghostherd-session-manual-state session)
     (ghostherd--set-state session 'working "input sent"))
@@ -249,8 +258,10 @@ you were typing."
   (let* ((first (car (split-string text "\n" t "[ \t]+")))
          (head (and first (substring first 0 (min 20 (length first))))))
     (seq-some (lambda (line)
-                ;; claude follows its ❯ with a no-break space.
-                (and (string-match "^[[:blank:]│|]*[❯›>][[:blank:]]+\\(.*\\)" line)
+                ;; claude follows its ❯ with a no-break space.  `!' is the
+                ;; sign in a CLI's shell mode: the user's own command
+                ;; (`ghostherd--shell-command-go').
+                (and (string-match "^[[:blank:]│|]*[❯›>!][[:blank:]]+\\(.*\\)" line)
                      (let ((in (match-string 1 line)))
                        (or (ghostherd--folded-paste-p in text)
                            (and head (string-search head in))))))
@@ -331,7 +342,11 @@ at most."
              ;; hook, its screen at work; none in all its looks, the CLI
              ;; never had it.  An agent with no hook to say so keeps the
              ;; box's word, and a view scrolled back tells nothing.
+             ;; Not for a shell command: claude's and grok's hooks say
+             ;; nothing of one (grok's docs; claude seen 2026-11-04), and a
+             ;; turn may not follow it.
              ((and sub (plist-get sub :resting)
+                   (not (plist-get sub :shell))
                    (ghostherd--submit-starts-turn-p text)
                    (ghostherd--hooked-p session)
                    (not (ghostherd--scrolled-back-p screen (plist-get spec :scrolled))))
@@ -401,6 +416,160 @@ lands in its input box or on a menu that has taken the step's place."
     (ghostherd--host-send-keys session '("return"))
     (ghostherd--log-add session 'input "↵ to finish its sign-in, as asked: it was signed in" screen)
     name))
+
+;;; The user's own `!' command
+;;
+;; claude, grok and agy each have a shell mode: `!' typed on an empty
+;; prompt makes the input box a command line, and what is submitted there
+;; runs in the agent's shell asking no permission -- no hook sees it, no
+;; guard.  The herd pastes (`ghostherd--host-send-text'), and a paste is
+;; not typing: grok and agy take a pasted `!' as text, claude takes one as
+;; its shell mode only as the box's first character (measured 2026-11-04 in
+;; a scratch tmux: claude 2.1.318, grok 1.0.70, agy 1.4.12).  So no paste
+;; of the herd's opens shell mode -- a leading `!' gets a space -- and none
+;; goes into a box in it.  Only the user's own words, sent from the herd
+;; page or typed in Emacs, run a command so, and only through here: `!'
+;; typed as a key, the box seen in shell mode, the rest pasted and
+;; submitted.  The herd log keeps them as they were written, "! ...".
+
+(defconst ghostherd--shell-mode-re
+  "\\`[[:blank:]]*\\(?:[│┃][[:blank:]]*\\)?!\\(?:[[:blank:]]\\|\\'\\)"
+  "An input box's first line in its CLI's shell mode: `!' where the prompt
+sign was -- claude's and agy's \"! ls\", grok's \"│ ! ls\" in its frame.")
+
+(defun ghostherd--shell-mode-p (screen)
+  "Non-nil when SCREEN's input box is in its CLI's shell mode, where what
+is submitted runs as a command."
+  (when-let* (((stringp screen))
+              (box (ghostherd--input-box screen)))
+    (string-match-p ghostherd--shell-mode-re (car box))))
+
+(defun ghostherd--bang-command (text)
+  "The command TEXT asks to run when it is a `!' command; else nil.
+It is one when its very first character is `!' and a command follows on
+that line -- the CLIs' own rule, `!' typed on an empty prompt, so a space
+before it says you mean the words.  The command is what follows the `!'
+and the blanks after it, to the end, its trailing blanks off: several
+lines run as one script in each CLI's shell mode."
+  (when (and (stringp text) (string-match-p "\\`![ \t]*[^ \t\n]" text))
+    (string-trim-right (string-trim-left (substring text 1) "[ \t]+"))))
+
+(defvar ghostherd--shell-pending (make-hash-table :test 'equal)
+  "Session id -> t while the user's `!' command is on its way in
+(`ghostherd-user-shell-command'): its box is in shell mode, or about to
+be, and the herd's mail waits for it (`ghostherd--herd-held-p').")
+
+(defvar ghostherd--shell-look-every 0.1
+  "Seconds between looks for a CLI's shell mode, after its `!'.")
+
+(defvar ghostherd--shell-looks 20
+  "Looks for a CLI's shell mode after its `!', at most: two seconds.")
+
+(defun ghostherd--box-said (screen)
+  "SCREEN's input box as one string, each line's right frame and blanks
+off; or nil when it draws none."
+  (when-let* (((stringp screen))
+              (box (ghostherd--input-box screen)))
+    (mapconcat (lambda (l) (replace-regexp-in-string "[[:blank:]]*[│┃]?[[:blank:]]*\\'" "" l))
+               box "\n")))
+
+(defun ghostherd-user-shell-command (session text &optional fail)
+  "Run TEXT, the user's own, in SESSION's CLI's shell mode when it is a `!'
+command (`ghostherd--bang-command') and that CLI has one (its kind's
+`:shell-mode'): type `!', and once the screen shows the box in shell
+mode, paste the command and submit it (`ghostherd--shell-command-go').
+Return the command; nil -- nothing sent -- when TEXT is no such command
+or the CLI has no shell mode, and the caller sends TEXT as words.
+
+Only for what the user wrote, on the herd page or in Emacs: a command
+run so asks no permission.  Nothing an agent sends, nor anything the
+herd composes, comes here -- `ghostherd-test-shell-mode-only-from-the-user'
+holds the callers to that.  Not SESSION at its prompt -- on a menu, its
+box in shell mode already -- or taking a command still, a `user-error'.
+
+The rest is settled after this returns: when no shell mode shows,
+FAIL (`message' by default) is called with why -- the `!' taken back
+when it landed after text already in the box -- and the log says so."
+  (setq session (ghostherd-get session))
+  (when-let* ((command (ghostherd--bang-command text))
+              ((plist-get (ignore-errors (ghostherd--spec (ghostherd-session-kind session)))
+                          :shell-mode)))
+    (unless (ghostherd--session-live-p session)
+      (user-error "Session host is not live"))
+    (let* ((id (ghostherd-session-id session))
+           (name (ghostherd-session-name session))
+           (screen (ghostherd--host-pane session)))
+      (when (gethash id ghostherd--shell-pending)
+        (user-error "%s is still taking the last command" name))
+      (unless (and screen (ghostherd--box-top (vconcat (split-string screen "\n"))))
+        (user-error (if (ghostherd--shell-mode-p screen)
+                        "%s's input box is in shell mode already: leave shell mode there first, then send again"
+                      "%s is not at its prompt -- a menu, a dialog -- so its shell mode cannot open")
+                    name))
+      (puthash id t ghostherd--shell-pending)
+      (condition-case err
+          (ghostherd--host-send-keys session '("!"))
+        (error (remhash id ghostherd--shell-pending)
+               (signal (car err) (cdr err))))
+      (run-at-time ghostherd--shell-look-every nil #'ghostherd--shell-command-look
+                   session command text (ghostherd--box-said screen) ghostherd--shell-looks
+                   (or fail (lambda (why) (message "ghostherd: %s" why))))
+      command)))
+
+(defun ghostherd--shell-command-look (session command said before looks fail)
+  "Look whether SESSION's box shows shell mode, after its `!': then COMMAND
+goes in (`ghostherd--shell-command-go'), SAID the user's words.  LOOKS
+more looks; none left, FAIL is told, and the `!' is taken back when it
+landed as a character after BEFORE, what the box held."
+  (let ((id (ghostherd-session-id session))
+        (name (ghostherd-session-name session)))
+    (condition-case err
+        (let ((screen (and (eq (gethash id ghostherd--sessions) session)
+                           (ghostherd--session-live-p session)
+                           (ghostherd--host-pane session))))
+          (cond
+           ((null screen)
+            (remhash id ghostherd--shell-pending)
+            (funcall fail (format "%s is gone: the command was not run" name)))
+           ((ghostherd--shell-mode-p screen)
+            (ghostherd--shell-command-go session command said))
+           ((> looks 0)
+            (run-at-time ghostherd--shell-look-every nil #'ghostherd--shell-command-look
+                         session command said before (1- looks) fail))
+           (t
+            (remhash id ghostherd--shell-pending)
+            (let* ((after (ghostherd--box-said screen))
+                   (typed (and before after (string-suffix-p "!" after)
+                               (equal (string-trim-right (substring after 0 -1))
+                                      (string-trim-right before)))))
+              (when typed (ghostherd--host-send-keys session '("backspace")))
+              (ghostherd--log-add session 'input
+                                  (format "! not run: no shell mode came%s"
+                                          (if typed ", its `!' taken back" ""))
+                                  screen)
+              (funcall fail (if typed
+                                (format "%s's input box has text in it: clear it, then send the command again" name)
+                              (format "%s did not go into its shell mode: the command was not run" name)))))))
+      (error
+       (remhash id ghostherd--shell-pending)
+       (funcall fail (format "%s: %s" name (error-message-string err)))))))
+
+(defun ghostherd--shell-command-go (session command said)
+  "Paste COMMAND into SESSION's input box, seen in shell mode just now,
+and submit it: the user's own `!' command, SAID as they wrote it.  The
+one paste the herd makes into a box in shell mode -- the backend's own,
+past `ghostherd--host-send-text', which would refuse it."
+  (unwind-protect
+      (let ((ghostherd--input-said said))
+        (ghostherd-backend-send-text (ghostherd--backend-of session) session command t)
+        (ghostherd--input-sent session command t 'shell))
+    (remhash (ghostherd-session-id session) ghostherd--shell-pending)))
+
+(defun ghostherd--shell-command-forget (session)
+  "Drop SESSION's pending command when it is gone."
+  (remhash (ghostherd-session-id session) ghostherd--shell-pending))
+
+(add-hook 'ghostherd-session-removed-hook #'ghostherd--shell-command-forget)
 
 ;;;###autoload
 (defun ghostherd-send-keys (session &rest keys)
@@ -781,12 +950,15 @@ watch rather than stacking a second timer on it."
 
 ;;;###autoload
 (defun ghostherd-prompt-interactive (session prompt)
-  "Interactively prompt SESSION with PROMPT."
+  "Interactively prompt SESSION with PROMPT.
+A `!' command runs in its CLI's shell mode (`ghostherd-user-shell-command')."
   (interactive
    (list (ghostherd--read-session "Prompt agent: ")
          (read-string "Prompt: ")))
-  (ghostherd-prompt session prompt)
-  (message "Prompted %s" (ghostherd-session-name (ghostherd-get session))))
+  (if (ghostherd-user-shell-command session prompt)
+      (message "Running it in %s's shell" (ghostherd-session-name (ghostherd-get session)))
+    (ghostherd-prompt session prompt)
+    (message "Prompted %s" (ghostherd-session-name (ghostherd-get session)))))
 
 
 ;;; Commands callable from agent shells via ghostel_cmd

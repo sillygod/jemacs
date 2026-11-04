@@ -302,8 +302,9 @@ backends; a short line, or text not submitted, does not wait."
                  (lambda (sec &rest _) (push (list "sleep" sec) ghostherd-tests--tmux-calls))))
         (ghostherd-tests--with-tmux nil
           (ghostherd--host-send-text s "line 1\nline 2" t))
+        ;; The screen first: no paste goes into a box in shell mode.
         (should (equal (mapcar #'car ghostherd-tests--tmux-calls)
-                       '("load-buffer" "paste-buffer" "sleep" "send-keys")))
+                       '("capture-pane" "load-buffer" "paste-buffer" "sleep" "send-keys")))
         (should (equal (cadr (funcall slept)) ghostherd-submit-delay))
         (ghostherd-tests--with-tmux nil
           (ghostherd--host-send-text s (make-string 300 ?x) t))
@@ -1196,6 +1197,368 @@ sidecar as JSON, false without one."
       (should-not (ghostherd-session-prompt s))
       (should (eq (ghostherd--prompt-json nil) :json-false))
       (should (eq (plist-get (car (ghostherd--herd-snapshot)) :prompt) :json-false)))))
+
+;;; The user's own `!' command
+;;
+;; A backend that records what it is sent and shows the screen a test
+;; sets, so the send path is driven whole: the screen it reads, the keys
+;; and the text it sends, in order.
+
+(defvar ghostherd-tests--shrec nil
+  "What the `shrec' backend was sent, oldest first: (:text TEXT SUBMIT)
+or (:keys . KEYS).")
+
+(defvar ghostherd-tests--shrec-screen ""
+  "The screen the `shrec' backend shows: a string, or a function of none.")
+
+(cl-defmethod ghostherd-backend-send-text ((_backend (eql shrec)) _session text submit)
+  (setq ghostherd-tests--shrec (append ghostherd-tests--shrec (list (list :text text submit)))))
+
+(cl-defmethod ghostherd-backend-send-keys ((_backend (eql shrec)) _session keys)
+  (setq ghostherd-tests--shrec (append ghostherd-tests--shrec (list (cons :keys keys)))))
+
+(cl-defmethod ghostherd-backend-capture ((_backend (eql shrec)) _session &optional _n)
+  (if (functionp ghostherd-tests--shrec-screen)
+      (funcall ghostherd-tests--shrec-screen)
+    ghostherd-tests--shrec-screen))
+
+(cl-defmethod ghostherd-backend-live-p ((_backend (eql shrec)) _session) t)
+
+(defun ghostherd-tests--shrec-session (&rest args)
+  "A claude session on the `shrec' backend, from ARGS."
+  (apply #'ghostherd-tests--session (append args '(:backend shrec :kind claude :state idle))))
+
+(defconst ghostherd-tests--claude-shell (ghostherd-test--claude-screen "! ")
+  "claude with `!' typed on its empty prompt: its box in shell mode.")
+
+(defmacro ghostherd-tests--with-shell (&rest body)
+  "BODY in a clean herd with leads, `shrec' recording, claude at its empty
+prompt, no submit looked at, and the shell mode's looks run by hand:
+timers go to `later' (newest first)."
+  (declare (indent 0))
+  `(ghostherd-tests--with-leads
+     (let ((ghostherd-tests--shrec nil)
+           (ghostherd-tests--shrec-screen (ghostherd-test--claude-screen "❯ "))
+           (ghostherd--shell-pending (make-hash-table :test 'equal))
+           (ghostherd-submit-check-after nil)
+           (ghostherd--log nil))
+       ,@body)))
+
+(defun ghostherd-tests--run-later (later)
+  "Run the timers in LATER, newest first as pushed, oldest first."
+  (dolist (call (reverse later)) (apply (car call) (cdr call))))
+
+(ert-deftest ghostherd-test-a-bang-command-is-the-clis-own-rule ()
+  "A `!' command: `!' its very first character and a command after it on
+that line, as the CLIs take `!' on an empty prompt.  The command is the
+rest, the `!' and the blanks after it off; several lines are one script.
+A leading space, `!' alone, a `!' later on, a full-width `！' are words."
+  (should (equal (ghostherd--bang-command "!ls -la") "ls -la"))
+  (should (equal (ghostherd--bang-command "! bash /tmp/x.sh --site 75ue-2") "bash /tmp/x.sh --site 75ue-2"))
+  (should (equal (ghostherd--bang-command "!\tcd /tmp && ls\n") "cd /tmp && ls"))
+  (should (equal (ghostherd--bang-command "!cd /tmp\n  npm test\n\necho done \n\n") "cd /tmp\n  npm test\n\necho done"))
+  (should (equal (ghostherd--bang-command "!!x") "!x"))
+  (dolist (text '(" !ls" "\n!ls" "!" "!   " "!\nls" "say !ls" "！ls" "" nil 42))
+    (should-not (ghostherd--bang-command text))))
+
+(ert-deftest ghostherd-test-shell-mode-is-read-off-the-input-box ()
+  "Shell mode: `!' where the box's prompt sign was -- claude's and agy's,
+grok's inside its frame, empty or with a command.  Not a `!' the box
+holds as text after its sign, nor a command up in the history."
+  (dolist (box '("! " "!  echo b" "! [Pasted text #2]"))
+    (should (ghostherd--shell-mode-p (ghostherd-test--claude-screen box))))
+  (should (ghostherd--shell-mode-p (replace-regexp-in-string "│ ❯ " "│ ! echo hi" ghostherd-test--grok-welcome-screen t t)))
+  (should (ghostherd--shell-mode-p (concat ghostherd-test--rule "\n!\n" ghostherd-test--rule "\n activated bash mode · esc to cancel")))
+  (dolist (box '("❯ " "❯ !echo a" "❯ hello !echo e"))
+    (should-not (ghostherd--shell-mode-p (ghostherd-test--claude-screen box "! echo old\n  ⎿  old\n\n"))))
+  (should-not (ghostherd--shell-mode-p ghostherd-test--grok-welcome-screen))
+  (should-not (ghostherd--shell-mode-p ghostherd-tests--permission-screen))
+  (should-not (ghostherd--shell-mode-p nil)))
+
+(ert-deftest ghostherd-test-the-herds-paste-never-opens-shell-mode ()
+  "Every text the herd pastes reaches the backend with a space before a
+leading `!' (claude takes a paste that begins with one as its shell
+mode); other text as it was.  On tmux the screen is read first."
+  (ghostherd-tests--with-shell
+    (let ((s (ghostherd-tests--shrec-session :name "a")))
+      (ghostherd--host-send-text s "!touch /tmp/pwned" t)
+      (ghostherd--host-send-text s "hi !there" nil)
+      (should (equal ghostherd-tests--shrec '((:text " !touch /tmp/pwned" t) (:text "hi !there" nil))))))
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--tmux-session :name "t")))
+      (ghostherd-tests--with-tmux nil
+        (ghostherd--host-send-text s "!ls" t))
+      (should (equal (car ghostherd-tests--tmux-calls) '("capture-pane" "-p" "-t" "=gh-abc-rev:")))
+      (should (equal (nth 4 (ghostherd-tests--tmux-call "load-buffer")) " !ls")))))
+
+(ert-deftest ghostherd-test-a-box-in-shell-mode-takes-no-paste ()
+  "A box in shell mode -- you typed `!' in the terminal and left it --
+takes nothing the herd pastes: submitted, it would run as a command.
+A `user-error' says so, and nothing is sent."
+  (ghostherd-tests--with-shell
+    (let ((s (ghostherd-tests--shrec-session :name "a"))
+          (ghostherd-tests--shrec-screen ghostherd-tests--claude-shell))
+      (should (string-match-p "input box is in shell mode"
+                              (cadr (should-error (ghostherd-send s "please go on" t) :type 'user-error))))
+      (should-error (ghostherd--host-send-text s "/usage" t) :type 'user-error)
+      (should-not ghostherd-tests--shrec))))
+
+(ert-deftest ghostherd-test-your-bang-command-types-bang-then-pastes ()
+  "Your `!' command: `!' typed as a key; once the box shows shell mode,
+the command alone pasted and submitted -- not a paste the herd's guard
+would refuse, nor a lead's notes or owed role before it, which stay
+owed.  The log keeps your words; the herd's mail waits meanwhile."
+  (ghostherd-tests--with-shell
+    (let* ((lead (ghostherd-tests--shrec-session :name "lead-p" :project "/p/"))
+           (ghostherd-tests--shrec-screen (ghostherd-test--claude-screen "❯ ")))
+      (puthash "lead-p" "lead" ghostherd--roles)
+      (puthash "lead-p" "You are the lead." ghostherd--role-owed)
+      (puthash "/p/" '(("rd" . "fix it")) ghostherd--lead-unheard)
+      (should (equal (ghostherd-user-shell-command lead "! bash /tmp/x.sh\n") "bash /tmp/x.sh"))
+      (should (equal ghostherd-tests--shrec '((:keys "!"))))
+      (should (gethash "lead-p" ghostherd--shell-pending))
+      (should (ghostherd--herd-held-p '(:to "lead-p" :body "hi")))
+      (should (ghostherd--herd-held-p '(:to "lead-p" :body "hi" :handoff t)))
+      ;; Not yet in shell mode: it looks again.
+      (let ((first later))
+        (setq later nil)
+        (ghostherd-tests--run-later first))
+      (should (equal ghostherd-tests--shrec '((:keys "!"))))
+      (should (= (length later) 1))
+      (setq ghostherd-tests--shrec-screen ghostherd-tests--claude-shell)
+      (let ((next later))
+        (setq later nil)
+        (ghostherd-tests--run-later next))
+      (should (equal ghostherd-tests--shrec '((:keys "!") (:text "bash /tmp/x.sh" t))))
+      (should-not (gethash "lead-p" ghostherd--shell-pending))
+      (should-not (ghostherd--herd-held-p '(:to "lead-p" :body "hi")))
+      (should (equal (gethash "lead-p" ghostherd--role-owed) "You are the lead."))
+      (should (gethash "/p/" ghostherd--lead-unheard))
+      (should (eq (ghostherd-session-state lead) 'working))
+      (should (seq-find (lambda (e) (equal (ghostherd-log-entry-text e) "← ! bash /tmp/x.sh")) ghostherd--log)))))
+
+(ert-deftest ghostherd-test-your-bang-command-is-watched-as-a-shell-submit ()
+  "Submitted, your command is made sure of as any text is -- Return
+again while it sits in the box as \"! cmd\" -- but not lost for a hook
+that never says a turn began: claude's and grok's say nothing of one."
+  (ghostherd-tests--with-shell
+    (let* ((s (ghostherd-tests--shrec-session :name "a"))
+           (ghostherd-submit-check-after 1.5))
+      (setq ghostherd-tests--shrec-screen ghostherd-tests--claude-shell)
+      (ghostherd--shell-command-go s "echo hi" "!echo hi")
+      (should (plist-get (ghostherd--submit-of s) :shell))
+      (setq ghostherd-tests--shrec-screen (ghostherd-test--claude-screen "! echo hi"))
+      (should (ghostherd--unsent-p ghostherd-tests--shrec-screen "echo hi"))
+      (setf (ghostherd-session-state s) 'idle)
+      (cl-letf (((symbol-function 'ghostherd--hooked-p) (lambda (_) t)))
+        (ghostherd--confirm-submit s "echo hi" 1)
+        (should (equal (car (last ghostherd-tests--shrec)) '(:keys "return")))
+        (setq ghostherd-tests--shrec-screen (ghostherd-test--claude-screen "❯ "))
+        (ghostherd--confirm-submit s "echo hi" 0)
+        (ghostherd--confirm-submit s "echo hi" 0)
+        (should (eq (plist-get (ghostherd--submit-of s) :state) 'confirmed))))))
+
+(ert-deftest ghostherd-test-your-bang-command-gives-up-and-takes-its-bang-back ()
+  "No shell mode in all its looks: the command is not run, you are told
+why, the log says so.  A `!' that landed after text in the box -- a
+draft there -- is taken back, so the draft is as it was."
+  (ghostherd-tests--with-shell
+    (let* ((s (ghostherd-tests--shrec-session :name "a"))
+           (ghostherd--shell-looks 1)
+           (why nil))
+      (setq ghostherd-tests--shrec-screen (ghostherd-test--claude-screen "❯ draft"))
+      (ghostherd-user-shell-command s "!ls" (lambda (w) (setq why w)))
+      (setq ghostherd-tests--shrec-screen (ghostherd-test--claude-screen "❯ draft!"))
+      (dotimes (_ 3) (let ((now later)) (setq later nil) (ghostherd-tests--run-later now)))
+      (should (equal ghostherd-tests--shrec '((:keys "!") (:keys "backspace"))))
+      (should (string-match-p "a's input box has text in it" why))
+      (should-not (gethash "a" ghostherd--shell-pending))
+      (should (seq-find (lambda (e) (string-prefix-p "! not run" (ghostherd-log-entry-text e))) ghostherd--log))
+      ;; A `!' that did not land after the draft is not taken back.
+      (setq ghostherd-tests--shrec nil why nil)
+      (setq ghostherd-tests--shrec-screen (ghostherd-test--claude-screen "❯ draft"))
+      (ghostherd-user-shell-command s "!ls" (lambda (w) (setq why w)))
+      (dotimes (_ 3) (let ((now later)) (setq later nil) (ghostherd-tests--run-later now)))
+      (should (equal ghostherd-tests--shrec '((:keys "!"))))
+      (should (string-match-p "did not go into its shell mode" why)))))
+
+(ert-deftest ghostherd-test-your-bang-command-wants-the-prompt ()
+  "Not at its prompt -- a menu, a dialog, its box in shell mode already --
+or still taking the last command, no `!' is typed: a `user-error'.  A
+kind with no shell mode, or words that are no `!' command: nil, nothing
+sent, and the caller sends them as words."
+  (ghostherd-tests--with-shell
+    (let ((s (ghostherd-tests--shrec-session :name "a")))
+      (dolist (screen (list ghostherd-tests--permission-screen ghostherd-test--claude-trust
+                            ghostherd-tests--claude-shell))
+        (setq ghostherd-tests--shrec-screen screen)
+        (should-error (ghostherd-user-shell-command s "!ls") :type 'user-error))
+      (setq ghostherd-tests--shrec-screen (ghostherd-test--claude-screen "❯ "))
+      (puthash "a" t ghostherd--shell-pending)
+      (should-error (ghostherd-user-shell-command s "!ls") :type 'user-error)
+      (remhash "a" ghostherd--shell-pending)
+      (should-not (ghostherd-user-shell-command s " !ls"))
+      (should-not (ghostherd-user-shell-command s "hello"))
+      (should-not (ghostherd-user-shell-command
+                   (ghostherd-tests--shrec-session :name "sh" :kind 'shell) "!ls"))
+      (should-not ghostherd-tests--shrec)
+      (should-not later)))
+  (dolist (kind '(claude grok agy))
+    (should (plist-get (ghostherd--spec kind) :shell-mode))))
+
+(defun ghostherd-tests--names-p (form symbol)
+  "Non-nil when FORM names SYMBOL anywhere in it."
+  (cond ((eq form symbol) t)
+        ((consp form) (or (ghostherd-tests--names-p (car form) symbol)
+                          (ghostherd-tests--names-p (cdr form) symbol)))
+        ((vectorp form) (seq-some (lambda (x) (ghostherd-tests--names-p x symbol)) form))))
+
+(defun ghostherd-tests--source-forms ()
+  "Every top-level form of ghostherd's own sources -- not its tests -- as
+(FILE NAME . FORM), NAME what it defines or nil."
+  (let ((dir (file-name-directory (locate-library "ghostherd-comm.el")))
+        forms)
+    (dolist (file (directory-files dir t "\\`ghostherd.*\\.el\\'"))
+      (unless (string-match-p "-tests\\.el\\'\\|test-helpers" file)
+        (with-temp-buffer
+          (insert-file-contents file)
+          (goto-char (point-min))
+          (condition-case nil
+              (while t
+                (let ((form (read (current-buffer))))
+                  (push (cons (file-name-nondirectory file)
+                              (cons (and (consp form)
+                                         (memq (car form) '(defun cl-defun defmacro defsubst cl-defmethod
+                                                                  cl-defgeneric defvar defconst defcustom))
+                                         (cadr form))
+                                    form))
+                        forms)))
+            (end-of-file nil)))))
+    forms))
+
+(defun ghostherd-tests--named-by (symbol forms)
+  "What, in FORMS (`ghostherd-tests--source-forms'), names SYMBOL, but its
+own definition: the definitions' names, sorted, the file for a form that
+defines nothing."
+  (sort (delete-dups
+         (delq nil (mapcar (lambda (f)
+                             (when (and (not (eq (cadr f) symbol))
+                                        (ghostherd-tests--names-p (cddr f) symbol))
+                               (or (cadr f) (intern (car f)))))
+                           forms)))
+        #'string<))
+
+(defun ghostherd-tests--calls (fn forms)
+  "The definitions in FORMS that call FN: name it first in a form, or hand
+it to `funcall', `apply' or `call-interactively'.  A key bound to it does not."
+  (let (found)
+    (dolist (f forms)
+      (let ((walk nil))
+        (setq walk (lambda (x)
+                     ;; Quoted data -- a help table, a menu's rows -- is no call.
+                     (when (and (consp x) (not (eq (car x) 'quote)))
+                       (when (or (eq (car x) fn)
+                                 (and (memq (car x) '(funcall apply call-interactively))
+                                      (member (cadr x) (list (list 'function fn) (list 'quote fn)))))
+                         (push (or (cadr f) (car f)) found))
+                       ;; Each element, not each tail: a tail is no form.
+                       (while (consp x) (funcall walk (car x)) (setq x (cdr x))))))
+        (unless (eq (cadr f) fn) (funcall walk (cddr f)))))
+    (delete-dups found)))
+
+(defun ghostherd-tests--keys-with-bang (forms)
+  "The definitions in FORMS where a key sender is handed a `!'."
+  (let (found)
+    (dolist (f forms)
+      (let ((walk nil))
+        (setq walk (lambda (x)
+                     (when (consp x)
+                       (when (and (memq (car x) '(ghostherd--host-send-keys ghostherd-send-keys
+                                                                            ghostherd-backend-send-keys))
+                                  (ghostherd-tests--names-p
+                                   (mapcar (lambda (a) (if (equal a "!") 'BANG a))
+                                           (flatten-tree (cdr x)))
+                                   'BANG))
+                         (push (cadr f) found))
+                       (while (consp x) (funcall walk (car x)) (setq x (cdr x))))))
+        (funcall walk (cddr f))))
+    (delete-dups found)))
+
+(ert-deftest ghostherd-test-shell-mode-only-from-the-user ()
+  "Shell mode runs a command asking no permission, so only your own words
+reach it -- never anything an agent sends or the herd composes, however
+its text begins.  By what they do: an agent's every way to text an agent
+-- its prompt and send through ghostel_cmd, a message, a handoff, an ask,
+the herd's mail and its commands, a relay's or nudge's `ghostherd-tell'
+-- with \"!touch /tmp/pwned\": no `!' key, no text beginning with `!'; and
+into a box in shell mode, nothing at all.  By how they are built: only
+`ghostherd--host-send-text' (the guarded paste) and
+`ghostherd--shell-command-go' paste into an agent, the second reached from
+the page's and Emacs's own prompt commands alone, and only
+`ghostherd-user-shell-command' types `!'.  A new caller fails here until
+it is shown to be yours."
+  (let ((bang "!touch /tmp/pwned"))
+    (dolist (screen (list (ghostherd-test--claude-screen "❯ ") ghostherd-tests--claude-shell))
+      (ghostherd-tests--with-shell
+        (let ((s (ghostherd-tests--shrec-session :name "a" :project "/p/"))
+              (ghostherd-tests--shrec-screen screen)
+              (ghostherd--asks-open (make-hash-table :test 'equal))
+              (ghostherd--asks-settled (make-hash-table :test 'equal))
+              (ghostherd--herd-asks nil))
+          (ghostherd-tests--shrec-session :name "lead-p" :project "/p/")
+          (puthash "lead-p" "lead" ghostherd--roles)
+          (cl-letf (((symbol-function 'run-with-timer) #'ignore)
+                    ((symbol-function 'ghostherd-herd-client) (lambda () "/p/bin/herd"))
+                    ((symbol-function 'ghostherd-memory-request-async) #'ignore))
+            (dolist (path (list (lambda () (ghostherd-send s bang t))
+                                (lambda () (ghostherd-send s bang nil))
+                                (lambda () (ghostherd-prompt s bang))
+                                (lambda () (ghostherd-message "rd" s bang :submit t))
+                                (lambda () (ghostherd-handoff s bang))
+                                (lambda () (ghostherd-handoff s bang "rd"))
+                                (lambda () (ghostherd-cmd-send "a" bang))
+                                (lambda () (ghostherd-cmd-prompt "a" bang))
+                                (lambda () (ghostherd-cmd-message "a" bang "rd"))
+                                (lambda () (ghostherd-tell s bang nil t))
+                                (lambda () (ghostherd-tell s bang))
+                                (lambda () (ghostherd-tell (ghostherd-get "lead-p") bang))
+                                (lambda () (ghostherd-lead-say "/p/" bang))
+                                (lambda () (ghostherd--herd-deliver-one `(:id "1" :from "rd" :to "a" :body ,bang :submit t)))
+                                (lambda () (ghostherd--herd-deliver-one `(:id "2" :from "rd" :to "a" :body ,bang :handoff t)))
+                                (lambda () (ghostherd--herd-deliver-one `(:id "3" :from "rd" :to "a" :body ,bang :ask "1a2b3c4d")))
+                                (lambda () (ghostherd--herd-run-command `(:id "4" :op "prompt" :session "a" :args (:body ,bang))))))
+              (ignore-errors (funcall path))))
+          (let ((texts (mapcar #'cadr (seq-filter (lambda (e) (eq (car e) :text)) ghostherd-tests--shrec)))
+                (keys (apply #'append (mapcar #'cdr (seq-filter (lambda (e) (eq (car e) :keys)) ghostherd-tests--shrec)))))
+            (should-not (member "!" keys))
+            (should-not (seq-find (lambda (text) (string-prefix-p "!" text)) texts))
+            (if (ghostherd--shell-mode-p screen)
+                (should-not ghostherd-tests--shrec)
+              ;; Each of the 17 did send: the test reaches what it says it does.
+              (should (= (length texts) 17))
+              (should (seq-find (lambda (text) (string-search " !touch /tmp/pwned" text)) texts))))))))
+  (let ((forms (ghostherd-tests--source-forms)))
+    (should (equal (ghostherd-tests--named-by 'ghostherd-backend-send-text forms)
+                   '(ghostherd--host-send-text ghostherd--shell-command-go)))
+    (should (equal (ghostherd-tests--named-by 'ghostherd--shell-command-go forms)
+                   '(ghostherd--shell-command-look)))
+    (should (equal (ghostherd-tests--named-by 'ghostherd--shell-command-look forms)
+                   '(ghostherd-user-shell-command)))
+    (should (equal (ghostherd-tests--named-by 'ghostherd-user-shell-command forms)
+                   '(ghostherd-memory-page--shell-command ghostherd-prompt-interactive ghostherd-sidebar-prompt)))
+    ;; The page's: what you send from it -- an agent's card, the room, the
+    ;; Inbox -- and nothing else.
+    (should (equal (ghostherd-tests--named-by 'ghostherd-memory-page--shell-command forms)
+                   '(ghostherd-memory-page--agent-act ghostherd-memory-page--say-shell-command)))
+    (should (equal (ghostherd-tests--named-by 'ghostherd-memory-page--say-shell-command forms)
+                   '(ghostherd-memory-page--lead-say ghostherd-memory-page--primary-say)))
+    (dolist (page '(ghostherd-memory-page--agent-act ghostherd-memory-page--lead-say
+                                                     ghostherd-memory-page--primary-say))
+      (should (equal (ghostherd-tests--named-by page forms) '(ghostherd-memory-page--handle))))
+    ;; Emacs's: commands you run, bound to keys -- no code calls them.
+    (dolist (cmd '(ghostherd-prompt-interactive ghostherd-sidebar-prompt))
+      (should-not (ghostherd-tests--calls cmd forms)))
+    (should (equal (ghostherd-tests--keys-with-bang forms) '(ghostherd-user-shell-command)))))
 
 (provide 'ghostherd-comm-tests)
 ;;; ghostherd-comm-tests.el ends here

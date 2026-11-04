@@ -628,6 +628,10 @@ it would on the phone.
 |                | answer apart from its ask, a folded turn whole; the head in     |
 |                | sight, solid, while a long turn is read to its end; the turns   |
 |                | themselves a size up from the page, code and headings with them |
+| =herd-code-copy= | a Copy on each code block the page draws, the room's and the  |
+|                | Inbox's: the block's text exactly; on the phone a tab above   |
+|                | the code, on the desk shown on hover or focus; a block        |
+|                | scrolled sideways keeps it in reach; none on inline code      |
 | =herd-meter=   | each agent's model, effort and context bar, on its row, its     |
 |                | column and above the chat's box; the form that switches it for  |
 |                | its session: what it sends, held while the agent works, open    |
