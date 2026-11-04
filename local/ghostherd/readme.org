@@ -2515,6 +2515,13 @@ are the other tabs (below, and "What happened while you were away").
   end.  At the desk onto Emacs's kill ring, on the phone onto the
   phone's clipboard.  A turn past 12,000 characters reaches the
   page cut short, and copies so; the transcript has it whole.
+- Each code block in a message --- the room, the Inbox, wherever the
+  page draws markdown --- has a Copy of its own, for the command an
+  agent asks you to run: the block's text exactly, no language tag, no
+  newline added.  On the phone a tab on the block's top-right corner,
+  always there and above the code, so a long line scrolled sideways
+  never runs under it; at the desk inside that corner, shown on hover
+  or focus.  Inline code has none.
 - From your phone, through Tailscale: the same page, served by Emacs
   to your other devices under this Mac's name on your tailnet, for your
   Tailscale login alone (=xwapp-remote-hosts=, =xwapp-remote-users=,
