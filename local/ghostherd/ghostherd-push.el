@@ -184,6 +184,7 @@ reaches you there."
          (ghostherd--herd-take-reports (plist-get result :reports))
          (ghostherd--herd-take-guard (plist-get result :guard))
          (ghostherd--herd-take-lint (plist-get result :lint))
+         (ghostherd--handoff-take-slots (plist-get result :handoff_slots))
          (ghostherd--herd-run-commands result))
        (list :sessions (vconcat (ghostherd--herd-snapshot))
              :page_url (or (ghostherd--room-url) "")
@@ -197,7 +198,10 @@ reaches you there."
              ;; How long a guarded agent's refused call waits for the user.
              :guard_ttl ghostherd-guard-request-ttl
              ;; The guard's requests told of since: not again.
-             :guard_told (vconcat (reverse told)))
+             :guard_told (vconcat (reverse told))
+             ;; The user's caps on the leads the herd starts for handoffs:
+             ;; said here alone, where no agent's token reaches.
+             :handoff_caps (ghostherd--handoff-caps))
        (lambda (_err)
          (setq ghostherd--herd-tick-inflight nil
                ghostherd--herd-replies

@@ -304,7 +304,10 @@ knows nothing of your work: what you found; the evidence -- files and
 lines, logs, tickets, commits; what is needed of that project; how it
 will know it is done; and who waits on it.  It is an ask: run it in the
 background, and its answer comes back to you.  A project with no lead
-gets one, started for it.  Your agents do not hand off -- the herd
+gets one, started for it -- or, while the herd's leads for handoffs are
+at their cap, the handoff is queued and that lead starts when a slot
+frees.  Queued is not refused: never send the same handoff again; tell
+the user it waits if that matters.  Your agents do not hand off -- the herd
 refuses them -- they tell you in their answers, and you decide.
 
 A handoff may come to you from another project: the herd says so where
@@ -406,12 +409,16 @@ CLI never had that message (`ghostherd--role-give-back').")
       (puthash id role ghostherd--role-owed)
       (remhash id ghostherd--role-spent))))
 
-(defun ghostherd-start-lead (project &optional kind notes)
+(defun ghostherd-start-lead (project &optional kind notes handoff-by resume)
   "Start PROJECT's lead, a KIND agent (`ghostherd-lead-kind' by default).
 NOTES, when given, say more than that it plans the work.  A CLI that
-takes no role as it starts is owed it, with its first message."
+takes no role as it starts is owed it, with its first message.
+HANDOFF-BY: the herd starts it for a handoff from that agent, which its
+caps count.  RESUME: the conversation it picks up, which has its role
+already -- a CLI that takes none is not owed it again."
   (let* ((kind (or kind ghostherd-lead-kind))
          (dir (file-name-as-directory (expand-file-name project)))
+         (again (and resume (ghostherd--resume-args kind resume)))
          (lead (ghostherd-spawn
                 kind
                 :name (ghostherd--unique-name
@@ -419,11 +426,13 @@ takes no role as it starts is owed it, with its first message."
                 :project project
                 :directory dir
                 :args (append (plist-get (ghostherd--spec kind) :args)
-                              (ghostherd--lead-args kind))
+                              (ghostherd--lead-args kind)
+                              again)
                 :notes (or notes "lead: plans the work, hands it out")
                 :role "lead"
+                :handoff-by handoff-by
                 :display nil)))
-    (unless (ghostherd--lead-args kind)
+    (unless (or again (ghostherd--lead-args kind))
       (puthash (ghostherd-session-id lead) ghostherd--lead-role ghostherd--role-owed))
     lead))
 
@@ -786,6 +795,19 @@ merged, clean worktree; keeps an unmerged one.  Returns the line to tell BY."
 ;; lead nobody asked for spends quota in a project the user may not be
 ;; looking at, so it is a setting, capped, only in a git checkout, and
 ;; pushed to the user's phone.
+;;
+;; Two caps, both the user's (the herd page's Agents tab sets them).  The
+;; first counts the leads the herd started that are AT WORK -- owe a
+;; handoff its answer -- since that is what spends quota; one that
+;; answered and sits idle costs memory, not quota.  The second, well
+;; above it, counts the ones UP at all.  Past the first, a handoff waits
+;; its turn -- queued, not refused -- and starts its lead once a slot
+;; frees.  Past the second, the herd stops the lead it started that has
+;; been idle longest and owes nothing, to make room, keeping its
+;; conversation: the next lead it starts in that project resumes it.
+;; The sidecar keeps the queue and decides when (`HerdStore._admit_handoffs');
+;; Emacs says the caps on each tick, which no agent's token reaches, and
+;; does the starting and the stopping, seeing what only it can see.
 
 (defcustom ghostherd-handoff-may-start-lead t
   "Whether a handoff to a project with no lead starts one there.
@@ -797,17 +819,55 @@ handoff, and the sender is told to ask the user."
   :group 'ghostherd)
 
 (defcustom ghostherd-handoff-lead-max 3
-  "How many leads the herd may have up at once that it started for
-handoffs.  Past it a handoff to a project with no lead is refused, naming
-the ones up, so the user decides.  Leads the user started do not count,
-nor ones started before Emacs restarted."
-  :type 'integer
+  "How many leads the herd started for handoffs may be at work at once:
+owe a handoff, delivered or queued to them, its answer.  One that
+answered and sits idle does not count.  Past it a handoff to a project
+with no lead waits its turn for a slot -- queued, not refused -- and
+starts that lead once one frees: a lead answering, dying or stopping, or
+this raised.  Leads the user started never count.  From 1 to 10, and
+not above `ghostherd-handoff-lead-alive-max'; the herd page's Agents tab
+sets it (`ghostherd-handoff-set-cap')."
+  :type 'natnum
   :group 'ghostherd)
 
-(defvar ghostherd--handoff-leads (make-hash-table :test 'equal)
-  "Session id -> the agent it was started for: the leads the herd started
-for a handoff, counted against `ghostherd-handoff-lead-max'.  Not kept
-over a restart: after one, they are leads like any other.")
+(defcustom ghostherd-handoff-lead-alive-max 8
+  "How many leads the herd started for handoffs may be up at all, idle
+ones too.  Starting one past it first stops the one idle longest that
+owes nothing (`ghostherd--handoff-stoppable'), keeping its conversation
+for the next lead the herd starts in its project; with none such, the
+handoff waits its turn, as past `ghostherd-handoff-lead-max'.  Never a
+lead the user started.  An idle CLI costs memory, not quota, so this is
+well above that one.  From 1 to 30; the herd page's Agents tab sets it."
+  :type 'natnum
+  :group 'ghostherd)
+
+(defconst ghostherd--handoff-cap-ranges
+  '((ghostherd-handoff-lead-max 1 10 "at work")
+    (ghostherd-handoff-lead-alive-max 1 30 "up"))
+  "Each handoff cap's range, and what it counts: the page takes nothing
+outside it.")
+
+(defcustom ghostherd-handoff-lead-resume t
+  "Whether a lead the herd starts for a handoff picks up the conversation
+of the one it last started in that project -- stopped to make room, or
+killed -- rather than starting cold: on the same CLI, while that
+conversation is there and no agent is on it.  Nil starts each afresh."
+  :type 'boolean
+  :group 'ghostherd)
+
+(defcustom ghostherd-handoff-leads-file "~/.ghostherd/handoff-leads.eld"
+  "Where the herd keeps, over a restart, the conversation of the last lead
+it started for handoffs in each project -- for the next one there to
+resume -- and the leads it stopped lately to make room, for the Inbox."
+  :type 'file
+  :group 'ghostherd)
+
+(defvar ghostherd--handoff-slots nil
+  "Where the handoff leads and the handoffs waiting for one stand, as the
+sidecar's last tick said (`handoff_slots'): for the page.")
+
+(defconst ghostherd--handoff-stops-kept (* 3 86400)
+  "Seconds a stop the herd made to make room stays in the Inbox's list.")
 
 (defun ghostherd--handoff-leads-up ()
   "The leads the herd started for handoffs that are still up: not dead."
@@ -827,11 +887,214 @@ it, kept until read."
          (ghostherd--session-live-p s)
          by)))
 
-(defun ghostherd-handoff-lead (by project &optional from-project head)
+(defun ghostherd--handoff-caps ()
+  "The caps, as each tick tells the sidecar: it keeps the queue by them."
+  (list :working ghostherd-handoff-lead-max
+        :alive ghostherd-handoff-lead-alive-max
+        :may_start (if ghostherd-handoff-may-start-lead t :json-false)))
+
+(defun ghostherd--handoff-take-slots (slots)
+  "Keep SLOTS, the sidecar's word on the handoff leads and their queue."
+  (setq ghostherd--handoff-slots slots))
+
+;;;; What only Emacs sees: whether a lead may be stopped to make room
+
+(defun ghostherd--draft-p (session)
+  "Non-nil when SESSION's input box holds words not sent: typed there --
+not the prompt claude suggests, drawn faint -- or a message of the
+herd's not yet known taken."
+  (or (ghostherd--submit-pending-p session)
+      (let* ((id (ghostherd-session-id session))
+             (foot (gethash id ghostherd--feet)))
+        (if foot
+            (let ((input (plist-get foot :input)))
+              (and input (not (equal input (plist-get foot :suggestion)))))
+          (when-let* ((screen (gethash id ghostherd--screens)))
+            (plist-get (ghostherd--foot screen) :input))))))
+
+(defun ghostherd--handoff-held (session)
+  "Why SESSION must not be stopped to make room, by what only Emacs sees --
+a draft in its box, or you looking at it -- or nil.  The sidecar sees
+the rest: the asks, the agents it started, its state."
+  (cond ((ghostherd--draft-p session) "a draft in its box")
+        ((ghostherd--watched-p session) "you are looking at it")))
+
+(defun ghostherd--handoff-stoppable (name)
+  "NAME's session when it is a lead the herd started for a handoff that it
+may stop to make room -- it owes nothing: no open ask to it, none of its
+own open, no live agent it started, idle (not blocked, not at work), and
+neither a draft in its box nor you looking at it.  Else nil.  Asked again
+as the stop is made, though the sidecar picked it: it may have been
+taken into use since."
+  (when-let* ((s (and (stringp name) (ghostherd-get name))))
+    (and (gethash (ghostherd-session-id s) ghostherd--handoff-leads)
+         (equal (ghostherd-session-role s) "lead")
+         (ghostherd--session-live-p s)
+         (memq (ghostherd-session-state s) '(idle done))
+         (not (ghostherd--handoff-held s))
+         (not (seq-some (lambda (o)
+                          (and (equal (ghostherd-session-started-by o) name)
+                               (not (eq (ghostherd-session-state o) 'dead))
+                               (ghostherd--session-live-p o)))
+                        (ghostherd-sessions)))
+         (not (seq-some (lambda (a)
+                          (and (member (plist-get a :status) '("queued" "delivered"))
+                               (or (equal (plist-get a :to) name)
+                                   (equal (plist-get a :from) name))))
+                        ghostherd--herd-asks))
+         s)))
+
+;;;; Kept over a restart: the conversations to resume, the stops made
+
+(defvar ghostherd--handoff-data 'unread
+  "`ghostherd-handoff-leads-file' as last read or written: a plist of
+:kept, an alist of project -> (:kind :conversation :name :at), and
+:stops, the stops made lately, newest first.")
+
+(defun ghostherd--handoff-data ()
+  "What `ghostherd-handoff-leads-file' holds, read once."
+  (when (eq ghostherd--handoff-data 'unread)
+    (setq ghostherd--handoff-data
+          (let ((file (expand-file-name ghostherd-handoff-leads-file)))
+            (and (file-readable-p file)
+                 (ignore-errors
+                   (with-temp-buffer
+                     (insert-file-contents file)
+                     (let ((v (read (current-buffer))))
+                       (and (plistp v) v))))))))
+  ghostherd--handoff-data)
+
+(defun ghostherd--handoff-data-put (key value)
+  "Set KEY of the kept data to VALUE, and write it when it changed."
+  (let ((data (copy-sequence (ghostherd--handoff-data))))
+    (unless (equal (plist-get data key) value)
+      (setq data (plist-put data key value)
+            ghostherd--handoff-data data)
+      (let ((file (expand-file-name ghostherd-handoff-leads-file)))
+        (ignore-errors
+          (make-directory (file-name-directory file) t)
+          (let ((print-length nil) (print-level nil))
+            (with-temp-file file (prin1 data (current-buffer)))))))))
+
+(defun ghostherd--handoff-remember (&optional session)
+  "Keep, by project, the conversation each lead the herd started for a
+handoff is on -- SESSION's alone, when given -- as its hooks name it,
+for the next lead the herd starts there to resume: stopped or killed,
+or gone with Emacs, it is not lost.  Written only when it changed; on
+every tick, so nothing is done while the herd has no such lead."
+  (when (or session (> (hash-table-count ghostherd--handoff-leads) 0))
+    (ghostherd--handoff-remember-now session)))
+
+(defun ghostherd--handoff-remember-now (session)
+  "`ghostherd--handoff-remember', for SESSION or every one up."
+  (let ((kept (copy-alist (plist-get (ghostherd--handoff-data) :kept))))
+    (dolist (s (if session (list session) (ghostherd--handoff-leads-up)))
+      (when-let* (((gethash (ghostherd-session-id s) ghostherd--handoff-leads))
+                  (project (ghostherd--session-project-name s))
+                  (id (ghostherd-session-conversation s))
+                  (now (list :kind (ghostherd-session-kind s) :conversation id
+                             :name (ghostherd-session-name s))))
+        (unless (equal (seq-take (alist-get project kept nil nil #'equal) 6) now)
+          (setf (alist-get project kept nil nil #'equal)
+                (append now (list :at (float-time)))))))
+    (ghostherd--handoff-data-put :kept kept)))
+
+(defun ghostherd--handoff-kept (root kind)
+  "The conversation the last lead the herd started in ROOT was on, for a
+KIND lead to resume -- its id -- or nil: none kept, on another CLI, gone
+from where its CLI keeps it, or an agent on it now."
+  (when-let* ((ghostherd-handoff-lead-resume)
+              (kept (alist-get (ghostherd--project-name root)
+                               (plist-get (ghostherd--handoff-data) :kept) nil nil #'equal))
+              ((eq (plist-get kept :kind) kind))
+              (id (plist-get kept :conversation))
+              ((not (ghostherd--resumed-by id))))
+    (if (ghostherd--conversation-gone-p kind id)
+        (progn (ghostherd--handoff-forget root) nil)
+      id)))
+
+(defun ghostherd--handoff-forget (root)
+  "Drop the conversation kept for ROOT's next lead."
+  (ghostherd--handoff-data-put
+   :kept (seq-remove (lambda (c) (equal (car c) (ghostherd--project-name root)))
+                     (plist-get (ghostherd--handoff-data) :kept))))
+
+(defun ghostherd--handoff-stops ()
+  "The stops the herd made lately to make room, newest first."
+  (let ((since (- (float-time) ghostherd--handoff-stops-kept)))
+    (seq-filter (lambda (s) (> (or (plist-get s :at) 0) since))
+                (plist-get (ghostherd--handoff-data) :stops))))
+
+(defun ghostherd--handoff-stop (session for)
+  "Stop SESSION, a lead the herd started for a handoff that owes nothing,
+to make room for FOR's lead: its conversation kept for the next lead in
+its project, the stop logged and in the Inbox as an Update."
+  (let* ((name (ghostherd-session-name session))
+         (project (ghostherd--session-project-name session))
+         (since (ghostherd-session-last-active session))
+         (idle (if since (ghostherd--short-span (- (float-time) (float-time since))) "a while"))
+         (why (format "stopped by the herd to make room for %s's lead: %d leads it started for \
+handoffs were up, %d at most, and %s had been idle longest (%s) and owed nothing"
+                      (file-name-nondirectory (directory-file-name for))
+                      (length (ghostherd--handoff-leads-up)) ghostherd-handoff-lead-alive-max
+                      name idle)))
+    (ghostherd--handoff-remember session)
+    (ghostherd--log-add session 'life why)
+    (ghostherd--handoff-data-put
+     :stops (seq-take (cons (list :name name :project (or project "") :for for :why why
+                                  :at (float-time)
+                                  :resume (and ghostherd-handoff-lead-resume
+                                               (ghostherd-session-conversation session) t))
+                            (ghostherd--handoff-stops))
+                      20))
+    (message "ghostherd: %s" why)
+    (ghostherd-kill session t)))
+
+(defun ghostherd--short-span (seconds)
+  "SECONDS as a short span: 40s, 12m, 3h, 2d."
+  (cond ((< seconds 60) (format "%ds" (round seconds)))
+        ((< seconds 3600) (format "%dm" (round seconds 60)))
+        ((< seconds 86400) (format "%dh" (round seconds 3600)))
+        (t (format "%dd" (round seconds 86400)))))
+
+;;;; Setting the caps: the user's, from the herd page
+
+(defun ghostherd-handoff-set-cap (var value)
+  "Set VAR, one of the handoff caps (`ghostherd--handoff-cap-ranges'), to
+VALUE for good, by `customize-save-variable': VALUE a whole number in
+its range, the cap at work not above the cap up -- else a `user-error'
+saying why, and nothing set.  A string of digits is taken as its number
+\(a page's field gives one).  The herd ticks at once, so a raised cap
+starts what waits now.  Returns the value set."
+  (let* ((range (or (alist-get var ghostherd--handoff-cap-ranges)
+                    (user-error "No handoff cap %s" var)))
+         (lo (nth 0 range)) (hi (nth 1 range)) (what (nth 2 range))
+         (n (cond ((and (integerp value) (not (booleanp value))) value)
+                  ((and (stringp value) (string-match-p "\\`[ \t]*[0-9]+[ \t]*\\'" value))
+                   (string-to-number value)))))
+    (unless (and n (<= lo n hi))
+      (user-error "Leads %s for handoffs: a whole number from %d to %d, not %s"
+                  what lo hi (if (stringp value) (format "%S" value) (format "%s" value))))
+    (when (and (eq var 'ghostherd-handoff-lead-alive-max) (< n ghostherd-handoff-lead-max))
+      (user-error "Leads up for handoffs: not fewer than may be at work (%d)" ghostherd-handoff-lead-max))
+    (when (and (eq var 'ghostherd-handoff-lead-max) (> n ghostherd-handoff-lead-alive-max))
+      (user-error "Leads at work for handoffs: not more than may be up (%d)" ghostherd-handoff-lead-alive-max))
+    (customize-save-variable var n)
+    (when (fboundp 'ghostherd--herd-tick-async)
+      (ghostherd--herd-tick-async))
+    n))
+
+(defun ghostherd-handoff-lead (by project &optional from-project head stop queued)
   "PROJECT's lead, for a handoff from BY, as the sidecar asks over the
 wire; one started when it has none.  FROM-PROJECT is BY's project and HEAD
-the brief's first line, for the push.  Returns (NAME . TEXT): the lead's
-name and what was done, or nil and why it was refused."
+the brief's first line, for the push.  STOP names a lead the herd started
+for a handoff to stop first, to make room under
+`ghostherd-handoff-lead-alive-max' -- done only while it still owes
+nothing.  QUEUED: the sidecar keeps the caps (it asked once a slot was
+free); an older one did not, and the cap at work is counted here instead.
+Returns (NAME . TEXT): the lead's name and what was done; nil and why it
+was refused; or `:wait' and why it waits on -- STOP was taken into use
+since, and nothing else may be stopped."
   (let* ((dir (and (stringp project) (not (string-empty-p project))
                    (file-name-as-directory (expand-file-name project))))
          (root (and dir (file-directory-p dir)
@@ -841,7 +1104,8 @@ name and what was done, or nil and why it was refused."
          (from (and (stringp from-project) (not (string-empty-p from-project))
                     (ghostherd--project-name from-project)))
          (leaf (lambda (p) (file-name-nondirectory (directory-file-name p))))
-         (by-s (and (stringp by) (ghostherd-get by))))
+         (by-s (and (stringp by) (ghostherd-get by)))
+         (stop (and (stringp stop) (not (string-empty-p stop)) stop)))
     (cond
      ((not root) (cons nil (format "no directory %s: no project to hand off to"
                                    (if dir (ghostherd--abbreviate dir) project))))
@@ -861,12 +1125,19 @@ handoff (ghostherd-handoff-may-start-lead is off); ask the user" (funcall leaf n
      ((not (ghostherd--git-lines root "rev-parse" "--show-toplevel"))
       (cons nil (format "%s is not a git checkout, and has no lead: the herd starts a \
 lead only in a git checkout; ask the user" (ghostherd--abbreviate root))))
-     ((let ((up (ghostherd--handoff-leads-up)))
-        (when (>= (length up) (max 0 ghostherd-handoff-lead-max))
-          (cons nil (format "%s has no lead, and the herd has %d up that it started for \
+     ((and (not queued)
+           (let ((up (ghostherd--handoff-leads-up)))
+             (when (>= (length up) (max 0 ghostherd-handoff-lead-max))
+               (cons nil (format "%s has no lead, and the herd has %d up that it started for \
 handoffs (max %d): %s -- ask the user to start one there, or to stop one of those"
-                            (funcall leaf name) (length up) ghostherd-handoff-lead-max
-                            (mapconcat #'ghostherd-session-name up ", "))))))
+                                 (funcall leaf name) (length up) ghostherd-handoff-lead-max
+                                 (mapconcat #'ghostherd-session-name up ", ")))))))
+     ;; Room to make, and the lead picked for it taken into use since.
+     ((and stop
+           (>= (length (ghostherd--handoff-leads-up)) ghostherd-handoff-lead-alive-max)
+           (not (ghostherd--handoff-stoppable stop)))
+      (cons :wait (format "%s, which the herd would stop to make room, is in use now; \
+the handoff to %s waits" stop (funcall leaf name))))
      (t
       (let* ((kind (or (car (ghostherd-project-defaults root)) ghostherd-lead-kind))
              ;; Primary hands off the user's requests, from a place of its own.
@@ -880,23 +1151,31 @@ handoffs (max %d): %s -- ask the user to start one there, or to stop one of thos
                       (plist-get (ghostherd--spec kind) :command)))
             (cons nil (format "no agent kind %s to start %s's lead on" kind (funcall leaf name)))
           (condition-case err
-              (let ((new (ghostherd-start-lead
-                          root kind
-                          (format "lead: plans the work, hands it out; started for a handoff from %s"
-                                  for))))
-                (puthash (ghostherd-session-id new) (or by "user") ghostherd--handoff-leads)
-                ;; Asked now, as `ghostherd-lead-say' does, so that what the
-                ;; project works on has been looked at by the time it is told.
-                (ghostherd--project-work name)
-                (ghostherd--log-add new 'life (format "started for a handoff from %s" for))
-                (message "ghostherd: started %s for a handoff from %s"
-                         (ghostherd-session-name new) for)
-                (ghostherd--push 'lead-started new :by (or by "user") :from (or from "")
-                                 :head (or head ""))
-                (cons (ghostherd-session-name new)
-                      (format "started %s (%s) in %s for a handoff from %s"
-                              (ghostherd-session-name new) kind
-                              (ghostherd--abbreviate root) for)))
+              (progn
+                (when-let* ((s (and stop (>= (length (ghostherd--handoff-leads-up))
+                                             ghostherd-handoff-lead-alive-max)
+                                    (ghostherd--handoff-stoppable stop))))
+                  (ghostherd--handoff-stop s root))
+                (let* ((id (ghostherd--handoff-kept root kind))
+                       (new (ghostherd-start-lead
+                             root kind
+                             (format "lead: plans the work, hands it out; started for a handoff from %s%s"
+                                     for (if id (format " (resumed %s)" (substring id 0 (min 8 (length id)))) ""))
+                             (or by "user") id)))
+                  ;; Asked now, as `ghostherd-lead-say' does, so that what the
+                  ;; project works on has been looked at by the time it is told.
+                  (ghostherd--project-work name)
+                  (ghostherd--log-add new 'life (format "started for a handoff from %s%s" for
+                                                        (if id (format ", resumed on its last lead's conversation %s" id)
+                                                          "")))
+                  (message "ghostherd: started %s for a handoff from %s" (ghostherd-session-name new) for)
+                  (ghostherd--push 'lead-started new :by (or by "user") :from (or from "")
+                                   :head (or head ""))
+                  (cons (ghostherd-session-name new)
+                        (format "started %s (%s) in %s for a handoff from %s%s"
+                                (ghostherd-session-name new) kind
+                                (ghostherd--abbreviate root) for
+                                (if id ", on its last lead's conversation" "")))))
             (error (cons nil (format "could not start %s's lead: %s" (funcall leaf name)
                                      (error-message-string err)))))))))))
 

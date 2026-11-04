@@ -81,7 +81,10 @@ PROJECT is its path or its name -- the name of a project with agents, a
 memory store, or that claude has run in; one the herd does not know is
 refused, saying which it does: give the path then, or ask the user.  Run
 it in the background: you are told when the answer comes, and you tell
-the user.  A project with no lead gets one started for it.  Brief it for a lead who knows nothing of your
+the user.  A project with no lead gets one started for it -- or, with
+the herd's leads for handoffs at their cap, it is queued and starts when
+a slot frees: queued is not refused, so never send it again; tell the
+user it waits.  Brief it for a lead who knows nothing of your
 conversation: what the user wants and why, what is known (files,
 tickets, links, commits), what done looks like, and that the user waits.
 Work that spans projects is a handoff to each, with its part, and says
@@ -246,13 +249,14 @@ With a prefix argument, write TEXT to it as well."
 
 (defun ghostherd--herd-run-command (cmd)
   "Run one sidecar Telegram CMD plist.  Return (:id ID :text TEXT), and
-for a handoff the lead it went to as :lead."
+for a handoff the lead it went to as :lead -- or :wait t, when it waits
+on for room (`ghostherd-handoff-lead')."
   (let* ((id (plist-get cmd :id))
          (op (format "%s" (or (plist-get cmd :op) "")))
          (name (plist-get cmd :session))
          (args (plist-get cmd :args))
          (text "ok")
-         lead)
+         lead wait)
     (condition-case err
         (pcase op
           ("prompt"
@@ -316,12 +320,17 @@ for a handoff the lead it went to as :lead."
              (setq text (if up "sent to primary"
                           "started primary; it reads this once it is up"))))
           ("handoff"
-           ;; `herd handoff' to a project the sidecar found no lead in.
+           ;; `herd handoff' to a project the sidecar found no lead in, once
+           ;; it has a slot for one -- and, past the cap up, a lead to stop.
            (pcase-let ((`(,name . ,said)
                         (ghostherd-handoff-lead (plist-get args :by) (plist-get args :project)
                                                 (plist-get args :from_project)
-                                                (plist-get args :head))))
-             (setq lead name text said)))
+                                                (plist-get args :head)
+                                                (plist-get args :stop)
+                                                (eq (plist-get args :queued) t))))
+             (if (eq name :wait)
+                 (setq wait t text said)
+               (setq lead name text said))))
           ("explain"
            (setq text (ghostherd--explain-text name)))
           ("lead-say"
@@ -334,7 +343,7 @@ for a handoff the lead it went to as :lead."
              (setq text (format "sent to %s" (ghostherd-session-name (ghostherd-lead-say project body))))))
           (_ (setq text (format "unknown op %s" op))))
       (error (setq text (error-message-string err))))
-    (append (list :id id :text text) (and lead (list :lead lead)))))
+    (append (list :id id :text text) (and lead (list :lead lead)) (and wait (list :wait t)))))
 
 (defun ghostherd--herd-run-commands (result)
   "Execute Telegram commands from RESULT and queue replies."

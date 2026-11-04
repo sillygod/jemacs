@@ -1024,5 +1024,354 @@ the lead it was for."
                      '(("ask-failed" "lead-p" "other's lead"))))
       (should (equal (mapcar #'ghostherd-log-entry-session ghostherd--log) '("lead-p"))))))
 
+;;; The leads the herd starts for handoffs: two caps, a queue, a stop (ask 0ade8eeb)
+;;
+;; The sidecar keeps the queue and counts the slots (server/tests/
+;; test_handoff.py: the counting, FIFO, cancel, a lead appearing meanwhile,
+;; a cap raised, a restart, the stop picked by each "owes nothing").  Here,
+;; Emacs's half: the mark that survives a restart, what only Emacs sees of
+;; "owes nothing", the stop it makes and the conversation it keeps, the
+;; caps on each tick and only from the page.
+
+(defmacro ghostherd-tests--with-herd-leads (&rest body)
+  "BODY in `ghostherd-tests--with-handoff', with `fox' and `leo' two more
+git checkouts, the herd's links its own, nothing looked at, and every
+kept conversation still on disk."
+  (declare (indent 0) (debug t))
+  `(ghostherd-tests--with-handoff
+     (let ((fox (concat base "fox/"))
+           (leo (concat base "leo/"))
+           (ghostherd--herd-links (make-hash-table :test 'equal))
+           (ghostherd--feet (make-hash-table :test 'equal))
+           (ghostherd--submits (make-hash-table :test 'equal))
+           (ghostherd--screens (make-hash-table :test 'equal))
+           (ghostherd--herd-asks nil)
+           (ghostherd-handoff-lead-max 3)
+           (ghostherd-handoff-lead-alive-max 8)
+           (ghostherd-handoff-lead-resume t))
+       (dolist (d (list fox leo))
+         (make-directory d t)
+         (funcall git d "init" "-q" "-b" "main")
+         (funcall git d "commit" "-q" "--allow-empty" "-m" "start"))
+       (cl-letf (((symbol-function 'ghostherd--conversation-gone-p) (lambda (&rest _) nil))
+                 ((symbol-function 'ghostherd--watched-p) (lambda (_) nil)))
+         ,@body))))
+
+(defun ghostherd-tests--herd-lead (project &optional by)
+  "Start PROJECT's lead for a handoff from BY (lead-p), as the sidecar asks
+once a slot is free; its session."
+  (let ((r (ghostherd-handoff-lead (or by "lead-p") project nil "x" nil t)))
+    (should (stringp (car r)))
+    (ghostherd-get (car r))))
+
+(ert-deftest ghostherd-test-handoff-lead-mark-rides-the-recipe ()
+  "A lead the herd started for a handoff is marked so -- the caps count
+it -- and the mark is written onto its host with the recipe: after a
+restart, and through a respawn, it is still the herd's."
+  (ghostherd-tests--with-herd-leads
+    (let* ((lead (ghostherd-tests--herd-lead other))
+           (name (ghostherd-session-name lead)))
+      (should (equal (gethash name ghostherd--handoff-leads) "lead-p"))
+      (should (equal (plist-get ghostherd-tests--fake-spawned :handoff-by) "lead-p"))
+      (should (equal (plist-get (ghostherd-session-recipe lead) :handoff-by) "lead-p"))
+      (should (assq :handoff-by ghostherd-tmux--recipe-options))
+      ;; The user's own lead carries no mark.
+      (should-not (gethash "lead-p" ghostherd--handoff-leads))
+      ;; Emacs restarts: the session is gone from this Emacs, its host is
+      ;; not, and restore reads the mark back off the recipe.
+      (let ((recipe (ghostherd-session-recipe lead)))
+        (remhash name ghostherd--sessions)
+        (clrhash ghostherd--handoff-leads)
+        (cl-letf (((symbol-function 'ghostherd-backend-list)
+                   (lambda (b) (and (eq b 'fake) (list (append (list :host-id (concat "gh-" name)) recipe)))))
+                  (ghostherd-known-backends '(fake))
+                  ((symbol-function 'ghostherd--orphan-view) #'ignore))
+          (let ((ghostherd-known-backends '(fake)))
+            (ghostherd-restore))))
+      (should (equal (gethash name ghostherd--handoff-leads) "lead-p"))
+      ;; Killed, it is no longer counted.
+      (ghostherd-kill (ghostherd-get name) t)
+      (should-not (gethash name ghostherd--handoff-leads)))))
+
+(ert-deftest ghostherd-test-handoff-snapshot-says-whom-for-and-what-holds-it ()
+  "Each tick's snapshot says, of a lead the herd started for a handoff,
+whom for and why it must not be stopped -- what only Emacs sees: words
+typed in its box (not the prompt claude suggests), a message of the
+herd's not yet taken, you looking at it.  Other agents say neither."
+  (ghostherd-tests--with-herd-leads
+    (let* ((lead (ghostherd-tests--herd-lead other))
+           (id (ghostherd-session-id lead))
+           (row (lambda (name) (seq-find (lambda (r) (equal (plist-get r :name) name))
+                                         (ghostherd--herd-snapshot))))
+           (held (lambda () (plist-get (funcall row (ghostherd-session-name lead)) :held))))
+      (should (equal (plist-get (funcall row "lead-other") :handoffBy) "lead-p"))
+      (should (equal (plist-get (funcall row "lead-p") :handoffBy) ""))
+      (should (equal (plist-get (funcall row "lead-p") :held) ""))
+      (should (equal (funcall held) ""))
+      ;; A draft typed in its box.
+      (puthash id (list :input "half a thought" :suggestion nil) ghostherd--feet)
+      (should (equal (funcall held) "a draft in its box"))
+      ;; The prompt claude suggests, drawn faint, is no draft.
+      (puthash id (list :input "run the tests" :suggestion "run the tests") ghostherd--feet)
+      (should (equal (funcall held) ""))
+      (remhash id ghostherd--feet)
+      ;; A message of the herd's not yet known taken.
+      (puthash id (list :text "an ask" :state 'pending) ghostherd--submits)
+      (should (equal (funcall held) "a draft in its box"))
+      (remhash id ghostherd--submits)
+      ;; A CLI whose foot is not read: its box off the last screen.
+      (puthash id "out\n────────────────\n> typed by hand\n────────────────\n  ? for shortcuts\n" ghostherd--screens)
+      (should (equal (funcall held) "a draft in its box"))
+      (remhash id ghostherd--screens)
+      ;; You looking at it.
+      (cl-letf (((symbol-function 'ghostherd--watched-p) (lambda (s) (eq s lead))))
+        (should (equal (funcall held) "you are looking at it"))))))
+
+(ert-deftest ghostherd-test-handoff-stoppable-owes-nothing ()
+  "Emacs asks again, as it makes the stop the sidecar picked, whether the
+lead still owes nothing: each of these keeps it -- and the user's own
+lead is never the herd's to stop."
+  (ghostherd-tests--with-herd-leads
+    (let* ((lead (ghostherd-tests--herd-lead other))
+           (name (ghostherd-session-name lead))
+           (id (ghostherd-session-id lead))
+           (ok (lambda () (ghostherd--handoff-stoppable name))))
+      (setf (ghostherd-session-state lead) 'idle)
+      (should (eq (funcall ok) lead))
+      (setf (ghostherd-session-state lead) 'done)
+      (should (funcall ok))
+      (dolist (state '(working blocked waiting starting dead))
+        (setf (ghostherd-session-state lead) state)
+        (should-not (funcall ok)))
+      (setf (ghostherd-session-state lead) 'idle)
+      ;; An open ask delivered or queued to it; one of its own open.
+      (dolist (a (list (list :id "k1" :from "lead-p" :to name :status "delivered")
+                       (list :id "k2" :from "lead-p" :to name :status "queued")
+                       (list :id "k3" :from name :to "lead-p" :status "delivered")
+                       (list :id "k4" :from name :to "" :status "queued" :project "~/x/")))
+        (let ((ghostherd--herd-asks (list a)))
+          (should-not (funcall ok))))
+      (let ((ghostherd--herd-asks (list (list :id "k5" :from "lead-p" :to name :status "answered"))))
+        (should (funcall ok)))
+      ;; A live agent it started.
+      (let ((rd (ghostherd-tests--session :name "rd-other" :kind 'claude :backend 'fake :project other)))
+        (puthash "rd-other" name ghostherd--started-by)
+        (should-not (funcall ok))
+        (setf (ghostherd-session-state rd) 'dead)
+        (should (funcall ok)))
+      ;; A draft; you looking at it.
+      (puthash id (list :input "typing" :suggestion nil) ghostherd--feet)
+      (should-not (funcall ok))
+      (remhash id ghostherd--feet)
+      (cl-letf (((symbol-function 'ghostherd--watched-p) (lambda (_) t)))
+        (should-not (funcall ok)))
+      (should (funcall ok))
+      ;; The user's lead, idle and owing nothing: never.
+      (should-not (ghostherd--handoff-stoppable "lead-p"))
+      (should-not (ghostherd--handoff-stoppable "nobody")))))
+
+(ert-deftest ghostherd-test-handoff-stop-makes-room-and-keeps-the-conversation ()
+  "Past the cap up, the sidecar's start names a lead to stop first: Emacs
+stops it -- logged (life) with why, an Inbox Update -- keeps the
+conversation it was on, and starts the new lead.  The next lead the herd
+starts in the stopped one's project resumes that conversation."
+  (ghostherd-tests--with-herd-leads
+    (let* ((ghostherd-handoff-lead-alive-max 1)
+           (old (ghostherd-tests--herd-lead fox))
+           (oname (ghostherd-session-name old)))
+      (ghostherd--herd-take-links (list (list :session oname :cli "claude" :conversation "conv-fox-1")))
+      (setf (ghostherd-session-state old) 'idle
+            (ghostherd-session-last-active old) (time-subtract nil 3600))
+      ;; Kept as soon as its hooks named it, in a file -- over a restart too.
+      (should (equal (plist-get (alist-get (ghostherd--project-name fox)
+                                           (plist-get (ghostherd--handoff-data) :kept) nil nil #'equal)
+                                :conversation)
+                     "conv-fox-1"))
+      (let ((r (ghostherd--herd-run-command
+                (list :id "c1" :op "handoff" :session "lead-p"
+                      :args (list :by "lead-p" :project (ghostherd--project-name other)
+                                  :from_project (ghostherd--project-name repo) :head "x"
+                                  :stop oname :queued t)))))
+        (should (equal (plist-get r :lead) "lead-other"))
+        (should-not (plist-member r :wait)))
+      (should-not (ghostherd-get oname))
+      (let ((entry (seq-find (lambda (e) (and (equal (ghostherd-log-entry-session e) oname)
+                                              (eq (ghostherd-log-entry-kind e) 'life)
+                                              (string-match-p "stopped by the herd" (ghostherd-log-entry-text e))))
+                             ghostherd--log)))
+        (should entry)
+        (should (string-match-p "to make room for other's lead: 1 leads it started for handoffs were up, 1 at most, and lead-fox had been idle longest (1h) and owed nothing"
+                                (ghostherd-log-entry-text entry))))
+      ;; An Update in the Inbox, kept over a restart of Emacs.
+      (setq ghostherd--handoff-data 'unread)
+      (skip-unless (require 'ghostherd-memory-page nil t))
+      (let ((items (ghostherd-inbox--stop-items (ghostherd--handoff-stops))))
+        (should (= (length items) 1))
+        (should (equal (plist-get (car items) :kind) "lead-stopped"))
+        (should (equal (plist-get (car items) :group) "fyi"))
+        (should (string-prefix-p "lead-stopped:lead-fox:" (plist-get (car items) :id)))
+        (should (string-match-p "resumes it\\.\\'" (plist-get (car items) :body))))
+      ;; Later, a handoff to fox: its new lead resumes the kept conversation.
+      (let* ((ghostherd-handoff-lead-alive-max 8)
+             (again (ghostherd-tests--herd-lead fox)))
+        (should (equal (last (ghostherd-session-args again) 2) '("-r" "conv-fox-1")))
+        (should (member "--append-system-prompt" (ghostherd-session-args again)))
+        (should (string-match-p "(resumed conv-fox)" (ghostherd-session-notes again)))
+        (should (seq-find (lambda (e) (string-match-p "resumed on its last lead's conversation conv-fox-1"
+                                                      (ghostherd-log-entry-text e)))
+                          ghostherd--log))))))
+
+(ert-deftest ghostherd-test-handoff-resume-only-when-safe ()
+  "A kept conversation is resumed only on the same CLI, while it is still
+where that CLI keeps it, and with no agent on it now; else the lead
+starts afresh -- and one gone is dropped.  Off, never."
+  (ghostherd-tests--with-herd-leads
+    (let ((root (ghostherd--project-name fox)))
+      (ghostherd--handoff-data-put :kept (list (cons root (list :kind 'claude :conversation "c-1" :name "lead-fox"))))
+      (should (equal (ghostherd--handoff-kept fox 'claude) "c-1"))
+      (should-not (ghostherd--handoff-kept fox 'agy))
+      (let ((ghostherd-handoff-lead-resume nil))
+        (should-not (ghostherd--handoff-kept fox 'claude)))
+      (cl-letf (((symbol-function 'ghostherd--resumed-by) (lambda (id) (and (equal id "c-1") 'someone))))
+        (should-not (ghostherd--handoff-kept fox 'claude)))
+      (cl-letf (((symbol-function 'ghostherd--conversation-gone-p) (lambda (&rest _) t)))
+        (should-not (ghostherd--handoff-kept fox 'claude)))
+      (should-not (plist-get (ghostherd--handoff-data) :kept))
+      ;; Started fresh: no resume flag.
+      (should-not (member "-r" (ghostherd-session-args (ghostherd-tests--herd-lead fox)))))))
+
+(ert-deftest ghostherd-test-handoff-stop-waits-when-taken-into-use ()
+  "The lead the sidecar picked to stop was taken into use since: nothing
+is stopped, nothing started, and the sidecar is told to wait -- not that
+the handoff failed."
+  (ghostherd-tests--with-herd-leads
+    (let* ((ghostherd-handoff-lead-alive-max 1)
+           (old (ghostherd-tests--herd-lead fox))
+           (oname (ghostherd-session-name old)))
+      (setf (ghostherd-session-state old) 'idle)
+      (puthash (ghostherd-session-id old) (list :input "the user is typing" :suggestion nil) ghostherd--feet)
+      (let ((r (ghostherd--herd-run-command
+                (list :id "c1" :op "handoff" :session "lead-p"
+                      :args (list :by "lead-p" :project (ghostherd--project-name other)
+                                  :head "x" :stop oname :queued t)))))
+        (should (eq (plist-get r :wait) t))
+        (should-not (plist-member r :lead))
+        (should (string-match-p "lead-fox, which the herd would stop to make room, is in use now" (plist-get r :text))))
+      (should (ghostherd-get oname))
+      (should-not (ghostherd-get "lead-other"))
+      ;; Room made meanwhile another way (fox gone): the start goes ahead, nothing stopped.
+      (remhash (ghostherd-session-id old) ghostherd--feet)
+      (setf (ghostherd-session-state old) 'working)
+      (let ((ghostherd-handoff-lead-alive-max 2))
+        (should (equal (car (ghostherd-handoff-lead "lead-p" other nil "x" oname t)) "lead-other")))
+      (should (ghostherd-get oname)))))
+
+(ert-deftest ghostherd-test-handoff-queued-start-is-the-sidecars-to-cap ()
+  "A start the sidecar asks for once a slot is free is not counted again
+here: leads up past `ghostherd-handoff-lead-max' are fine -- only those
+at work count, which the sidecar knows.  One from an older sidecar,
+which kept no caps, still meets the old count."
+  (ghostherd-tests--with-herd-leads
+    (let ((ghostherd-handoff-lead-max 1))
+      (ghostherd-tests--herd-lead fox)
+      (should (equal (car (ghostherd-handoff-lead "lead-p" leo nil "x" nil t)) "lead-leo"))
+      (should (string-match-p "the herd has 2 up that it started for handoffs (max 1)"
+                              (cdr (ghostherd-handoff-lead "lead-p" other nil "x")))))))
+
+(ert-deftest ghostherd-test-handoff-caps-ride-the-tick-and-slots-come-back ()
+  "Each tick tells the sidecar the caps, which it keeps the queue by, and
+brings back where the leads and the queue stand, for the page."
+  (ghostherd-tests--with-herd-leads
+    (let ((ghostherd-handoff-lead-max 2) (ghostherd-handoff-lead-alive-max 5)
+          (ghostherd-handoff-may-start-lead nil)
+          (ghostherd--herd-tick-inflight nil) (ghostherd--herd-replies nil)
+          (ghostherd--herd-pushes nil) (ghostherd--guard-told-ids nil) (ghostherd--herd-ack-ids nil)
+          sent)
+      (cl-letf (((symbol-function 'ghostherd-memory-rpc-url) (lambda () "http://x"))
+                ((symbol-function 'ghostherd-memory-request-async)
+                 (lambda (_m ok params &rest _)
+                   (setq sent params)
+                   (funcall ok (list :handoff_slots (list :working 1 :alive 2 :queue nil)))))
+                ((symbol-function 'ghostherd--herd-deliver) #'ignore)
+                ((symbol-function 'ghostherd--herd-take-asks) #'ignore)
+                ((symbol-function 'ghostherd--herd-take-links) #'ignore)
+                ((symbol-function 'ghostherd--herd-take-reports) #'ignore)
+                ((symbol-function 'ghostherd--herd-take-guard) #'ignore)
+                ((symbol-function 'ghostherd--herd-take-lint) #'ignore)
+                ((symbol-function 'ghostherd--room-url) (lambda (&rest _) "")))
+        (ghostherd--herd-tick-async))
+      (should (equal (plist-get sent :handoff_caps) '(:working 2 :alive 5 :may_start :json-false)))
+      (should (equal ghostherd--handoff-slots '(:working 1 :alive 2 :queue nil))))))
+
+(ert-deftest ghostherd-test-handoff-set-cap-takes-only-sane-numbers ()
+  "The page's cap: a whole number in its range, the cap at work never above
+the cap up -- else refused, saying why, and nothing saved.  Taken, it is
+saved for good and the herd ticks at once, so a raised cap starts what
+waits now."
+  (ghostherd-tests--with-herd-leads
+    (let (saved (ticks 0))
+      (cl-letf (((symbol-function 'customize-save-variable)
+                 (lambda (var val &rest _) (set var val) (push (cons var val) saved)))
+                ((symbol-function 'ghostherd--herd-tick-async) (lambda () (cl-incf ticks))))
+        (should (= (ghostherd-handoff-set-cap 'ghostherd-handoff-lead-max 4) 4))
+        (should (= ghostherd-handoff-lead-max 4))
+        (should (= (ghostherd-handoff-set-cap 'ghostherd-handoff-lead-max " 5 ") 5))
+        (should (= (ghostherd-handoff-set-cap 'ghostherd-handoff-lead-alive-max "12") 12))
+        (should (equal saved '((ghostherd-handoff-lead-alive-max . 12) (ghostherd-handoff-lead-max . 5)
+                               (ghostherd-handoff-lead-max . 4))))
+        (should (= ticks 3))
+        (dolist (bad '(0 11 -1 2.5 "abc" "3.5" "" "1e2" nil t))
+          (should-error (ghostherd-handoff-set-cap 'ghostherd-handoff-lead-max bad) :type 'user-error))
+        (dolist (bad '(0 31 "99"))
+          (should-error (ghostherd-handoff-set-cap 'ghostherd-handoff-lead-alive-max bad) :type 'user-error))
+        ;; Not at work more than may be up, nor up fewer than at work.
+        (should-error (ghostherd-handoff-set-cap 'ghostherd-handoff-lead-alive-max 4) :type 'user-error)
+        (should-error (ghostherd-handoff-set-cap 'ghostherd-handoff-lead-max 13) :type 'user-error)
+        (should-error (ghostherd-handoff-set-cap 'ghostherd-handoff-may-start-lead 1) :type 'user-error)
+        (should (= (length saved) 3))
+        (should (= ghostherd-handoff-lead-max 5))
+        (should (= ghostherd-handoff-lead-alive-max 12))))))
+
+(ert-deftest ghostherd-test-handoff-caps-only-from-the-page ()
+  "Only the page sets the caps: its intent, refused with why when not
+sane; no command the sidecar hands Emacs -- what an agent's `herd'
+reaches -- sets them."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd-leads
+    (let (js saved)
+      (cl-letf (((symbol-function 'customize-save-variable)
+                 (lambda (var val &rest _) (set var val) (push (cons var val) saved)))
+                ((symbol-function 'ghostherd--herd-tick-async) #'ignore)
+                ((symbol-function 'ghostherd-memory-page--js) (lambda (f arg) (push (cons f arg) js)))
+                ((symbol-function 'ghostherd-memory-page--send-herd) #'ignore))
+        (ghostherd-memory-page--handle '((op . "handoff-caps") (field . "working") (value . 4)))
+        (should (equal saved '((ghostherd-handoff-lead-max . 4))))
+        (should (equal (car js) '("flash" . "Leads for handoffs: at most 4 at work")))
+        (ghostherd-memory-page--handle '((op . "handoff-caps") (field . "alive") (value . "99")))
+        (should (equal (caar js) "slotsRefused"))
+        (should (equal (plist-get (cdar js) :field) "alive"))
+        (should (string-match-p "a whole number from 1 to 30, not \"99\"" (plist-get (cdar js) :why)))
+        (ghostherd-memory-page--handle '((op . "handoff-caps") (field . "may_start") (value . 0)))
+        (should (equal (caar js) "slotsRefused"))
+        (should (= (length saved) 1))
+        ;; The page's payload: the caps, their ranges, what is in use.
+        (let* ((ghostherd--handoff-slots
+                (list :working 2 :alive 3
+                      :queue (list (list :project "~/src/parker/" :from "lead-argocd" :since_ms 1000.0
+                                         :asks 2 :ahead 0 :starting nil :stop "" :head "do it"))))
+               (p (ghostherd-memory-page--handoff-slots)))
+          (should (equal (list (plist-get p :working) (plist-get p :workingCap) (plist-get p :alive)
+                               (plist-get p :aliveCap) (plist-get p :workingRange) (plist-get p :aliveRange))
+                         (list 2 4 3 8 [1 10] [1 30])))
+          (should (equal (plist-get (aref (plist-get p :queue) 0) :from) "lead-argocd"))
+          (should (eq (plist-get (aref (plist-get p :queue) 0) :starting) :json-false))
+          (should (json-encode p))))
+      ;; No sidecar command sets a cap.
+      (dolist (op '("handoff-caps" "set" "caps" "customize"))
+        (let ((r (ghostherd--herd-run-command (list :id "c" :op op :session "lead-p"
+                                                    :args (list :working 9 :field "working" :value 9)))))
+          (should (string-prefix-p "unknown op" (plist-get r :text)))))
+      (should (= ghostherd-handoff-lead-max 4)))))
+
 (provide 'ghostherd-lead-tests)
 ;;; ghostherd-lead-tests.el ends here

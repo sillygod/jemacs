@@ -112,6 +112,7 @@ PLIST keys:
          (branch (plist-get plist :branch))
          (base (plist-get plist :base))
          (started-by (plist-get plist :started-by))
+         (handoff-by (plist-get plist :handoff-by))
          (backend (or (plist-get plist :backend) ghostherd-backend))
          (display (if (plist-member plist :display)
                       (plist-get plist :display)
@@ -123,6 +124,7 @@ PLIST keys:
                          :role role :lineage lineage
                          :worktree worktree :branch branch :base base
                          :started-by started-by
+                         :handoff-by handoff-by
                          ;; Run in front of the CLI, never kept in its recipe.
                          :wrapper (and guard (ghostherd--scrub-wrapper directory)))))
          session)
@@ -155,6 +157,10 @@ PLIST keys:
     (if started-by
         (puthash name started-by ghostherd--started-by)
       (remhash name ghostherd--started-by))
+    ;; A lead the herd started for a handoff: its caps count it.
+    (if handoff-by
+        (puthash name handoff-by ghostherd--handoff-leads)
+      (remhash name ghostherd--handoff-leads))
     (ghostherd--log-add session 'life
                         (if started-by
                             (format "started by %s (%s on %s)" started-by kind backend)
@@ -288,6 +294,10 @@ running, and a session keeps the backend it was born with anyway."
           (if-let* ((started-by (plist-get recipe :started-by)))
               (puthash name started-by ghostherd--started-by)
             (remhash name ghostherd--started-by))
+          ;; Still the herd's, started for a handoff: its caps count it.
+          (if-let* ((handoff-by (plist-get recipe :handoff-by)))
+              (puthash name handoff-by ghostherd--handoff-leads)
+            (remhash name ghostherd--handoff-leads))
           (ghostherd--log-add name 'life
                               (format "restored from %s, detached" backend))
           (setq restored (1+ restored)))))
@@ -355,7 +365,8 @@ session around a process that never stopped."
           :worktree (plist-get wt :path)
           :branch (plist-get wt :branch)
           :base (plist-get wt :base)
-          :started-by (ghostherd-session-started-by session))))
+          :started-by (ghostherd-session-started-by session)
+          :handoff-by (gethash (ghostherd-session-id session) ghostherd--handoff-leads))))
 
 ;;;###autoload
 (defun ghostherd-respawn (session &optional continue)
@@ -1216,6 +1227,7 @@ When KILL-BUFFER is non-nil (the interactive default), also kill its buffer."
     (remhash id ghostherd--panes)
     (remhash id ghostherd--feet)
     (remhash id ghostherd--started-by)
+    (remhash id ghostherd--handoff-leads)
     (remhash id ghostherd--dir-gone)
     (ghostherd--log-add session 'life
                         (if kill-buffer "killed" "released from the herd"))

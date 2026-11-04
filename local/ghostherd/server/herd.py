@@ -306,8 +306,21 @@ USE_QUEUE_MAX = 10_000
 USE_FLUSH_MAX = 2_000
 
 # A handoff to a project with no lead waits this long for Emacs to start
-# one; past it, it fails -- Emacs never took the request, or never said.
+# one, once the herd asked it to; past it, it fails -- Emacs never took
+# the request, or never said.  Waiting for a slot does not count.
 HANDOFF_START_SECONDS = 180
+
+# The leads the herd starts for handoffs, capped twice (`_handoff_slots'):
+# how many may be at work on one at once -- owe a handoff its answer --
+# and how many may be up at all, idle ones too.  Emacs says each tick
+# (`ghostherd-handoff-lead-max', `ghostherd-handoff-lead-alive-max'); these
+# hold until it has, and a cap outside 1..HANDOFF_CAP_MAX is not taken.
+HANDOFF_WORKING = 3
+HANDOFF_ALIVE = 8
+HANDOFF_CAP_MAX = 50
+# A lead Emacs would not stop when the herd picked it to make room (it was
+# taken into use meanwhile) is not picked again for this long.
+HANDOFF_STOP_BACKOFF = 30
 
 # Settled mail, asks, commands, replies, and pushes kept in herd.sqlite
 # before tick prunes them.
@@ -475,6 +488,8 @@ class HerdStore:
         # (`_cost_recheck'), and the copies kept told by its rule (`_cost_recopy').
         self._said_ok = False
         self._copies_ok = False
+        # Lead -> until when it is not picked to stop (HANDOFF_STOP_BACKOFF).
+        self._stop_backoff: dict[str, float] = {}
         self._mu = threading.Lock()
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -763,6 +778,42 @@ class HerdStore:
         # `herd list' tells its lead, who can stop it.
         if "directory_missing" not in cols:
             self._conn.execute("ALTER TABLE snapshot ADD COLUMN directory_missing INTEGER")
+        # A lead the herd started for a handoff: who for ('' for any other
+        # agent) -- what the handoff caps count.  And why Emacs says it must
+        # not be stopped to make room (a draft in its box, you looking at
+        # it), '' when nothing it alone can see holds it.
+        if "handoff_by" not in cols:
+            self._conn.execute("ALTER TABLE snapshot ADD COLUMN handoff_by TEXT")
+        if "held" not in cols:
+            self._conn.execute("ALTER TABLE snapshot ADD COLUMN held TEXT")
+        # A start of a project's lead the herd asked Emacs for and Emacs has
+        # not answered: one per project, its `handoff' command, when asked,
+        # and the idle lead Emacs is to stop first to make room ('' none).
+        # A project's handoffs that wait with no row here wait for a slot.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS handoff_starts (
+                project TEXT PRIMARY KEY,
+                command TEXT NOT NULL,
+                issued_at TEXT NOT NULL,
+                stop TEXT
+            )
+            """
+        )
+        # A sidecar from before the queue asked Emacs at once: a start it
+        # asked for and Emacs has not answered is under way, not waiting.
+        for cid, args, created in self._conn.execute(
+            "SELECT id, args, created_at FROM commands WHERE op = 'handoff' "
+            "AND status IN ('queued', 'taken')"
+        ).fetchall():
+            try:
+                project = json.loads(args or "{}").get("project") or ""
+            except json.JSONDecodeError:
+                project = ""
+            if project:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO handoff_starts (project, command, issued_at, stop) "
+                    "VALUES (?, ?, ?, '')", (project, cid, created))
         mail_cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(mail)")
         }
@@ -1388,7 +1439,10 @@ class HerdStore:
         A project with no lead gets one: the herd asks Emacs to start it
         (a `handoff' command, one per project however many handoffs wait on
         it), and the ask waits with no taker until Emacs names the lead it
-        started -- or fails with why it did not.  `starting' says so.
+        started -- or fails with why it did not.  `starting' says so.  With
+        no slot for one (`_handoff_slots'), it waits its turn instead,
+        first come first served, and `waiting' says so, with how many
+        projects are `ahead' of it and `why': queued, not refused.
         """
         body = _body(body)
         rounds = _rounds(rounds)
@@ -1441,30 +1495,254 @@ class HerdStore:
                     f"{shown} is not a git checkout, and has no lead: the herd starts "
                     "a lead only in a git checkout; ask the user"
                 )
+            elif not self._handoff_caps()["may_start"]:
+                raise ValueError(
+                    f"{projects.leaf(where)} has no lead, and the herd is set not to start one "
+                    "for a handoff (ghostherd-handoff-may-start-lead is off); ask the user"
+                )
             target = lead[0] if lead else ""
             out, mail_id = self._insert_ask(
                 sender, target, body, wait, rounds, project=shown, from_project=from_project)
+            to_attach = []
             if not lead:
-                # One start per project: a handoff that finds one under way
-                # waits on it with the others.
-                starting = self._conn.execute(
-                    """
-                    SELECT 1 FROM asks WHERE status = 'queued' AND to_name = ''
-                      AND project = ? AND id != ?
-                    """,
-                    (shown, out["id"]),
-                ).fetchone()
-                if not starting:
-                    self._command(
-                        "handoff", sender,
-                        {"project": shown, "by": sender, "from_project": from_project,
-                         "head": _head(body, 200)},
-                    )
+                # One start per project, however many handoffs wait on it;
+                # and none past the caps -- it waits its turn.
+                to_attach = self._admit_handoffs(datetime.now(timezone.utc).isoformat())
+                out.update(self._handoff_place(shown))
             self._conn.commit()
         if mail_id:
             self._attach_memory(mail_id, target, body)
-        out.update(project=shown, starting=not lead)
+        for m, t, b in to_attach:
+            self._attach_memory(m, t, b)
+        out.update(project=shown)
+        out.setdefault("starting", False)
         return out
+
+    # ---- The handoff leads: two caps, and a queue past them ------------------
+    #
+    # A lead the herd starts for a handoff spends quota in a project the
+    # user may not be watching, so their number is capped -- by the ones AT
+    # WORK, that owe a handoff its answer (an idle one costs memory, not
+    # quota), and, much higher, by the ones UP at all.  A handoff to a
+    # project with no lead and no slot waits its turn, first come first
+    # served: a lead answering, dying or stopping, or a cap raised, starts
+    # the next.  Past the second cap the herd stops the lead it started that
+    # has been idle longest and owes nothing, to make room; with none such,
+    # the handoff waits.  The queue is the asks themselves, kept here, so an
+    # Emacs restart neither loses nor repeats one.
+
+    def _handoff_caps(self) -> dict[str, Any]:
+        "The caps as Emacs last said them (`handoff_caps' on the tick).  Caller holds `_mu`."
+        row = self._conn.execute("SELECT v FROM meta WHERE k = 'handoff_caps'").fetchone()
+        caps = {"working": HANDOFF_WORKING, "alive": HANDOFF_ALIVE, "may_start": True}
+        if row:
+            try:
+                caps.update(json.loads(row[0]))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return caps
+
+    @staticmethod
+    def _cap(value: Any) -> int | None:
+        "VALUE as a cap: a whole number from 1 to HANDOFF_CAP_MAX, else None."
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value if 1 <= value <= HANDOFF_CAP_MAX else None
+
+    def _set_handoff_caps(self, caps: Any) -> None:
+        "Keep what Emacs says the caps are, each one only when sane.  Caller holds `_mu`."
+        if not isinstance(caps, dict):
+            return
+        now = self._handoff_caps()
+        for k in ("working", "alive"):
+            v = self._cap(caps.get(k))
+            if v is not None:
+                now[k] = v
+        if isinstance(caps.get("may_start"), bool):
+            now["may_start"] = caps["may_start"]
+        self._conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('handoff_caps', ?)",
+                           (json.dumps(now),))
+
+    def _restored(self) -> bool:
+        "Whether Emacs has picked its herd up (`tick''s RESTORED).  Caller holds `_mu`."
+        row = self._conn.execute("SELECT v FROM meta WHERE k = 'restored'").fetchone()
+        return not row or row[0] != "0"
+
+    def _handoff_slots(self, now_ts: float | None = None) -> dict[str, Any]:
+        """Where the leads the herd started for handoffs stand: those AT
+        WORK -- owing a handoff delivered or queued to them its answer --
+        and those UP, each with the starts Emacs was asked for and has not
+        answered, which will be both; and the ones it may STOP to make
+        room, idle longest first.  One it may stop owes nothing: no open ask
+        to it, none of its own open, no live agent it started, idle (not
+        blocked, not at work), and nothing Emacs alone sees holds it -- a
+        draft in its box, you looking at it.  Caller holds `_mu`."""
+        now_ts = now_ts if now_ts is not None else time.time()
+        starts = self._conn.execute("SELECT project, stop FROM handoff_starts").fetchall()
+        stopping = {s for _, s in starts if s}
+        rows = self._conn.execute(
+            "SELECT name, state, project, role, handoff_by, held, since, started_by FROM snapshot"
+        ).fetchall()
+        leads = [r for r in rows if r[4] and r[3] == "lead" and r[1] not in ("dead", "")]
+        open_to = {r[0]: bool(r[1]) for r in self._conn.execute(
+            f"SELECT to_name, MAX(project IS NOT NULL) FROM asks WHERE status IN {ASK_OPEN} "
+            "AND to_name != '' GROUP BY to_name")}
+        open_from = {r[0] for r in self._conn.execute(
+            f"SELECT DISTINCT from_name FROM asks WHERE status IN {ASK_OPEN}")}
+        starters = {r[7] for r in rows if r[7] and r[1] not in ("dead", "")}
+        working = [r[0] for r in leads if open_to.get(r[0])]
+        up = [r[0] for r in leads if r[0] not in stopping]
+        stoppable = sorted(
+            (r for r in leads
+             if r[1] in ("idle", "done") and not r[5]
+             and r[0] not in open_to and r[0] not in open_from and r[0] not in starters
+             and r[0] not in stopping and self._stop_backoff.get(r[0], 0) <= now_ts),
+            key=lambda r: (r[6] or 0, r[0]))
+        return {
+            "working": len(working) + len(starts),
+            "alive": len(up) + len(starts),
+            "at_work": working,
+            "up": up,
+            "stoppable": [r[0] for r in stoppable],
+            "leads": [{"name": r[0], "project": r[2] or "", "state": r[1] or "",
+                       "by": r[4], "working": bool(open_to.get(r[0])),
+                       "held": r[5] or ""} for r in leads],
+        }
+
+    def _handoff_queue(self) -> list[dict[str, Any]]:
+        """The projects whose handoffs wait for their lead, first come first
+        served: who asked first and when, how many wait, and whether the
+        herd has asked Emacs to start it yet.  Caller holds `_mu`."""
+        starts = dict(self._conn.execute("SELECT project, stop FROM handoff_starts").fetchall())
+        out = []
+        for project, first, n in self._conn.execute(
+            """
+            SELECT project, MIN(created_at), COUNT(*) FROM asks
+            WHERE status = 'queued' AND to_name = '' AND project IS NOT NULL
+            GROUP BY project ORDER BY MIN(created_at)
+            """
+        ).fetchall():
+            head = self._conn.execute(
+                "SELECT id, from_name, from_project, body FROM asks WHERE status = 'queued' "
+                "AND to_name = '' AND project = ? ORDER BY created_at LIMIT 1", (project,)).fetchone()
+            out.append({"project": project, "since": first, "asks": n,
+                        "id": head[0], "from": head[1], "from_project": head[2] or "",
+                        "body": head[3], "starting": project in starts,
+                        "stop": starts.get(project) or ""})
+        return out
+
+    def _fail_waiting(self, project: str, now: str, error: str) -> None:
+        "Fail the handoffs waiting on PROJECT's lead with ERROR.  Caller holds `_mu`."
+        for (ask_id,) in self._conn.execute(
+            "SELECT id FROM asks WHERE status = 'queued' AND to_name = '' AND project = ?",
+            (project,),
+        ).fetchall():
+            self._close_ask(ask_id, "failed", now, error=error)
+            self._mail_back(ask_id)
+
+    def _admit_handoffs(self, now: str) -> list[tuple[str, str, str]]:
+        """Start what the slots allow, first come first served: each waiting
+        project's lead in turn while a slot is free -- making room past the
+        UP cap by asking Emacs to stop the lead `_handoff_slots' says may be
+        stopped -- and stop at the first that has none, so nobody jumps the
+        queue.  A project that got a lead meanwhile (the user started one)
+        takes its handoffs at once, slot or not; one whose lead is dead
+        fails them, as a handoff to it would be refused.  Not before Emacs
+        has restored its herd: until then a project's lead may only not be
+        picked up yet.  Returns the mail to find memory for, as
+        `_bind_handoff' does.  Caller holds `_mu` and commits."""
+        if not self._synced() or not self._restored():
+            return []
+        caps = self._handoff_caps()
+        out: list[tuple[str, str, str]] = []
+        rows = self._conn.execute("SELECT name, state, project, role FROM snapshot").fetchall()
+        for q in self._handoff_queue():
+            if q["starting"]:
+                continue
+            project = q["project"]
+            lead = next((r for r in rows if r[3] == "lead" and projects.same(r[2], project)), None)
+            if lead:
+                if lead[1] in _TAKER_RANK:
+                    out += self._bind_handoff(project, lead[0], "", now)
+                else:
+                    self._fail_waiting(project, now, (
+                        f"{lead[0]}, {projects.leaf(project)}'s lead, is {lead[1] or 'not running'}; "
+                        "ask the user to start it again"))
+                continue
+            if not caps["may_start"]:
+                self._fail_waiting(project, now, (
+                    f"{projects.leaf(project)} has no lead, and the herd is set not to start one "
+                    "for a handoff (ghostherd-handoff-may-start-lead is off); ask the user"))
+                continue
+            slots = self._handoff_slots()
+            if slots["working"] >= caps["working"]:
+                break
+            stop = ""
+            if slots["alive"] >= caps["alive"]:
+                if not slots["stoppable"]:
+                    break
+                stop = slots["stoppable"][0]
+            cid = self._command(
+                "handoff", q["from"],
+                {"project": project, "by": q["from"], "from_project": q["from_project"],
+                 "head": _head(q["body"], 200), "stop": stop,
+                 # The caps are the herd's to keep, here: Emacs starts it.
+                 "queued": True},
+            )
+            self._conn.execute(
+                "INSERT OR REPLACE INTO handoff_starts (project, command, issued_at, stop) "
+                "VALUES (?, ?, ?, ?)", (project, cid, now, stop))
+        return out
+
+    def _handoff_place(self, project: str) -> dict[str, Any]:
+        """Where PROJECT's waiting handoffs stand, for whoever sent one:
+        `starting' its lead, or `waiting' for a slot, with how many projects
+        are `ahead' and `why'.  {} when none waits.  Caller holds `_mu`."""
+        queue = self._handoff_queue()
+        mine = next((i for i, q in enumerate(queue) if projects.same(q["project"], project)), None)
+        if mine is None:
+            return {}
+        if queue[mine]["starting"]:
+            return {"starting": True, "waiting": False}
+        caps = self._handoff_caps()
+        slots = self._handoff_slots()
+        ahead = sum(1 for q in queue[:mine] if not q["starting"])
+        if slots["working"] >= caps["working"]:
+            why = (f"the herd has {slots['working']} lead{'s' if slots['working'] != 1 else ''} "
+                   f"at work on handoffs, {caps['working']} at most"
+                   + (f" ({', '.join(slots['at_work'])})" if slots["at_work"] else ""))
+        elif slots["alive"] >= caps["alive"]:
+            why = (f"the herd has {slots['alive']} leads up that it started for handoffs, "
+                   f"{caps['alive']} at most, and none it may stop yet: each owes an answer, "
+                   "waits on one, has an agent at work, or is in use")
+        else:
+            why = "a project ahead of it is waiting for a slot"
+        return {"starting": False, "waiting": True, "ahead": ahead, "why": why,
+                "working": slots["working"], "working_cap": caps["working"],
+                "alive": slots["alive"], "alive_cap": caps["alive"]}
+
+    def handoff_slots(self) -> dict[str, Any]:
+        "The handoff leads and their queue, as the page shows them."
+        with self._mu:
+            return self._handoff_slots_view()
+
+    def _handoff_slots_view(self) -> dict[str, Any]:
+        "Caller holds `_mu`."
+        caps = self._handoff_caps()
+        slots = self._handoff_slots()
+        queue = self._handoff_queue()
+        ahead = 0
+        view = []
+        for q in queue:
+            view.append({"project": q["project"], "from": q["from"],
+                         "from_project": q["from_project"], "since_ms": _ms(q["since"]),
+                         "asks": q["asks"], "starting": q["starting"], "stop": q["stop"],
+                         "ahead": 0 if q["starting"] else ahead, "head": _head(q["body"], 120)})
+            if not q["starting"]:
+                ahead += 1
+        return {"working": slots["working"], "alive": slots["alive"],
+                "working_cap": caps["working"], "alive_cap": caps["alive"],
+                "leads": slots["leads"], "queue": view}
 
     def _handoff_refusal(self, sender: str, rows, where: str) -> str | None:
         """Why SENDER may not hand work to project WHERE, or None.  ROWS are
@@ -1523,20 +1801,20 @@ class HerdStore:
         return out
 
     def _sweep_handoff_starts(self, now: str) -> None:
-        """Handoffs that waited HANDOFF_START_SECONDS for a lead Emacs never
-        named fail: it never took the request, or never answered it.
-        Caller holds `_mu`."""
+        """Handoffs whose lead the herd asked Emacs to start
+        HANDOFF_START_SECONDS ago, and Emacs never named, fail: it never
+        took the request, or never answered it.  The time waited for a
+        slot before is not counted.  Caller holds `_mu`."""
         cutoff = datetime.fromisoformat(now).timestamp() - HANDOFF_START_SECONDS
-        for ask_id, project, created in self._conn.execute(
-            "SELECT id, project, created_at FROM asks WHERE status = 'queued' AND to_name = ''"
+        for project, issued in self._conn.execute(
+            "SELECT project, issued_at FROM handoff_starts"
         ).fetchall():
-            if datetime.fromisoformat(created).timestamp() < cutoff:
-                self._close_ask(
-                    ask_id, "failed", now,
-                    error=f"the herd did not start a lead in {project} "
-                          f"within {HANDOFF_START_SECONDS}s; is Emacs up?",
-                )
-                self._mail_back(ask_id)
+            if datetime.fromisoformat(issued).timestamp() < cutoff:
+                self._conn.execute("DELETE FROM handoff_starts WHERE project = ?", (project,))
+                self._fail_waiting(
+                    project, now,
+                    f"the herd did not start a lead in {project} "
+                    f"within {HANDOFF_START_SECONDS}s; is Emacs up?")
 
     def _attach_memory(self, mail_id: str, target: str, body: str) -> None:
         """Find what the shared memory says about BODY for TARGET and put it
@@ -1790,7 +2068,11 @@ class HerdStore:
                 "SELECT state, reason FROM snapshot WHERE name = ?",
                 (row["to_name"],),
             ).fetchone()
-        return {
+            # A handoff with no lead yet: its lead starting, or its turn in
+            # the queue for a slot.
+            place = (self._handoff_place(row["project"])
+                     if row["project"] and not row["to_name"] and row["status"] == "queued" else {})
+        return {**place, **{
             "id": row["id"],
             "status": row["status"],
             "from": row["from_name"],
@@ -1821,7 +2103,7 @@ class HerdStore:
             # kinds, its sub-agents' share; `pending' while grok's turn has
             # yet to end.  None when its transcript was not read.
             "tokens": _trace_tokens(row["trace"]),
-        }
+        }}
 
     def relay_asks(self, name: str) -> dict[str, list[dict[str, Any]]]:
         """What NAME's heir takes on: the asks NAME was handed and has not
@@ -2044,6 +2326,10 @@ class HerdStore:
             )
             if stop:
                 self._command("interrupt", taker, {"ask": row["id"], "by": row["from_name"]})
+            if row["project"] and not row["to_name"]:
+                # The last handoff waiting on a lead the herd has asked for
+                # and Emacs not yet taken: nothing to start it for.
+                self._drop_start_if_unwanted(row["project"])
             if taker:
                 self._conn.execute(
                     """
@@ -2059,6 +2345,21 @@ class HerdStore:
         if taker:
             out.update(told=taker, interrupted=stop)
         return out
+
+    def _drop_start_if_unwanted(self, project: str) -> None:
+        """No handoff waits on PROJECT's lead any more: a start of it the
+        herd asked Emacs for and Emacs has not taken yet is withdrawn.  One
+        taken goes on -- Emacs is starting it.  Caller holds `_mu`."""
+        if self._conn.execute(
+                "SELECT 1 FROM asks WHERE status = 'queued' AND to_name = '' AND project = ?",
+                (project,)).fetchone():
+            return
+        row = self._conn.execute(
+            "SELECT h.command FROM handoff_starts h JOIN commands c ON c.id = h.command "
+            "WHERE h.project = ? AND c.status = 'queued'", (project,)).fetchone()
+        if row:
+            self._conn.execute("DELETE FROM handoff_starts WHERE project = ?", (project,))
+            self._conn.execute("UPDATE commands SET status = 'done' WHERE id = ?", (row[0],))
 
     def _on_it(self, row: dict[str, Any]) -> bool:
         """Whether ROW's taker is at work on ROW's ask, delivered: working,
@@ -4330,9 +4631,15 @@ class HerdStore:
         restored: bool | None = None,
         guard_ttl: int | float | None = None,
         guard_told: list[str] | None = None,
+        handoff_caps: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """PAGE_URL is the herd page's address from your phone, without its
         secret, as Emacs says it each tick; none, it is not linked.
+
+        HANDOFF_CAPS are the user's caps on the leads the herd starts for
+        handoffs, {working, alive, may_start}: only Emacs says them, on this
+        tick, which no agent's token reaches.  The tick's `handoff_slots'
+        says where those leads and the handoffs waiting for one stand.
 
         RESTORED is whether this Emacs has restored its herd yet.  A fresh
         Emacs, before it has, ticks an empty or partial snapshot that is a
@@ -4354,6 +4661,21 @@ class HerdStore:
         replies = replies or []
         now = datetime.now(timezone.utc).isoformat()
         with self._mu:
+            if handoff_caps is not None:
+                self._set_handoff_caps(handoff_caps)
+            if not restored_flag:
+                # A fresh Emacs: a start the last one took and never answered
+                # will not be answered now.  Back to waiting, it is asked for
+                # again once this Emacs has its herd -- and finds the lead the
+                # last one started, if it did, rather than start a second.
+                for project, cid in self._conn.execute(
+                    """
+                    SELECT h.project, h.command FROM handoff_starts h
+                    JOIN commands c ON c.id = h.command WHERE c.status = 'taken'
+                    """
+                ).fetchall():
+                    self._conn.execute("DELETE FROM handoff_starts WHERE project = ?", (project,))
+                    self._conn.execute("UPDATE commands SET status = 'done' WHERE id = ?", (cid,))
             if ack_ids:
                 placeholders = ",".join("?" * len(ack_ids))
                 self._used_by_delivery(ack_ids)
@@ -4392,10 +4714,19 @@ class HerdStore:
                     (rid,),
                 ).fetchone()
                 if chat and chat[1] == "handoff":
-                    # Bound once the snapshot has the lead Emacs names.
-                    started.append((json.loads(chat[2] or "{}").get("project") or "",
-                                    str(reply.get("lead") or "").strip(),
-                                    str(reply.get("text") or "")))
+                    args = json.loads(chat[2] or "{}")
+                    self._conn.execute("DELETE FROM handoff_starts WHERE command = ?", (rid,))
+                    if reply.get("wait") is True:
+                        # Emacs would not stop the lead picked to make room
+                        # (taken into use meanwhile): the handoffs wait on,
+                        # and that lead is let be a while.
+                        if args.get("stop"):
+                            self._stop_backoff[str(args["stop"])] = time.time() + HANDOFF_STOP_BACKOFF
+                    else:
+                        # Bound once the snapshot has the lead Emacs names.
+                        started.append((args.get("project") or "",
+                                        str(reply.get("lead") or "").strip(),
+                                        str(reply.get("text") or "")))
                 self._conn.execute(
                     """
                     INSERT OR REPLACE INTO replies (id, chat_id, text, sent)
@@ -4452,8 +4783,8 @@ class HerdStore:
                     INSERT INTO snapshot
                       (name, kind, state, notes, project, reason, screen, role, prompt, room, since,
                        directory, branch, started_by, ahead, merged, host_pid, guarded,
-                       directory_missing)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       directory_missing, handoff_by, held)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         name,
@@ -4475,6 +4806,8 @@ class HerdStore:
                         _pid(row.get("hostPid")),
                         1 if row.get("guarded") is True else 0,
                         1 if row.get("directoryMissing") is True else 0,
+                        str(row.get("handoffBy") or ""),
+                        str(row.get("held") or ""),
                     ),
                 )
                 self._upsert_alias(name)
@@ -4523,6 +4856,9 @@ class HerdStore:
             # Before collecting what to deliver, so a swept answer goes
             # out in this tick rather than the next.
             self._sweep_handoff_starts(now)
+            # A lead that answered, died or stopped, or a cap raised, frees
+            # a slot: the next handoff waiting for one starts its lead.
+            to_attach += self._admit_handoffs(now)
             self._sweep_uncollected(now)
             self._end_runs(was, {
                 str(row.get("name") or "").strip(): str(row.get("state") or "")
@@ -4611,13 +4947,17 @@ class HerdStore:
                 ).fetchall()
                 if r[0] in names
             ]
+            # A lead's start waits for an Emacs that has its herd: before,
+            # the project's lead may only not be picked up yet.
             cmd_rows = self._conn.execute(
                 """
                 SELECT id, op, session, args, chat_id
-                FROM commands WHERE status = 'queued'
+                FROM commands WHERE status = 'queued' AND (op != 'handoff' OR ?)
                 ORDER BY created_at
-                """
+                """,
+                (1 if restored_flag else 0,),
             ).fetchall()
+            handoff_slots = self._handoff_slots_view()
             if cmd_rows:
                 placeholders = ",".join("?" * len(cmd_rows))
                 self._conn.execute(
@@ -4693,6 +5033,7 @@ class HerdStore:
             "links": links,
             "guard": guard,
             "lint": lint,
+            "handoff_slots": handoff_slots,
         }
 
     def _unwait(self, names: set[str], now: str) -> None:

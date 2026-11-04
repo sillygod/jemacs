@@ -32,6 +32,10 @@
 (defvar ghostherd-tests--trust-home (file-name-as-directory (make-temp-file "gh-trust-" t))
   "Where a test's CLI trust stores go: never the user's ~/.grok or agy's.")
 
+(defvar ghostherd-tests--handoff-home (file-name-as-directory (make-temp-file "gh-handoff-" t))
+  "Where a test's kept handoff-lead conversations and stops go: never the
+user's ~/.ghostherd/handoff-leads.eld.")
+
 (defmacro ghostherd-tests--with-herd (bindings &rest body)
   "Run BODY with an empty session registry.
 BINDINGS are extra `let' bindings evaluated inside the clean registry."
@@ -61,6 +65,12 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          (ghostherd--role-owed (make-hash-table :test 'equal))
          (ghostherd--role-spent (make-hash-table :test 'equal))
          (ghostherd--handoff-leads (make-hash-table :test 'equal))
+         ;; What the herd keeps of its handoff leads over a restart: a file
+         ;; of the test's own, read afresh -- never the user's.
+         (ghostherd-handoff-leads-file
+          (expand-file-name (format "leads-%s.eld" (random)) ghostherd-tests--handoff-home))
+         (ghostherd--handoff-data 'unread)
+         (ghostherd--handoff-slots nil)
          ;; An agy spawned by a test is not guarded unless the test says so,
          ;; and a guard it writes goes under a temp root -- never the user's.
          (ghostherd-agy-guard nil)

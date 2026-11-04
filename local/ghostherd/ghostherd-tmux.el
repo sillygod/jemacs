@@ -390,7 +390,9 @@ the name we are about to take."
     (:worktree . "@ghostherd-worktree")
     (:branch  . "@ghostherd-branch")
     (:base    . "@ghostherd-base")
-    (:started-by . "@ghostherd-started-by"))
+    (:started-by . "@ghostherd-started-by")
+    ;; A lead the herd started for a handoff: whom for.
+    (:handoff-by . "@ghostherd-handoff-by"))
   "Recipe fields and the tmux user options that hold them.
 
 On the session itself rather than in a sidecar file: a file can be

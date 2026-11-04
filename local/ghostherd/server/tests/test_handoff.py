@@ -4,8 +4,10 @@ Projects are temp git repos; the herd's agents are a snapshot, as Emacs
 would send it; Emacs starting a lead is a reply to the `handoff' command,
 as its tick would carry it."""
 
+import json
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -495,3 +497,373 @@ def test_a_handoff_to_a_lead_being_started(world, h):
     assert [(m["from"], m["to"]) for m in d["msgs"]] == [("lead-ghost", "lead of new")]
     talk = h.threads()["talking"]
     assert [(t["to"], t["kind"], t["status"]) for t in talk if t["ask"] == out["id"]] == [("lead of new", "handoff", "queued")]
+
+
+# ---- The leads the herd starts for handoffs: two caps, a queue past them ---------
+# Asked 0ade8eeb: the cap counted leads alive, so one that answered and sat
+# idle held its slot -- "3 until the user kills one" -- and a handoff past
+# it was refused, which a lead retried in a loop.  Now the cap counts the
+# leads AT WORK (owing a handoff its answer), a handoff past it is queued
+# first come first served, and a second, higher cap on the ones UP stops
+# the one idle longest that owes nothing to make room.
+
+
+def _herd_lead(name, project, state="idle", since=0.0, by="lead-ghost", **kw):
+    "A lead the herd started for a handoff, as Emacs's snapshot has it."
+    return dict({"name": name, "kind": "claude", "state": state, "project": project,
+                 "role": "lead", "handoffBy": by, "since": since}, **kw)
+
+
+@pytest.fixture
+def more(world, tmp_path):
+    "Six more checkouts with no lead: the projects handed work."
+    base = tmp_path.resolve()
+    p = {k: str(_repo(base / k)) + "/" for k in ("fox", "parker", "leopard", "genesis", "venom", "argo")}
+    return p
+
+
+def _caps(h, snap, **caps):
+    return h.tick(sessions=snap, handoff_caps=caps)
+
+
+def _bind(h, snap, cid, lead):
+    "Emacs started LEAD for the `handoff' command CID: its reply, on the tick whose snapshot has it."
+    return h.tick(sessions=snap, replies=[{"id": cid, "text": "started " + lead, "lead": lead}])
+
+
+def _answer(h, ask_id, by):
+    h.reply(ask_id, "done", from_name=by)
+
+
+def _slots(h):
+    return h.handoff_slots()
+
+
+def test_the_cap_counts_leads_at_work_not_leads_up(world, more, h):
+    # Three leads the herd started for handoffs, all answered and idle: none
+    # at work, so a fourth project's lead starts -- the 13:34 parker case.
+    snap = world["snap"] + [_herd_lead("lead-" + k, more[k]) for k in ("fox", "leopard", "genesis")]
+    _caps(h, snap, working=3, alive=8)
+    s = _slots(h)
+    assert (s["working"], s["alive"]) == (0, 3)
+    out = h.handoff(more["parker"], "x", from_name="lead-ghost")
+    assert (out["starting"], out.get("waiting")) == (True, False)
+    assert [json.loads(a)["project"] for _, _, a in _commands(h)] == [more["parker"]]
+    # A lead that owes a handoff its answer counts; a user's own lead never does.
+    snap2 = snap + [{"name": "lead-venom", "kind": "claude", "state": "working", "project": more["venom"], "role": "lead"}]
+    h.tick(sessions=snap2)
+    for k in ("fox", "leopard"):
+        h.handoff(more[k], "more for " + k, from_name="lead-ghost")
+    h.handoff(more["venom"], "for the user's lead", from_name="lead-ghost")
+    s = _slots(h)
+    assert s["working"] == 3          # fox, leopard, and parker's start under way
+    assert s["alive"] == 4            # fox, leopard, genesis, and parker's start
+    assert sorted(l["name"] for l in s["leads"] if l["working"]) == ["lead-fox", "lead-leopard"]
+
+
+def test_past_the_cap_a_handoff_waits_its_turn_first_come_first_served(world, more, h):
+    snap = world["snap"] + [_herd_lead("lead-fox", more["fox"])]
+    _caps(h, snap, working=1, alive=8)
+    busy = h.handoff(more["fox"], "fox work", from_name="lead-ghost")     # fox now at work
+    a = h.handoff(more["parker"], "parker work", from_name="lead-ghost")
+    b = h.handoff(more["leopard"], "leopard work", from_name="agy-solo")
+    c = h.handoff(more["parker"], "more parker work", from_name="agy-solo")
+    assert (a["starting"], a["waiting"], a["ahead"]) == (False, True, 0)
+    assert (b["waiting"], b["ahead"]) == (True, 1)
+    assert (c["waiting"], c["ahead"]) == (True, 0)      # joins parker's place in line
+    assert "1 lead at work on handoffs, 1 at most (lead-fox)" in a["why"]
+    assert _commands(h) == []                            # nothing started past the cap
+    # Its sender is told the same, by `herd status' / --wait.
+    got = h.get_ask(a["id"])
+    assert (got["status"], got["to"], got["waiting"], got["ahead"]) == ("queued", "", True, 0)
+    q = _slots(h)["queue"]
+    assert [(x["project"], x["from"], x["asks"], x["ahead"], x["starting"]) for x in q] == [
+        (more["parker"], "lead-ghost", 2, 0, False), (more["leopard"], "agy-solo", 1, 1, False)]
+    # Waiting is not failing: long past the start timeout, still queued.
+    with h._mu:
+        h._conn.execute("UPDATE asks SET created_at = '2020-01-01T00:00:00+00:00' WHERE id = ?", (a["id"],))
+        h._conn.commit()
+    h.tick(sessions=snap)
+    assert h.get_ask(a["id"])["status"] == "queued"
+    # fox answers: its slot goes to parker, first in line -- leopard waits on.
+    _pending(h, snap)
+    _answer(h, busy["id"], "lead-fox")
+    out = h.tick(sessions=snap)
+    [(cid, session, args)] = _commands(h)
+    assert json.loads(args)["project"] == more["parker"] and session == "lead-ghost"
+    assert [c["op"] for c in out["commands"]] == ["handoff"]
+    assert h.get_ask(b["id"])["waiting"] is True
+    # parker's lead starts and owes both its handoffs: leopard still waits.
+    snap2 = snap + [_herd_lead("lead-parker", more["parker"], state="starting")]
+    _bind(h, snap2, cid, "lead-parker")
+    assert {h.get_ask(k["id"])["to"] for k in (a, c)} == {"lead-parker"}
+    assert h.get_ask(b["id"])["waiting"] is True
+    assert len(_commands(h)) == 1
+    # Both answered, parker idles: leopard's turn.
+    for k in (a, c):
+        _answer(h, k["id"], "lead-parker")
+    h.tick(sessions=snap2)
+    assert [json.loads(a)["project"] for _, _, a in _commands(h)] == [more["parker"], more["leopard"]]
+
+
+def test_a_queued_handoff_can_be_cancelled(world, more, h):
+    snap = world["snap"] + [_herd_lead("lead-fox", more["fox"])]
+    _caps(h, snap, working=1, alive=8)
+    busy = h.handoff(more["fox"], "fox work", from_name="lead-ghost")
+    a = h.handoff(more["parker"], "x", from_name="lead-ghost")
+    b = h.handoff(more["leopard"], "y", from_name="lead-ghost")
+    assert h.cancel(a["id"])["status"] == "cancelled"
+    assert h.get_ask(b["id"])["ahead"] == 0             # moved up
+    assert [x["project"] for x in _slots(h)["queue"]] == [more["leopard"]]
+    # A start asked for and not yet taken by Emacs is withdrawn with its last handoff.
+    _answer(h, busy["id"], "lead-fox")
+    with h._mu:
+        h._admit_handoffs(datetime.now(timezone.utc).isoformat())
+        h._conn.commit()
+    [(cid, _, _)] = _commands(h)
+    h.cancel(b["id"])
+    with h._mu:
+        status = h._conn.execute("SELECT status FROM commands WHERE id = ?", (cid,)).fetchone()[0]
+        starts = h._conn.execute("SELECT COUNT(*) FROM handoff_starts").fetchone()[0]
+    assert (status, starts) == ("done", 0)
+    assert h.tick(sessions=snap)["commands"] == []
+
+
+def test_a_project_that_got_a_lead_meanwhile_takes_its_handoffs(world, more, h):
+    snap = world["snap"] + [_herd_lead("lead-fox", more["fox"])]
+    _caps(h, snap, working=1, alive=8)
+    h.handoff(more["fox"], "fox work", from_name="lead-ghost")
+    a = h.handoff(more["parker"], "for parker", from_name="lead-ghost")
+    assert h.get_ask(a["id"])["waiting"]
+    # The user starts parker's lead themselves: no slot needed, it takes it.
+    snap2 = snap + [{"name": "lead-parker", "kind": "claude", "state": "idle",
+                     "project": more["parker"], "role": "lead"}]
+    h.tick(sessions=snap2)
+    assert h.get_ask(a["id"])["to"] == "lead-parker"
+    assert _commands(h) == []
+    delivered = _pending(h, snap2)
+    assert ("lead-parker", a["id"]) in [(m["to"], m["ask"]) for m in delivered]
+    # One whose lead is dead meanwhile: failed, as a handoff to it is refused.
+    b = h.handoff(more["leopard"], "for leopard", from_name="lead-ghost")
+    snap3 = snap2 + [{"name": "lead-leopard", "kind": "claude", "state": "dead",
+                      "project": more["leopard"], "role": "lead"}]
+    h.tick(sessions=snap3)
+    got = h.get_ask(b["id"])
+    assert got["status"] == "failed" and "lead-leopard, leopard's lead, is dead" in got["error"]
+
+
+def test_raising_the_cap_starts_what_waits_at_once(world, more, h):
+    snap = world["snap"] + [_herd_lead("lead-fox", more["fox"])]
+    _caps(h, snap, working=1, alive=8)
+    h.handoff(more["fox"], "fox work", from_name="lead-ghost")
+    a = h.handoff(more["parker"], "x", from_name="lead-ghost")
+    b = h.handoff(more["leopard"], "y", from_name="lead-ghost")
+    out = _caps(h, snap, working=3, alive=8)
+    assert sorted(c["args"]["project"] for c in out["commands"]) == sorted([more["parker"], more["leopard"]])
+    assert all(h.get_ask(k["id"])["starting"] for k in (a, b))
+    # Lowered, it starts nothing more -- and stops nothing at work.
+    out = _caps(h, snap, working=1, alive=8)
+    assert out["commands"] == [] and out["handoff_slots"]["working_cap"] == 1
+
+
+def test_the_caps_come_only_from_emacs_and_only_sane(world, h):
+    for bad in (0, -1, 51, "5", 2.5, True, None):
+        _caps(h, world["snap"], working=bad, alive=bad)
+        assert h.handoff_slots()["working_cap"] == herd_mod.HANDOFF_WORKING
+        assert h.handoff_slots()["alive_cap"] == herd_mod.HANDOFF_ALIVE
+    _caps(h, world["snap"], working=5, alive=12)
+    assert (h.handoff_slots()["working_cap"], h.handoff_slots()["alive_cap"]) == (5, 12)
+    # The tick is the herd's own: no agent's token reaches it.
+    assert "herd_tick" not in jsonrpc_handler.AGENT_METHODS
+    assert not any("cap" in m for m in jsonrpc_handler.AGENT_METHODS)
+
+
+def test_an_agent_cannot_set_the_caps_over_the_wire(live, world):  # noqa: F811
+    import urllib.request
+    h = herd_mod.get_herd()
+    h.tick(sessions=world["snap"])
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "herd_tick",
+                       "params": {"sessions": world["snap"], "handoff_caps": {"working": 9}}}).encode()
+    req = urllib.request.Request(live["url"], data=body, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        out = json.loads(r.read())
+    assert "error" in out
+    assert h.handoff_slots()["working_cap"] == herd_mod.HANDOFF_WORKING
+
+
+def test_set_not_to_start_a_lead_is_refused_at_once(world, h):
+    _caps(h, world["snap"], may_start=False)
+    with pytest.raises(ValueError, match="ghostherd-handoff-may-start-lead is off"):
+        h.handoff(str(world["new"]), "x", from_name="lead-ghost")
+    assert _commands(h) == []
+
+
+def test_a_restart_neither_loses_nor_repeats_a_queued_handoff(world, more, h, tmp_path):
+    snap = world["snap"] + [_herd_lead("lead-fox", more["fox"])]
+    _caps(h, snap, working=1, alive=8)
+    busy = h.handoff(more["fox"], "fox work", from_name="lead-ghost")
+    a = h.handoff(more["parker"], "x", from_name="lead-ghost")
+    # The sidecar restarts: the queue is in its file.
+    h.close()
+    h2 = HerdStore(tmp_path / "herd.sqlite")
+    try:
+        assert h2.get_ask(a["id"])["waiting"] is True
+        # Emacs restarts: before it has its herd again, nothing starts and nothing fails.
+        out = h2.tick(sessions=[], restored=False)
+        assert out["commands"] == [] and h2.get_ask(a["id"])["status"] == "queued"
+        h2.tick(sessions=snap, restored=True)
+        _answer(h2, busy["id"], "lead-fox")
+        out = h2.tick(sessions=snap, restored=True)
+        [cmd] = out["commands"]
+        assert cmd["args"]["project"] == more["parker"]
+        # Emacs took the start and went down before answering it.  The next
+        # one, fresh, is not handed it before it has its herd ...
+        out = h2.tick(sessions=[], restored=False)
+        assert out["commands"] == []
+        with h2._mu:
+            assert h2._conn.execute("SELECT COUNT(*) FROM handoff_starts").fetchone()[0] == 0
+        # ... and finds the lead the last one did start: it takes the
+        # handoff, and no second lead is started.
+        snap2 = snap + [_herd_lead("lead-parker", more["parker"], state="idle")]
+        out = h2.tick(sessions=snap2, restored=True)
+        assert out["commands"] == []
+        assert h2.get_ask(a["id"])["to"] == "lead-parker"
+        # Had it not started one, the start is asked for again -- once.
+        b = h2.handoff(more["leopard"], "y", from_name="lead-ghost")
+        assert h2.get_ask(b["id"])["waiting"]                      # parker owes its answer
+        _pending(h2, snap2)
+        _answer(h2, a["id"], "lead-parker")
+        [cmd] = h2.tick(sessions=snap2, restored=True)["commands"]
+        h2.tick(sessions=[], restored=False)
+        out = h2.tick(sessions=snap2, restored=True)
+        assert [c["args"]["project"] for c in out["commands"]] == [more["leopard"]]
+        assert h2.tick(sessions=snap2, restored=True)["commands"] == []
+    finally:
+        h2.close()
+
+
+# -- The cap on the leads UP: the one idle longest that owes nothing is stopped --
+
+
+def _stop_of(h):
+    [(_, _, args)] = _commands(h)
+    return json.loads(args)["stop"]
+
+
+@pytest.mark.parametrize("why, change", [
+    ("an open ask delivered or queued to it", "ask_to"),
+    ("an ask of its own still open", "ask_from"),
+    ("a live agent it started", "started"),
+    ("blocked", "blocked"),
+    ("at work", "working"),
+    ("a draft in its box (Emacs says so)", "draft"),
+    ("you looking at it (Emacs says so)", "watched"),
+])
+def test_past_the_cap_up_the_idle_longest_that_owes_nothing_is_stopped(world, more, h, why, change):
+    # fox idle longest, leopard after it; genesis is the user's own lead,
+    # idle longest of all, and never the herd's to stop.
+    fox = _herd_lead("lead-fox", more["fox"], since=100.0)
+    leo = _herd_lead("lead-leopard", more["leopard"], since=200.0)
+    user = {"name": "lead-genesis", "kind": "claude", "state": "idle", "project": more["genesis"],
+            "role": "lead", "since": 10.0}
+    snap = world["snap"] + [fox, leo, user]
+    _caps(h, snap, working=3, alive=2)
+    # As it stands: fox is the one to stop.
+    with h._mu:
+        assert h._handoff_slots()["stoppable"] == ["lead-fox", "lead-leopard"]
+    # With fox held by WHY, leopard is the one.
+    extra = []
+    if change == "ask_to":
+        h.handoff(more["fox"], "fox work", from_name="lead-ghost")
+    elif change == "ask_from":
+        h.tick(sessions=snap)
+        h.handoff(str(world["ghost"]), "a question for ghost", from_name="lead-fox")
+    elif change == "started":
+        extra = [{"name": "rd-fox", "kind": "claude", "state": "idle", "project": more["fox"],
+                  "startedBy": "lead-fox"}]
+    elif change in ("blocked", "working"):
+        fox = dict(fox, state=change)
+    elif change == "draft":
+        fox = dict(fox, held="a draft in its box")
+    elif change == "watched":
+        fox = dict(fox, held="you are looking at it")
+    snap = world["snap"] + [fox, leo, user] + extra
+    h.tick(sessions=snap)
+    out = h.handoff(more["parker"], "x", from_name="lead-ghost")
+    assert out["starting"], (why, out)
+    assert _stop_of(h) == "lead-leopard", why
+
+
+def test_past_the_cap_up_with_none_to_stop_the_handoff_waits(world, more, h):
+    snap = world["snap"] + [_herd_lead("lead-fox", more["fox"], held="a draft in its box"),
+                            _herd_lead("lead-leopard", more["leopard"], state="working")]
+    _caps(h, snap, working=3, alive=2)
+    a = h.handoff(more["parker"], "x", from_name="lead-ghost")
+    assert (a["waiting"], a["ahead"]) == (True, 0)
+    assert "2 leads up that it started for handoffs, 2 at most, and none it may stop" in a["why"]
+    assert _commands(h) == []
+    # The draft sent: fox owes nothing now, and is the one stopped.
+    snap[-2] = dict(snap[-2], held="")
+    h.tick(sessions=snap)
+    assert _stop_of(h) == "lead-fox"
+
+
+def test_a_stop_emacs_will_not_make_leaves_the_handoff_waiting(world, more, h):
+    snap = world["snap"] + [_herd_lead("lead-fox", more["fox"], since=1.0),
+                            _herd_lead("lead-leopard", more["leopard"], since=2.0)]
+    _caps(h, snap, working=3, alive=2)
+    a = h.handoff(more["parker"], "x", from_name="lead-ghost")
+    [(cid, _, args)] = _commands(h)
+    assert json.loads(args)["stop"] == "lead-fox"
+    # Taken into use meanwhile: Emacs says wait, not fail.
+    h.tick(sessions=snap, replies=[{"id": cid, "text": "lead-fox is in use now", "wait": True}])
+    got = h.get_ask(a["id"])
+    assert got["status"] == "queued" and got["to"] == ""
+    # The next start stops leopard; fox is let be a while.
+    cmds = _commands(h)
+    assert len(cmds) == 2 and json.loads(cmds[-1][2])["stop"] == "lead-leopard"
+
+
+def test_the_client_says_queued_not_refused(live, world, more):  # noqa: F811
+    h = herd_mod.get_herd()
+    snap = world["snap"] + [_herd_lead("lead-fox", more["fox"])]
+    h.tick(sessions=snap, handoff_caps={"working": 1, "alive": 8})
+    h.handoff(more["fox"], "fox work", from_name="lead-ghost")
+    out = run(live, "handoff", more["parker"], "the brief", session="lead-ghost")
+    assert out.returncode == 0, out.stderr
+    assert "parker has no lead, and the herd has 1 lead at work on handoffs, 1 at most (lead-fox): " \
+           "this handoff is queued for a slot, 0 ahead of it" in out.stderr
+    assert "It is not refused -- do not hand it off again" in out.stderr
+    assert h.get_ask(out.stdout.strip())["waiting"] is True
+    # --wait: still open when its time is up -- the answer comes as a message.  Not a failure.
+    out = run(live, "handoff", more["leopard"], "more", "--wait", "--timeout", "2", session="lead-ghost")
+    assert out.returncode == 3, out.stderr
+    assert "queued for a slot, 1 ahead of it" in out.stderr and "still open after 2s" in out.stderr
+    assert "failed" not in out.stderr and "refused" not in out.stderr.replace("not refused", "")
+    # A status line as each change comes, not once a step: next in line,
+    # its lead starting, its lead -- then the answer.
+    proc = _start(live, "handoff", more["genesis"], "and more", "--wait", "--timeout", "120", session="lead-ghost")
+    time.sleep(1.5)
+    queued = [a for a in h.recent_asks()["asks"] if a["project"] == more["parker"]]
+    h.cancel(queued[0]["id"])                                  # genesis moves up
+    h.cancel(next(a for a in h.recent_asks()["asks"] if a["project"] == more["leopard"])["id"])
+    time.sleep(1.5)
+    fox = next(a for a in h.recent_asks()["asks"] if a["project"] == more["fox"])
+    h.reply(fox["id"], "done", from_name="lead-fox")           # a slot frees: genesis starts
+    [cmd] = h.tick(sessions=snap)["commands"]
+    cid = cmd["id"]
+    time.sleep(1.5)
+    snap2 = snap + [_herd_lead("lead-genesis", more["genesis"], state="idle")]
+    h.tick(sessions=snap2, replies=[{"id": cid, "text": "started lead-genesis", "lead": "lead-genesis"}])
+    time.sleep(1.5)
+    mine = next(a for a in h.recent_asks()["asks"] if a["project"] == more["genesis"])
+    h.reply(mine["id"], "genesis done", from_name="lead-genesis")
+    stdout, stderr = proc.communicate(timeout=60)
+    assert proc.returncode == 0, stderr
+    lines = [ln for ln in stderr.splitlines() if ln.startswith("herd: ")]
+    assert "2 ahead of it" in lines[0]
+    assert any("queued for a lead slot, 0 ahead of it" in ln for ln in lines), lines
+    assert any("genesis's lead is starting" in ln for ln in lines), lines
+    # Bound to its lead, the ask's own lines, as for any ask.
+    assert any(ln.startswith("herd: lead-genesis is idle; the ask waits until it is free") for ln in lines), lines
+    assert stdout.strip() == "genesis done"
