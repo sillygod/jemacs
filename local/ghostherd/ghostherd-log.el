@@ -289,7 +289,10 @@ actual memory, and now the actual disk."
         nil)
        (t
         (setq lines (1+ lines))
-        (when (ghostherd-log-entry-screen entry)
+        ;; A slow page's phases (kind `timing') are a few lines kept with
+        ;; its line, not a screen: not counted, nor dropped, as screens are.
+        (when (and (ghostherd-log-entry-screen entry)
+                   (not (eq (ghostherd-log-entry-kind entry) 'timing)))
           (setq screens (1+ screens))
           (when (and (>= ghostherd-log-screens 0)
                      (> screens ghostherd-log-screens))
@@ -470,6 +473,9 @@ the entry id; signals when there is no screen to read."
            t))
       ;; ghostherd-hooks.el: `ghostherd--herd-take-lint' -- every line a denial
       (lint . ,(rx-to-string `(seq bos "check " ,word " denied (") t))
+      ;; ghostherd-memory-page.el: `ghostherd-memory-page--log-timing' --
+      ;; the page loaded, woke or answered slowly; only slow ones are logged
+      (timing . ,(rx bos "slow " (or "open" "reload" "wake" "intent") " " (+ digit) "." digit " s"))
       ;; ghostherd-screen.el: `ghostherd--continue-send' -- a turn cut short
       (continue . ,(rx bos "↻ continuing a turn "))))
   "Per log kind, what a line of that kind reads as when it is an issue.")
@@ -537,6 +543,8 @@ trigger; each may be nil or empty.  Newest first."
          (out nil) (shown 0) (total 0))
     (dolist (e ghostherd--log)           ; newest first
       (when (and (ghostherd-log-entry-screen e)
+                 ;; A slow page's phases are no agent's screen.
+                 (not (eq (ghostherd-log-entry-kind e) 'timing))
                  (or (not agent) (equal (ghostherd-log-entry-session e) agent))
                  (or (not why) (eq (ghostherd-log-entry-why e) why))
                  (or (not since)

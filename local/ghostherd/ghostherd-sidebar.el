@@ -973,6 +973,8 @@ while the sidebar is actually on screen.
 
 Sidecar mail/Telegram is not on this timer.  `url-retrieve' on every
 poll hitchs typing; that path is `ghostherd--herd-tick-timer'."
+  ;; Late, Emacs was held: kept, for the herd page's slow timings.
+  (ghostherd--note-held)
   (ghostherd-poll-all)
   ;; Housekeeping on a cheap cadence: drop the turn-end cache's dead
   ;; transcripts even when no agent was removed (a live one may have moved

@@ -382,6 +382,11 @@ writes the lines, so the Issues chip does not parse prose either."
                  (list :old (match-string 1 text)
                        :new (match-string 2 text)
                        :reason (or (match-string 3 text) "")))
+            ;; A slow load's: what it waited on, for its bar, read where
+            ;; its line is written (`xwapp-timing-summary-phases').
+            (and (eq kind 'timing)
+                 (list :phases (vconcat (mapcar (lambda (p) (vector (symbol-name (nth 0 p)) (nth 1 p) (nth 2 p)))
+                                                (xwapp-timing-summary-phases text)))))
             (and screen (list :screen screen)))))
 
 (defun ghostherd-memory-page--send-log ()
@@ -400,6 +405,96 @@ writes the lines, so the Issues chip does not parse prose either."
     (ghostherd-memory-page--js "logAdd" (ghostherd-memory-page--log-entry entry))))
 
 (add-hook 'ghostherd-log-functions #'ghostherd-memory-page--on-log)
+
+;; A slow page, in the log.
+;;
+;; xwapp times each load and wake of the page in a browser -- the
+;; phone's -- and keeps the records (xwapp.el, "How long the page
+;; took"; `xwapp-timings').  A slow one of this page's is a line of the
+;; log too, of kind `timing', so it is read where the rest of what went
+;; on is: the line says what the moment waited on, longest first; what
+;; it keeps beside it, as a screen line keeps its screen, is its phases,
+;; request by request.  Its agent is the device, as tailscale names it,
+;; or "phone" / "desk".  With it the sidecar's CPU then, as ps has it --
+;; a burst of its embedding is one thing that keeps the herd's answers
+;; waiting.  An Issue (`ghostherd-log-issue-p'): a page you waited on is
+;; a fault you felt, and the Issues chip is where faults are looked back
+;; on; only slow ones are logged, so it stays as quiet as
+;; `xwapp-timing-slow' is high.
+
+(defun ghostherd-memory-page--on-timing (app record)
+  "Log RECORD, a timing of APP's page, when it is this page's and slow."
+  (when (and (eq app ghostherd-memory-page--app) (plist-get record :slow))
+    (ghostherd-memory-page--sidecar-cpu
+     (lambda (cpu) (ghostherd-memory-page--log-timing record cpu)))))
+
+(add-hook 'xwapp-timing-functions #'ghostherd-memory-page--on-timing)
+
+(defun ghostherd-memory-page--log-timing (record cpu)
+  "Log RECORD, a slow timing of the page, with CPU, the sidecar's, or nil.
+With it, whether the herd's poll found Emacs held then
+\(`ghostherd-memory-page--held'): Emacs's own word on Emacs busy, which
+the page's clock alone can only infer."
+  (let* ((peer (plist-get record :peer))
+         (held (ghostherd-memory-page--held record))
+         (said (and held (>= held ghostherd--held-min) (format "Emacs held %.1f s" held)))
+         (cpu (and (numberp cpu) (format "sidecar %d%% CPU" (round cpu)))))
+    (ghostherd--log-add
+     (or (plist-get peer :name) (if (eq (plist-get record :via) 'proxy) "phone" "desk"))
+     'timing
+     (concat "slow " (xwapp-timing-summary record)
+             (if said (concat " · " said) "")
+             (if cpu (concat " · " cpu) ""))
+     (concat (xwapp-timing-describe record)
+             (cond (said (format "\nherd's tick: %s" said))
+                   (held "\nherd's tick: on time, Emacs not held a tick long"))
+             (if cpu (concat "\n" cpu) "")))))
+
+(defun ghostherd-memory-page--held (record)
+  "Seconds Emacs's main thread was held during RECORD's moment, as the
+herd's poll ran late then (`ghostherd--held') -- 0 when it ran on time --
+or nil when the poll is not running to say."
+  (when-let* (((timerp ghostherd--poll-timer))
+              (at (plist-get record :at))
+              ((numberp at))
+              (start (+ at (or (plist-get record :offset) 0)))
+              (end (+ start (or (plist-get record :d) 0))))
+    (let ((most 0))
+      (dolist (h ghostherd--held most)
+        (setq most (max most (- (min end (car h)) (max start (- (car h) (cdr h))))))))))
+
+(defun ghostherd-memory-page--sidecar-cpu (then)
+  "Call THEN with the sidecar's CPU now, in percent of a core -- its
+process and those under it, as ps has them -- or nil when there is no
+sidecar here, or ps does not say.  ps runs on its own: Emacs waits not."
+  (let ((pid (and (ghostherd-memory--process-live-p)
+                  (process-id ghostherd-memory--process))))
+    (if (not pid)
+        (funcall then nil)
+      (xwapp-run "ghostherd-ps" '("ps" "-A" "-o" "pid=,ppid=,%cpu=") 3
+                 (lambda (out)
+                   (funcall then (and out (ghostherd-memory-page--tree-cpu
+                                           (decode-coding-string out 'utf-8) pid))))))))
+
+(defun ghostherd-memory-page--tree-cpu (ps pid)
+  "The CPU of PID and the processes under it, summed from PS, lines of
+\"PID PPID %CPU\"; nil when PID is not among them."
+  (let ((rows (delq nil (mapcar (lambda (line)
+                                  (let ((f (split-string line)))
+                                    (and (= (length f) 3)
+                                         (list (string-to-number (nth 0 f)) (string-to-number (nth 1 f))
+                                               (string-to-number (nth 2 f))))))
+                                (split-string ps "\n" t))))
+        (tree (list pid))
+        (grew t))
+    (when (assq pid rows)
+      (while grew
+        (setq grew nil)
+        (dolist (r rows)
+          (when (and (memq (nth 1 r) tree) (not (memq (nth 0 r) tree)))
+            (push (nth 0 r) tree)
+            (setq grew t))))
+      (apply #'+ (mapcar (lambda (r) (if (memq (nth 0 r) tree) (nth 2 r) 0)) rows)))))
 
 (defun ghostherd-memory-page--log-id (intent)
   "The log-entry id INTENT names, or a `user-error'."

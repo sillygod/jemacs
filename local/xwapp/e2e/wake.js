@@ -18,17 +18,23 @@ const path = require("path");
 const { start, watch, until, sleep, log, BOX, PHONE } = require("./appslib");
 const { measure, text, fresh, pageOf, NAME, copyTree, herdFile, shows } = require("./wakelib");
 const results = [];
+// WebKit's words for a load cut under it.
+const CUT = /^Failed to load resource: (The network connection was lost|A server with the specified hostname could not be found)\.$/;
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
 (async () => {
   // ---- The herd page: it comes back where it is ----
   {
     const s = await start({ el: "wake.el", desk: true, setup: (run) => { copyTree(run); herdFile(run, "first"); } });
     const intents = (op) => log().filter((w) => w && w.intent && (!op || w.intent.op === op)).map((w) => w.intent);
+    // When it slept: what its sleep cut, WebKit says it lost (below).
+    const cuts = [];
+    const asleep = s.sleep;
+    s.sleep = () => { cuts.push(Date.now()); asleep(); };
     try {
       const ctx = await s.browser.newContext(PHONE);
       const errors = [];
       const tab = await ctx.newPage();
-      watch(tab, errors);
+      watch(tab, { push: (e) => errors.push({ e, at: Date.now() }) });
       await tab.goto(BOX + "/open/ghostherd#agents");
       check("the herd page opens on the phone", await until(shows(tab, "first"), 10000));
       await tab.evaluate(() => {
@@ -59,7 +65,7 @@ const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "F
       const again = log().slice(0).filter((w) => w && w.intent).slice(before).map((w) => w.intent.op);
       check("the app was opened again for it, and it asked again for what it shows",
         log().includes("reopened") && again.includes("ready") && again.includes("herd-watch") && again.includes("threads-peek"), again);
-      check("a soft hello, the app's again", after.some((t) => /\/hello\?page=[0-9a-f]+&soft=1$/.test(t.path) && t.status === 204) &&
+      check("a soft hello, the app's again", after.some((t) => /\/hello\?page=[0-9a-f]+(&n=\d+)?&soft=1$/.test(t.path) && t.status === 204) &&
         pageOf(s.dir) !== "nil");
       check("no notice left", !(await tab.$("#xw-notice")));
       check("an intent goes on as before", await (async () => {
@@ -107,7 +113,15 @@ const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "F
       check("the file changed sent whole, though the browser had it; each other it had, not modified",
         after2.some((t) => changed(t) && t.asked && t.status === 200) && fresh(after2.filter((t) => !changed(t))),
         after2.map((t) => t.path.replace("/SECRET/", "") + " " + t.status + (t.asked ? " asked" : "")));
-      check("herd: no page errors", errors.length === 0, errors);
+      // What a sleep cut, within a moment of it, WebKit says it lost: a
+      // POST under way -- the page's timings, sent once it is drawn -- or
+      // a next held a while (that one, "a server ... could not be found");
+      // one asked a moment before the cut it asks again by itself.  The
+      // kit asks again for both.  Anything else, or at any other time, is
+      // the page's own.
+      const own = errors.filter(({ e, at }) => !(CUT.test(e) && cuts.some((t) => at >= t && at - t < 2000)))
+        .map(({ e }) => e);
+      check("herd: no page errors", own.length === 0, own);
       await ctx.close();
     } finally {
       await s.stop();

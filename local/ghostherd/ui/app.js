@@ -14,7 +14,9 @@
   // page in a browser that Emacs let go -- a phone asleep -- comes back
   // where it is (`comeBack'), rather than loading again.
 
-  const emit = XW.bridge(PREFIX, null, { back: comeBack });
+  // Ready -- its load over, for the kit's timings -- once the view it
+  // opened on is drawn (READY_BY).
+  const emit = XW.bridge(PREFIX, null, { back: comeBack, ready: true });
 
   // ---- A phone ---------------------------------------------------------
   //
@@ -4790,21 +4792,35 @@
     return '<span class="st st-' + esc(s) + '">' + esc(s) + "</span>";
   }
 
+  // A slow load's bar: what it waited on, each its share, in the order
+  // Emacs said them (the longest first).
+  function timingBar(e) {
+    const ph = Array.isArray(e.phases) ? e.phases : [];
+    const total = ph.reduce((n, p) => n + (Number(p[2]) || 0), 0);
+    if (!total) return "";
+    return '<span class="tbar" aria-hidden="true">' + ph.map((p) =>
+      '<span class="tseg ts-' + esc(p[0]) + '" style="width:' + ((100 * (Number(p[2]) || 0)) / total).toFixed(1) +
+      '%" title="' + esc(p[1] + " " + p[2] + " s") + '"></span>').join("") + "</span>";
+  }
+
   function entryRow(e, re) {
     let body;
     if (e.kind === "state" && e.new) {
       body = stateBadge(e.old) + '<span class="arrow">→</span>' + stateBadge(e.new) +
         (e.reason ? '<span class="reason">' + hl(e.reason, re) + "</span>" : "");
     } else {
-      body = '<span class="k-' + esc(e.kind) + '">' + hl(e.text, re) + "</span>";
+      body = '<span class="k-' + esc(e.kind) + '">' + hl(e.text, re) + "</span>" +
+        (e.kind === "timing" ? timingBar(e) : "");
     }
     const open = herd.open.has(e.id);
     const why = e.why ? '<span class="why why-' + esc(e.why) + '" title="why this screen was kept">' + esc(e.why) + "</span>" : "";
     const pin = e.pinned ? '<span class="pinmark" title="Pinned: kept until you remove it">📌</span>' : "";
     const note = e.note ? '<span class="lnote">' + hl(e.note, re) + "</span>" : "";
+    // A slow load keeps its phases where a screen line keeps its screen.
+    const kept = e.kind === "timing" ? "phases" : "screen";
     const screen = e.screen
       ? '<button type="button" class="linkish" data-act="screen" data-id="' + e.id + '">' +
-        (open ? "Hide screen" : "Screen") + "</button>"
+        (open ? "Hide " + kept : kept[0].toUpperCase() + kept.slice(1)) + "</button>"
       : "";
     // Pin/unpin and delete sit on a captured screen and on any pinned line.
     const ops = (e.screen || e.pinned)
@@ -7287,6 +7303,25 @@
       }
     },
   };
+
+  // The page is ready -- the end of its load, for the kit's timings
+  // (XW.ready) -- once the view it opened on has drawn what Emacs sent
+  // for it: the Inbox its items, the herd, the log...  A view not named
+  // here is, once Emacs has sent anything.  Each of Emacs's calls says
+  // so after it has run; the kit hears only the first that ends a load.
+  const READY_BY = { inbox: "renderInbox", agents: "renderHerd", log: "renderLog", memory: "renderMemory",
+                     sessions: "setContext", search: "setContext", threads: "renderThreads", docs: "renderDocs" };
+  Object.keys(window.GM).forEach((fn) => {
+    const f = window.GM[fn];
+    if (typeof f !== "function") return;
+    window.GM[fn] = function () {
+      const out = f.apply(this, arguments);
+      const want = READY_BY[view];
+      if (want === fn) XW.ready(view);
+      else if (!want && view !== "boot") XW.ready("drawn");
+      return out;
+    };
+  });
 
   // Keep the page exactly as tall as the browser is showing.  The dynamic
   // viewport (the phone's URL bar) is handled by CSS `100dvh'; the keyboard

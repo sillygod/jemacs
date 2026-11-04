@@ -518,6 +518,42 @@ Filled with FROM name, TO name, and BODY."
 (defvar ghostherd--poll-timer nil
   "Idle timer that polls session states.")
 
+;; How late the poll ran.
+;;
+;; Emacs's main thread held elsewhere -- a long command, a GC, a process
+;; waited on -- runs no timer meanwhile, and the poll's tick, due every
+;; `ghostherd-poll-interval', runs late by as long.  So each tick says
+;; how late it ran, and one late by `ghostherd--held-min' or more is
+;; kept, the latest `ghostherd--held-max': the herd page's slow timings
+;; ask whether Emacs was held then (`ghostherd-memory-page--held'), which
+;; the page's own clock can only infer.  A subtraction a tick, no timer
+;; of its own.  It sees a hold of a tick's length or more, not less.
+
+(defvar ghostherd--held nil
+  "The poll's late ticks, the latest first: (WHEN . LATE) each, seconds:
+Emacs's main thread held from WHEN - LATE to WHEN.")
+
+(defconst ghostherd--held-min 0.25
+  "Seconds late from which a tick of the poll is kept.")
+
+(defconst ghostherd--held-max 32
+  "Late ticks kept, the latest.")
+
+(defun ghostherd--note-held ()
+  "Note how late the poll's tick runs -- when its timer runs it."
+  (when (and (timerp ghostherd--poll-timer)
+             (eq timer-event-last ghostherd--poll-timer)
+             (numberp (timer--repeat-delay ghostherd--poll-timer)))
+    (let* ((now (float-time))
+           ;; Its timer is set for the next tick already: this one was
+           ;; due a repeat before that.
+           (late (- now (- (float-time (timer--time ghostherd--poll-timer))
+                           (timer--repeat-delay ghostherd--poll-timer)))))
+      (when (>= late ghostherd--held-min)
+        (push (cons now late) ghostherd--held)
+        (when (> (length ghostherd--held) ghostherd--held-max)
+          (setq ghostherd--held (seq-take ghostherd--held ghostherd--held-max)))))))
+
 (defvar ghostherd-state-change-hook nil
   "Hook run after a session state changes.
 Each function is called with (SESSION OLD-STATE NEW-STATE).")

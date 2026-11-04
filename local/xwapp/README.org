@@ -432,6 +432,58 @@ Phone, beside Refresh.
   page the app's; in the xwidget it is the page's first intent, and
   Emacs answers through =XW.kit=.
 
+** How long the page took
+
+A page on a phone is "sometimes" slow, and a slow moment is over before
+anyone looks.  So its timings are kept, to be read after: =M-x
+xwapp-timings= lists them, the latest first.
+
+- *The page times its moments* (=ui/xwapp.js=, "How long it took"): its
+  load, from the tap to ready --- =XW.ready(name)= from an app whose
+  bridge said ={ready: true}=, else Emacs's first calls run; a wake,
+  from the page shown again after a second or more hidden to Emacs's
+  answer to a =next= asked after it, with =wake=1=, which Emacs answers
+  at once; and an intent answered slowly, from when the page queued it
+  --- a tap waiting its turn behind a slow or stuck intent is /queued in
+  the page/.  Its marks (boot, dcl, hello,
+  the first intent and =next= answered, the app's own =XW.mark=) and its
+  requests from Resource Timing --- connecting, the wait for the first
+  byte, the download, the bytes --- go to Emacs once it is over, as the
+  kit's intent =xwapp-timing=.  The kit's requests are numbered (=n==)
+  so Emacs knows each.  Only to an Emacs whose hello said it takes them
+  (=Xwapp-Timing=, the ms past which one is slow); an Emacs from before
+  is sent nothing, and a page from before sends nothing.
+- *Emacs times its side of every request* as it serves it: its bytes
+  read, a =next= held until there were calls, the answer begun and all
+  in the socket, an intent's handler.  The latest 256, a ring; a few
+  =float-time='s a request, and nothing while the page is idle.
+- *Joined*, each request's wait comes apart: Emacs's own part, to the
+  millisecond --- /preparing/ (a =next= held while the app got its
+  answer ready: its handlers, a sidecar) and /answering/ (a file read,
+  gzip, the calls' JSON, and a download Emacs was the slow one to send:
+  its socket to the proxy) --- and the rest, the network both ways and
+  /Emacs busy/: the request in Emacs's socket while its main thread was
+  elsewhere.  Emacs cannot see that; the phone's clock can, lined up
+  with Emacs's as NTP does, by the quickest round trip --- the moment's
+  own, or the device's best of the last half hour, for a wake whose
+  every request waited on Emacs.  The way there past the way back is
+  then Emacs busy.  The moment is summed by what each instant waited on
+  --- Emacs busy, answering, the network, preparing, queued, or nothing:
+  the page's own work.  A delay on the way to Emacs alone (a request
+  held on an open connection: the phone's VPN, the proxy) reads as Emacs
+  busy here; an app that can tell, from Emacs's own side, says so beside
+  it --- the herd page does (ghostherd's README, the Log).
+- *A slow one from another device* (past =xwapp-timing-slow=, 1.5 s)
+  says how tailscale reaches it now: straight (on a LAN or not), or
+  relayed and through which DERP --- =tailscale status --json=, run
+  apart, once in 30 s at most (=xwapp-tailscale-program=, nil not to).
+- *Kept*: the latest 100 slow and 20 others, in =xwapp-timing-file=,
+  yours alone, and handed to =xwapp-timing-functions= --- the herd page
+  logs its slow ones (ghostherd's README, the Log).  Timings only: a
+  path without the secret, no content.  Every string a record keeps is
+  looked through for each secret xwapp keeps, plain, in any case or
+  %-escaped, and for 32 hex digits, before it is kept.
+
 * Page kit (=ui/=)
 
 What the pages share on the browser side, so it is fixed once:

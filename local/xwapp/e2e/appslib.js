@@ -69,7 +69,11 @@ async function start(opts) {
   // goneAt(PRED): Emacs goes the moment a request PRED takes ({method,
   // path}) reaches it, before Emacs has it -- that one and all under way
   // cut, as Emacs killed then would cut them; it says when.
-  let asleep = false, gone = false, going = null;
+  // holdAt(PRED, FN): the next request PRED takes waits at the proxy until
+  // FN's promise is kept -- Emacs made busy meanwhile, say (askEmacs) --
+  // then goes on.  askEmacs(METHOD, PATH): a request straight to Emacs's
+  // socket, past the proxy; its code.
+  let asleep = false, gone = false, going = null, holding = null;
   const held = [], open = new Set(), dozing = new Set(), dead = new Set(), traffic = [];
   const link = opts.link;
   let linkFree = 0;
@@ -146,8 +150,16 @@ async function start(opts) {
         res.writeHead(502, { "content-type": "text/plain" });
         return res.end("Bad Gateway");
       }
-      if (asleep) held.push(() => forward(req, res, u));
-      else forward(req, res, u);
+      const on = () => {
+        if (asleep) held.push(() => forward(req, res, u));
+        else forward(req, res, u);
+      };
+      if (holding && holding.pred({ method: req.method, path: u.pathname, query: u.search })) {
+        const h = holding;
+        holding = null;
+        return Promise.resolve(h.fn()).then(on, on);
+      }
+      on();
     };
     if (link) setTimeout(go, half());
     else go();
@@ -191,6 +203,14 @@ async function start(opts) {
     },
     down: (on) => { gone = on; },
     goneAt: (pred) => new Promise((went) => { going = { pred, went }; }),
+    holdAt: (pred, fn) => { holding = { pred, fn }; },
+    askEmacs: (method, p) => new Promise((done) => {
+      const q = http.request({ socketPath: sock, path: p, method,
+                               headers: { host: "localhost", "tailscale-user-login": "me@example.com" } },
+                             (r) => { r.resume(); r.on("end", () => done(r.statusCode)); });
+      q.on("error", () => done(0));
+      q.end();
+    }),
     cut: () => open.forEach((res) => res.destroy()) };
 }
 

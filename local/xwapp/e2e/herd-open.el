@@ -135,6 +135,41 @@
                                                           :bytes (string-bytes c)))
                                                   calls))))))))
 
+;; The page's timings (herd-timing.js): kept in E2E_DIR, and each record
+;; noted in timings.jsonl, as JSON; tailscale, which knows no such
+;; phone, not asked.
+(setq xwapp--timing-save t
+      xwapp-timing-file (expand-file-name "timings.eld" e2e-dir)
+      xwapp-tailscale-program nil)
+(add-hook 'xwapp-timing-functions
+          (lambda (_app record)
+            (write-region (concat (json-encode (plist-put (copy-sequence record) :reqs
+                                                          (vconcat (plist-get record :reqs))))
+                                  "\n")
+                          nil (expand-file-name "timings.jsonl" e2e-dir) t 'silent)))
+
+;; The herd's poll, played: its tick does nothing but note how late it
+;; ran (`ghostherd--note-held'), as the real one does first -- no agent
+;; here to poll, nor tmux to ask.
+(setq ghostherd--poll-timer (run-with-timer 1.5 1.5 #'ghostherd--note-held))
+
+;; Emacs busy, on the test's word: POST /e2e-stall?ms=N on the socket is
+;; answered at once, and Emacs then runs Lisp for N ms, reading nothing
+;; -- as a long command, a GC or a process waited on would.
+(advice-add 'xwapp--answer :before-until
+            (lambda (proc request _transport)
+              (when (string-prefix-p "/e2e-stall?" (or (nth 1 request) ""))
+                (let ((ms (string-to-number
+                           (or (cadr (assoc "ms" (url-parse-query-string
+                                                  (cadr (split-string (nth 1 request) "?")))))
+                               "0"))))
+                  (xwapp--respond proc 204)
+                  (run-at-time 0 nil (lambda ()
+                                       (e2e-note (list :stall ms))
+                                       (let ((end (+ (float-time) (/ ms 1000.0))))
+                                         (while (< (float-time) end)))))
+                  t))))
+
 ;; In a terminal (herd-open.js's BLOCK), a key: when each C-t was read,
 ;; to time how long Emacs went without reading one.  Not F5: tmux sends it
 ;; as an escape sequence this terminal's Emacs reads as keys of their own.
