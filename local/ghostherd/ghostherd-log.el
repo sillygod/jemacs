@@ -474,8 +474,10 @@ the entry id; signals when there is no screen to read."
       ;; ghostherd-hooks.el: `ghostherd--herd-take-lint' -- every line a denial
       (lint . ,(rx-to-string `(seq bos "check " ,word " denied (") t))
       ;; ghostherd-memory-page.el: `ghostherd-memory-page--log-timing' --
-      ;; the page loaded, woke or answered slowly; only slow ones are logged
-      (timing . ,(rx bos "slow " (or "open" "reload" "wake" "intent") " " (+ digit) "." digit " s"))
+      ;; the page loaded, woke, answered or opened a room slowly -- a
+      ;; moment of the kit's or the page's own, its kind a word; only slow
+      ;; ones are logged
+      (timing . ,(rx bos "slow " (any "a-z") (* (any "a-z0-9-")) " " (+ digit) "." digit " s"))
       ;; ghostherd-screen.el: `ghostherd--continue-send' -- a turn cut short
       (continue . ,(rx bos "↻ continuing a turn "))))
   "Per log kind, what a line of that kind reads as when it is an issue.")

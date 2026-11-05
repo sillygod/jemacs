@@ -307,11 +307,13 @@ first, and the client is at /p/bin/herd."
 (defmacro ghostherd-test--with-page (&rest body)
   "Run BODY with sidecar requests and page calls recorded.
 `requests' holds (METHOD PARAMS) oldest first; REPLY, a function of
-METHOD and PARAMS, answers them.  `calls' holds (FN . OBJ) oldest first."
+METHOD and PARAMS, answers them.  `calls' holds (FN . OBJ) oldest first,
+those that can wait (`ghostherd-memory-page--js-later') among them, and
+`laters' those alone."
   (declare (indent 0))
   `(progn
      (skip-unless (require 'ghostherd-memory-page nil t))
-     (let ((requests nil) (calls nil) (reply (lambda (_m _p) nil)) (fail nil) (watched 0)
+     (let ((requests nil) (calls nil) (laters nil) (reply (lambda (_m _p) nil)) (fail nil) (watched 0)
            (ghostherd-memory-page--lazy nil)
            (ghostherd-memory-page--importing nil)
            (ghostherd-memory-page--progress-shown nil)
@@ -323,6 +325,10 @@ METHOD and PARAMS, answers them.  `calls' holds (FN . OBJ) oldest first."
                     (if fail (funcall err-cb fail) (funcall cb (funcall reply method params)))))
                  ((symbol-function 'ghostherd-memory-page--js)
                   (lambda (fn obj) (setq calls (append calls (list (cons fn obj))))))
+                 ((symbol-function 'ghostherd-memory-page--js-later)
+                  (lambda (fn obj)
+                    (setq calls (append calls (list (cons fn obj)))
+                          laters (append laters (list (cons fn obj))))))
                  ;; The tick is called by hand; no timer outlives a test.
                  ((symbol-function 'ghostherd-memory-page--watch-import)
                   (lambda () (setq watched (1+ watched)))))

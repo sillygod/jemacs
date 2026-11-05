@@ -558,7 +558,16 @@ page as [] -- json.el writes nil as null, and the page stopped drawing."
             (ghostherd-memory-page--chat-sent nil)
             (ghostherd-memory-page--chat-reading nil)
             (ghostherd-memory-page--room-limits (make-hash-table :test 'equal))
-            (ghostherd-memory-page--chat-limit nil))
+            (ghostherd-memory-page--chat-limit nil)
+            (ghostherd-memory-page--room-screen-sent (make-hash-table :test 'equal))
+            (ghostherd-memory-page--room-held (make-hash-table :test 'equal))
+            (ghostherd-memory-page--room-parts nil)
+            (ghostherd-memory-page--room-split nil)
+            (ghostherd-memory-page--room-first nil)
+            (ghostherd-memory-page--room-opening nil)
+            (ghostherd-memory-page--room-wait nil)
+            (ghostherd-memory-page--room-queue nil)
+            (ghostherd-memory-page--room-fills nil))
        (cl-letf (((symbol-function 'ghostherd-session-transcript) (lambda (_s) transcript))
                  ((symbol-function 'ghostherd--host-capture) (lambda (&rest _) "the screen"))
                  ((symbol-function 'xwapp-session) (lambda (&rest _) t)))
@@ -645,8 +654,11 @@ gets each entry's known fields, lists as arrays."
       (should-not (plist-member e :secret))
       (should (equal (plist-get (aref tools 0) :hint) "ls"))
       (let ((ask (aref (plist-get p :entries) 2)))
-        (should (equal (list (plist-get ask :ask) (plist-get ask :waiting) (plist-get ask :failed))
-                       '("26910956" t :json-false))))
+        (should (equal (list (plist-get ask :ask) (plist-get ask :waiting)) '("26910956" t)))
+        ;; What says nothing is not sent: not failed, no tools, no images.
+        (should-not (plist-member ask :failed))
+        (should-not (plist-member ask :tools))
+        (should-not (plist-member e :answerImages)))
       (should (string-match-p "\"entries\":\\[{.*\"tools\":\\[{\"name\":\"Bash\"" (json-encode p))))
     (should-not (ghostherd-test--call calls "setScreen"))
     (ghostherd-memory-page--room-tick)
@@ -843,8 +855,11 @@ columns, every column is sent afresh: they were not kept up meanwhile."
              (e (aref (plist-get p :entries) 0)))
         (should (equal (list (plist-get p :project) (plist-get p :absent) (plist-get p :missing) (plist-get p :earlier))
                        '("/p/" ["claude-web"] ["gone"] t)))
-        (should (equal (list (plist-get e :who) (plist-get e :to) (plist-get e :text) (plist-get e :failed))
-                       '("user" "claude-api" "hi" :json-false)))
+        (should (equal (list (plist-get e :who) (plist-get e :to) (plist-get e :text))
+                       '("user" "claude-api" "hi")))
+        ;; What says nothing is not sent: not failed, no images.
+        (should-not (plist-member e :failed))
+        (should-not (plist-member e :images))
         (should-not (plist-member e :secret))
         (should (string-match-p "\"entries\":\\[{" (json-encode p))))
       (should-not (ghostherd-test--call calls "setConversation"))
@@ -869,15 +884,294 @@ columns, every column is sent afresh: they were not kept up meanwhile."
       (should (string-match-p "older than the room" (plist-get (ghostherd-test--call calls "setChat") :error))))))
 
 (ert-deftest ghostherd-test-room-without-a-transcript-shows-the-screen ()
+  "An agent with no transcript known shows its screen: sent when it
+changed, not each tick -- over a phone's slow link a screen a tick was
+some KB a second for nothing -- and again when the page watches anew."
   (ghostherd-test--with-room
     (setq transcript nil)
+    (let ((screen "the screen"))
+      (cl-letf (((symbol-function 'ghostherd--host-capture) (lambda (&rest _) screen)))
+        (ghostherd-memory-page--room-tick)
+        (ghostherd-memory-page--room-tick)
+        (should-not requests)
+        (should (equal (mapcar #'cdr (seq-filter (lambda (c) (equal (car c) "setConversation")) calls))
+                       '((:name "claude-api" :entries [] :none t))))
+        (should (equal (length (seq-filter (lambda (c) (equal (car c) "setScreen")) calls)) 1))
+        (should (equal (plist-get (ghostherd-test--call calls "setScreen") :text) "the screen"))
+        (setq screen "the screen, on")
+        (ghostherd-memory-page--room-tick)
+        (should (equal (length (seq-filter (lambda (c) (equal (car c) "setScreen")) calls)) 2))
+        (should (equal (plist-get (ghostherd-test--call calls "setScreen") :text) "the screen, on"))
+        ;; Watched anew -- a tap on its Screen, a reload -- it is sent again.
+        (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . []) (reopen . t)))
+        (should (equal (length (seq-filter (lambda (c) (equal (car c) "setScreen")) calls)) 3))))))
+
+;;; The room in parts
+
+(defun ghostherd-test--entry (n &optional bytes)
+  "Entry N of a made-up conversation, about BYTES long (100 by default)."
+  (list :role "assistant" :text (format "turn %d %s" n (make-string (or bytes 100) ?x))
+        :ts (format "2026-11-05T01:%02d:%02dZ" (/ n 60) (% n 60))))
+
+(defun ghostherd-test--entries (from to &optional bytes)
+  (mapcar (lambda (n) (ghostherd-test--entry n bytes)) (number-sequence from to)))
+
+(defun ghostherd-test--texts (v)
+  "The texts of entries V, a vector, each to its first two words."
+  (mapcar (lambda (e) (mapconcat #'identity (seq-take (split-string (plist-get e :text)) 2) " ")) v))
+
+(ert-deftest ghostherd-test-room-delta-finds-what-changed ()
+  "A change is told as what to drop off the page's copy and what to add
+after: the window grown, slid on, its last entry changed, its edge read
+otherwise; nothing alike, or too much changed, is no change but a whole."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let ((d #'ghostherd-memory-page--room-delta))
+    (should (equal (funcall d '(a b c) '(a b c d)) '(0 d)))
+    (should (equal (funcall d '(a b c) '(a b c)) '(0)))
+    (should (equal (funcall d '(a b c) '(a b c2 d)) '(1 c2 d)))
+    (should (equal (funcall d '(a b c d) '(c d e f)) '(0 e f)))
+    (should (equal (funcall d '(a b c d) '(a2 b c d e)) '(0 e)))
+    (should (equal (funcall d '(x x x) '(x x x x)) '(0 x)))
+    (should-not (funcall d '(a b c) '(p q r)))
+    (should-not (funcall d nil '(a)))
+    ;; Most of it changed: sent whole, not as a change.
+    (let ((old (number-sequence 1 40)))
+      (should-not (funcall d old (cons 1 (number-sequence 101 140)))))))
+
+(defmacro ghostherd-test--with-room-of-two (&rest body)
+  "BODY in the room of /p/ with two agents, claude-api and claude-web,
+each its transcript (`api-file', `web-file'), the sidecar answering a
+conversation from `convs' (path -> entries)."
+  (declare (indent 0))
+  `(ghostherd-test--with-room
+     (let* ((api-file transcript)
+            (web-file (make-temp-file "gh-room-web" nil ".jsonl" "{}\n"))
+            (convs (list (cons api-file nil) (cons web-file nil))))
+       (puthash "claude-web" (ghostherd-session--create :id "claude-web" :name "claude-web" :kind 'claude
+                                                        :state 'idle :project "/p/" :backend 'tmux)
+                ghostherd--sessions)
+       (cl-letf (((symbol-function 'ghostherd-session-transcript)
+                  (lambda (s) (if (equal (ghostherd-session-name s) "claude-web") web-file api-file))))
+         (setq reply (lambda (_m p) (list :cli "claude" :earlier t
+                                          :entries (cdr (assoc (plist-get p :path) convs)))))
+         (unwind-protect (progn ,@body)
+           (delete-file web-file))))))
+
+(ert-deftest ghostherd-test-room-in-parts-sends-whole-then-what-changed ()
+  "A page that takes the room in parts gets each conversation whole once,
+by version, then only what changed of it -- each change naming the version
+it follows -- and nothing when nothing did."
+  (ghostherd-test--with-room-of-two
+    (setcdr (assoc api-file convs) (ghostherd-test--entries 1 3))
+    (setcdr (assoc web-file convs) (ghostherd-test--entries 1 2))
+    (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . [])
+                                     (reopen . t) (parts . t) (split . :false) (first . ["claude-api"])))
+    (let* ((sent (seq-filter (lambda (c) (equal (car c) "setConversation")) calls))
+           (api (cdr (seq-find (lambda (c) (equal (plist-get (cdr c) :name) "claude-api")) sent))))
+      (should (= (length sent) 2))
+      (should (natnump (plist-get api :v)))
+      (should-not (plist-member api :base))
+      (should (equal (plist-get api :rest) 0))
+      (should (equal (ghostherd-test--texts (plist-get api :entries)) '("turn 1" "turn 2" "turn 3")))
+      ;; Unsplit: none of it waits.
+      (should-not laters)
+      ;; Its last turn goes on, and another comes: that, alone.
+      (setq calls nil)
+      (setcdr (assoc api-file convs) (append (ghostherd-test--entries 1 2)
+                                             (list (plist-put (ghostherd-test--entry 3) :text "turn 3 longer"))
+                                             (ghostherd-test--entries 4 4)))
+      (write-region "more\n" nil api-file t 'silent)
+      (ghostherd-memory-page--room-tick)
+      (let ((p (ghostherd-test--call calls "setConversation")))
+        (should (equal (plist-get p :base) (plist-get api :v)))
+        (should (> (plist-get p :v) (plist-get api :v)))
+        (should (equal (plist-get p :drop) 1))
+        (should (equal (ghostherd-test--texts (plist-get p :entries)) '("turn 3" "turn 4")))
+        (should (equal (plist-get p :name) "claude-api"))
+        ;; The transcript touched, its entries as they were: nothing sent.
+        (setq calls nil)
+        (write-region "more\n" nil api-file t 'silent)
+        (ghostherd-memory-page--room-tick)
+        (should-not (ghostherd-test--call calls "setConversation"))
+        ;; The page missed a part and asks: read anew, sent whole.
+        (ghostherd-memory-page--handle '((op . "room-resend") (project . "/p/") (name . "claude-api")))
+        (ghostherd-memory-page--room-tick)
+        (let ((w (ghostherd-test--call calls "setConversation")))
+          (should-not (plist-member w :base))
+          (should (> (plist-get w :v) (plist-get p :v)))
+          (should (equal (length (plist-get w :entries)) 4)))))))
+
+(ert-deftest ghostherd-test-room-split-sends-the-column-in-view-first ()
+  "On another device the page splits: the column in view's newest go
+first, alone -- the rest of the room only once they are out -- then the
+other columns' newest, then each one's older parts, the one in view's
+first, as calls that can wait.  Each older part follows the one before
+it, newest first; together they are the conversation."
+  (ghostherd-test--with-room-of-two
+    (setcdr (assoc api-file convs) (ghostherd-test--entries 1 40 2000))
+    (setcdr (assoc web-file convs) (ghostherd-test--entries 101 130 2000))
+    (let (out)
+      (cl-letf (((symbol-function 'xwapp-when-sent) (lambda (_app fn) (push fn out))))
+        (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . [])
+                                         (reopen . t) (parts . t) (split . t) (first . ["claude-api"])))
+        ;; Only the column in view, its newest: nothing else until it is out.
+        (should (equal (mapcar (lambda (c) (plist-get (cdr c) :name)) calls) '("claude-api")))
+        (should-not laters)
+        (should (= (length out) 1))
+        (funcall (car out)))
+      (let* ((first (cdar calls))
+             (parts (mapcar #'cdr laters))
+             (names (mapcar (lambda (o) (plist-get o :name)) parts)))
+        (should (<= (* 6 2000) (seq-reduce #'+ (mapcar #'ghostherd-memory-page--entry-bytes (plist-get first :entries)) 0)
+                    (+ ghostherd-memory-page--room-first-bytes 2200)))
+        (should (equal (car (last (ghostherd-test--texts (plist-get first :entries)))) "turn 40"))
+        (should (> (plist-get first :rest) 0))
+        (should (eq (plist-get first :earlier) t))
+        ;; The other column's newest, then the older parts: the one in view's first.
+        (should (equal (car names) "claude-web"))
+        (should-not (plist-member (car parts) :base))
+        (let ((api-parts (seq-filter (lambda (o) (and (equal (plist-get o :name) "claude-api") (plist-get o :head))) parts))
+              (web-parts (seq-filter (lambda (o) (and (equal (plist-get o :name) "claude-web") (plist-get o :head))) parts)))
+          (should (< (cl-position (car (last api-parts)) parts) (cl-position (car web-parts) parts)))
+          ;; Each follows the one before; the last has no rest, and older
+          ;; ones are there, as the sidecar said.
+          (let ((v (plist-get first :v)) (all (append (plist-get first :entries) nil)))
+            (dolist (o api-parts)
+              (should (equal (plist-get o :base) v))
+              (setq v (plist-get o :v)
+                    all (append (plist-get o :head) all)))
+            (should (equal (plist-get (car (last api-parts)) :rest) 0))
+            (should (eq (plist-get (car (last api-parts)) :earlier) t))
+            (should (equal (ghostherd-test--texts (vconcat all))
+                           (ghostherd-test--texts (vconcat (ghostherd-test--entries 1 40 2000)))))))
+        ;; Opened: a change of the column in view now waits behind them.
+        (setq calls nil laters nil)
+        (setcdr (assoc api-file convs) (ghostherd-test--entries 1 41 2000))
+        (write-region "more\n" nil api-file t 'silent)
+        (ghostherd-memory-page--room-tick)
+        (let ((p (cdr (car laters))))
+          (should (equal (plist-get p :drop) 0))
+          (should (equal (ghostherd-test--texts (plist-get p :entries)) '("turn 41"))))))))
+
+(ert-deftest ghostherd-test-room-split-out-at-once-still-sends-the-rest ()
+  "The column in view out at once -- nothing else waiting to go -- its
+older parts still follow, after the other column's newest."
+  (ghostherd-test--with-room-of-two
+    (setcdr (assoc api-file convs) (ghostherd-test--entries 1 40 2000))
+    (setcdr (assoc web-file convs) (ghostherd-test--entries 101 130 2000))
+    (let (pending)
+      (cl-letf (((symbol-function 'xwapp-when-sent) (lambda (_app fn) (funcall fn)))
+                ((symbol-function 'ghostherd-memory-request-async)
+                 (lambda (_method cb &optional params _err)
+                   (setq pending (append pending (list (cons (plist-get params :path) cb)))))))
+        (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . [])
+                                         (reopen . t) (parts . t) (split . t) (first . ["claude-api"])))
+        ;; Answered after the tick, as the sidecar does: the other first,
+        ;; then the one in view.
+        (dolist (file (list web-file api-file))
+          (funcall (cdr (assoc file pending)) (funcall reply nil (list :path file))))))
+    (let ((heads (seq-filter (lambda (o) (plist-get o :head)) (mapcar #'cdr laters))))
+      (should (seq-some (lambda (o) (equal (plist-get o :name) "claude-api")) heads))
+      (should (seq-some (lambda (o) (equal (plist-get o :name) "claude-web")) heads))
+      (should (equal (plist-get (cdar laters) :name) "claude-web"))
+      (should-not (plist-member (cdar laters) :base)))))
+
+(ert-deftest ghostherd-test-room-split-waits-for-every-read ()
+  "While the room opens split, its reads answer in any order: a column
+not in view waits for the one in view to be out, nothing waits behind
+them until every read is in, and a column read once is not read again
+meanwhile."
+  (ghostherd-test--with-room-of-two
+    (setcdr (assoc api-file convs) (ghostherd-test--entries 1 30 2000))
+    (setcdr (assoc web-file convs) (ghostherd-test--entries 101 130 2000))
+    (let (pending out)
+      (cl-letf (((symbol-function 'ghostherd-memory-request-async)
+                 (lambda (method cb &optional params _err)
+                   (setq requests (append requests (list (list method params))))
+                   (push (cons (plist-get params :path) cb) pending)))
+                ((symbol-function 'xwapp-when-sent) (lambda (_app fn) (push fn out))))
+        (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . [])
+                                         (reopen . t) (parts . t) (split . t) (first . ["claude-api"])))
+        (should (= (length requests) 2))
+        (let ((answer (lambda (file) (funcall (cdr (assoc file pending)) (funcall reply nil (list :path file))))))
+          ;; The other column first: it waits.
+          (funcall answer web-file)
+          (should-not calls)
+          ;; Changed meanwhile: not read again while it waits.
+          (write-region "more\n" nil web-file t 'silent)
+          (ghostherd-memory-page--room-tick)
+          (should (= (length requests) 2))
+          ;; The one in view: alone, now.
+          (funcall answer api-file)
+          (should (equal (mapcar (lambda (c) (plist-get (cdr c) :name)) calls) '("claude-api")))
+          (should-not laters)
+          ;; Out: the rest follows.
+          (funcall (car out))
+          (should (equal (plist-get (cdar laters) :name) "claude-web"))
+          (should-not (plist-member (cdar laters) :base))
+          ;; And the column that changed is read again.
+          (ghostherd-memory-page--room-tick)
+          (should (= (length requests) 3)))))))
+
+(ert-deftest ghostherd-test-room-reopened-forgets-what-waits ()
+  "Opened again -- the page reloaded, or another room -- the parts still
+waiting to go are of the room as it was: dropped, and it is sent anew."
+  (ghostherd-test--with-room-of-two
+    (setcdr (assoc api-file convs) (ghostherd-test--entries 1 3))
+    (let (forgot)
+      (cl-letf (((symbol-function 'xwapp-js-forget) (lambda (_app name) (push name forgot))))
+        (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . [])
+                                         (reopen . t) (parts . t) (split . t) (first . ["claude-api"])))
+        (setq forgot nil calls nil)
+        (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . [])
+                                         (reopen . t) (parts . t) (split . t) (first . ["claude-api"])))
+        (should (equal forgot '(ghostherd-room)))
+        (let ((p (cdr (seq-find (lambda (c) (equal (plist-get (cdr c) :name) "claude-api")) calls))))
+          (should-not (plist-member p :base)))))))
+
+(ert-deftest ghostherd-test-room-chat-in-parts ()
+  "The chat in parts: whole, its newest first when split, the rest as
+calls that can wait once that is out; then only what changed."
+  (ghostherd-test--with-room
+    (let ((items (mapcar (lambda (n) (list :who "claude-api" :kind "turn" :agent "claude-api"
+                                           :text (format "said %d %s" n (make-string 3000 ?y))
+                                           :ts (format "2026-11-05T02:00:%02dZ" n)))
+                         (number-sequence 1 20))))
+      ;; The sidecar's false, as its answer is read: nil.
+      (setq reply (lambda (_m _p) (list :earlier nil :missing [] :entries items)))
+      (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . []) (view . "chat")
+                                       (reopen . t) (parts . t) (split . t) (first . [])))
+      (let ((first (ghostherd-test--call (seq-remove (lambda (c) (member c laters)) calls) "setChat")))
+        (should (equal (plist-get first :project) "/p/"))
+        (should (> (plist-get first :rest) 0))
+        (should (string-prefix-p "said 20" (plist-get (aref (plist-get first :entries) (1- (length (plist-get first :entries)))) :text)))
+        (should laters)
+        (should (equal (plist-get (cdr (car laters)) :base) (plist-get first :v)))
+        (should (eq (plist-get (cdr (car (last laters))) :earlier) :json-false))
+        (setq calls nil laters nil)
+        (setq items (append items (list (list :who "user" :to "claude-api" :kind "prompt" :text "and now?"
+                                              :ts "2026-11-05T02:01:00Z" :agent "claude-api"))))
+        (write-region "more\n" nil file t 'silent)
+        (ghostherd-memory-page--room-tick)
+        (let ((p (cdr (car laters))))
+          (should (equal (plist-get p :drop) 0))
+          (should (equal (plist-get (aref (plist-get p :entries) 0) :text) "and now?")))))))
+
+(ert-deftest ghostherd-test-room-a-page-from-before-gets-it-whole ()
+  "A page from before parts says none of it: each conversation is sent
+whole each change, with no version, as it always was."
+  (ghostherd-test--with-room
+    (setq reply (lambda (_m _p) (list :cli "claude" :earlier :json-false :entries (ghostherd-test--entries 1 3))))
+    (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . []) (reopen . t)))
+    (let ((p (ghostherd-test--call calls "setConversation")))
+      (should-not (plist-member p :v))
+      (should (= (length (plist-get p :entries)) 3)))
+    (setq calls nil)
+    (write-region "more\n" nil file t 'silent)
     (ghostherd-memory-page--room-tick)
-    (ghostherd-memory-page--room-tick)
-    (should-not requests)
-    (should (equal (mapcar #'cdr (seq-filter (lambda (c) (equal (car c) "setConversation")) calls))
-                   '((:name "claude-api" :entries [] :none t))))
-    (should (equal (length (seq-filter (lambda (c) (equal (car c) "setScreen")) calls)) 2))
-    (should (equal (plist-get (ghostherd-test--call calls "setScreen") :text) "the screen"))))
+    (let ((p (ghostherd-test--call calls "setConversation")))
+      (should-not (plist-member p :base))
+      (should (= (length (plist-get p :entries)) 3)))))
 
 (ert-deftest ghostherd-test-room-screens-and-failures ()
   "A column the page shows by its screen gets the screen; a sidecar that

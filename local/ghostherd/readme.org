@@ -2590,6 +2590,21 @@ are the other tabs (below, and "What happened while you were away").
   its screen and says why.  Emacs looks every two seconds; the sidecar
   reads a transcript, from its tail, only when it has changed.  Esc or
   Back leaves.
+- A room comes in parts, for a phone's slow link (6--20 KB a second
+  relayed, where a room of four once took 25 s): each conversation
+  whole once, then only what changed --- the new turns, the last one
+  that went on --- each part naming the one it follows, and one missed
+  (the phone slept) asked for whole again.  On another device a
+  conversation's newest come first, some 16 KB of them, and the rest
+  after, prepended: the column on screen alone first, then the other
+  columns' newest, then the rest of each, behind anything a tap asks
+  for.  A column you are reading does not move as the rest comes --- at
+  its end it stays at its end, scrolled up it stays put --- /Load
+  earlier/ pressed meanwhile is answered by it, and the strip's count
+  of your messages says =…= (so far) until it has all come.  From the
+  tap to the conversation drawn is timed (=room= in xwapp's timings); a
+  slow one is in the Log, as a slow open is.  At the desk the room
+  comes whole at once, then changes alone.
 - /Chat/ in the room's header shows it as one conversation instead:
   who said what to whom --- your prompts, the asks and answers between
   agents, how each agent's every turn ended --- in the speakers'

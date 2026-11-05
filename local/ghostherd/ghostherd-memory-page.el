@@ -170,6 +170,11 @@ top-level call) still serves them; saying it again costs nothing."
 (defun ghostherd-memory-page--js (fn obj)
   (xwapp-js ghostherd-memory-page--app fn obj))
 
+(defun ghostherd-memory-page--js-later (fn obj)
+  "Call FN with OBJ in the page as a call that can wait behind every
+other (`xwapp-js' LATER): a room's, named `ghostherd-room'."
+  (xwapp-js ghostherd-memory-page--app fn obj 'ghostherd-room))
+
 (defun ghostherd-memory-page--truthy (v)
   "Non-nil when V is true: intents parse JSON false as `:false'."
   (and v (not (memq v '(:false :null)))))
@@ -2648,6 +2653,65 @@ NAME is the parent agent and PATH its transcript; nil when none is open.")
   "The signature last sent for the open sub-agent's transcript.")
 (defvar ghostherd-memory-page--sub-reading nil
   "Non-nil while the sidecar reads the open sub-agent's transcript.")
+(defvar ghostherd-memory-page--room-screen-sent (make-hash-table :test 'equal)
+  "Agent name -> the screen last sent for it: sent again once it changed.")
+
+;; In parts.
+;;
+;; Over a phone's slow link -- 6 to 20 KB a second, relayed through
+;; tailscale's DERP server in Hong Kong (2026-11-05) -- a room of four
+;; took 25 s to come.  Each column was its agent's newest 60 entries, 10
+;; KB gzip'd at the median and 28 KB at the 90th percentile of this
+;; machine's transcripts (62 of them, measured 2026-11-05), four in one
+;; `next', and each change of an agent sent its 60 again.  So a page that
+;; says it can (room-watch's `parts') takes each conversation by
+;; version: whole once, then only what changed -- DROP entries off its
+;; end and ENTRIES after them, or HEAD before it -- each part naming the
+;; version it follows (`base'); a page that missed one asks for it whole
+;; again (room-resend) rather than show it wrong.  A page that asks to
+;; `split' -- on another device -- takes a conversation's newest first,
+;; `ghostherd-memory-page--room-first-bytes' of them (the newest 8 to 12
+;; entries, 4 to 7 KB gzip'd), the rest after in parts prepended.  The
+;; columns it shows (`first') go before any other, alone in their
+;; `next' (`xwapp-when-sent'); then the other columns' newest, then the
+;; rest of each, those in view first, as calls that can wait (`xwapp-js'
+;; LATER), which a tap's answer does not wait behind.  The sidecar reads
+;; the newest 60, as before: on this machine, in milliseconds.
+
+(defconst ghostherd-memory-page--room-first-bytes (* 16 1024)
+  "About how many bytes of a conversation's newest entries go first, when
+the page asks to split it: some 5 KB gzip'd, a few screens of a phone.")
+
+(defconst ghostherd-memory-page--room-fill-bytes (* 24 1024)
+  "About how many bytes of its older entries each later part carries.")
+
+(defvar ghostherd-memory-page--room-parts nil
+  "Non-nil when the page takes the room in parts (\"In parts\").")
+(defvar ghostherd-memory-page--room-split nil
+  "Non-nil when the page takes a conversation's newest first.")
+(defvar ghostherd-memory-page--room-first nil
+  "The columns the page shows, by name, as its room-watch said: read and
+sent first.  The chat is `chat'.")
+(defvar ghostherd-memory-page--room-held (make-hash-table :test 'equal)
+  "Agent name, or `chat' -> (V PATH ENTRIES): the version of its
+conversation last sent the page, its transcript, and the entries the
+page's copy ends with -- what a change is told against.")
+(defvar ghostherd-memory-page--room-v (* 1000 (truncate (float-time)))
+  "The last version given a conversation's part.  From the time in ms, so
+an Emacs restarted counts on past what the page holds.")
+(defvar ghostherd-memory-page--room-opening nil
+  "Non-nil while a room opens split: its rest waits (\"In parts\").")
+(defvar ghostherd-memory-page--room-wait nil
+  "The columns in view whose newest part is not out yet, while it opens.")
+(defvar ghostherd-memory-page--room-queue nil
+  "The other columns' newest parts, ((FN . OBJ) ...), while it opens.")
+(defvar ghostherd-memory-page--room-fills nil
+  "Each column's older parts, ((KEY (FN . OBJ) ...) ...), while it opens.")
+(defvar ghostherd-memory-page--room-ticking nil
+  "Non-nil while the tick asks for the room's reads, which it waits on.")
+(defvar ghostherd-memory-page--room-epoch 0
+  "One more each time the room opens, or closes: what waited on a part
+of the room as it was is not done.")
 
 (defun ghostherd-memory-page--forget-sidecar-answers ()
   "Drop every cache that binds an agent to what the sidecar last answered.
@@ -2846,9 +2910,26 @@ the page opens it itself, a link under its secret."
     (when (and (member set '("docs" "reports")) (stringp name))
       (xwapp-show-file ghostherd-memory-page--app name set))))
 
+(defun ghostherd-memory-page--lean (plist)
+  "PLIST less the fields that say nothing -- nil, false, an empty list.
+The page reads a field not there as one that says nothing, and they were
+a fifth of a conversation's bytes (2026-11-05)."
+  (let (out)
+    (while plist
+      (let ((k (pop plist)) (v (pop plist)))
+        (unless (or (null v) (eq v :json-false) (and (vectorp v) (zerop (length v))))
+          (push k out)
+          (push v out))))
+    (nreverse out)))
+
 (defun ghostherd-memory-page--room-entry (e)
   "Conversation entry E, from the sidecar, as the page takes it.
-Field by field: what reaches the page is what is named here."
+Field by field: what reaches the page is what is named here, less what
+says nothing (`ghostherd-memory-page--lean')."
+  (ghostherd-memory-page--lean (ghostherd-memory-page--room-entry-1 e)))
+
+(defun ghostherd-memory-page--room-entry-1 (e)
+  "`ghostherd-memory-page--room-entry', every field."
   (let ((str #'ghostherd-memory-page--str))
     (list :role (funcall str (plist-get e :role))
           :kind (funcall str (plist-get e :kind))
@@ -2879,6 +2960,169 @@ Field by field: what reaches the page is what is named here."
                                              :state (funcall str (plist-get tl :state))))
                           (plist-get e :tools))))))
 
+(defun ghostherd-memory-page--entry-bytes (e)
+  "About how many bytes entry E, a plist as the page takes it, is as
+JSON: its strings', and some for each field."
+  (let ((n 0))
+    (while e
+      (let ((v (cadr e)))
+        (setq n (+ n 12 (cond ((stringp v) (string-bytes v))
+                              ((vectorp v) (seq-reduce (lambda (a x)
+                                                         (+ a (if (consp x) (ghostherd-memory-page--entry-bytes x) 16)))
+                                                       v 2))
+                              (t 8)))))
+      (setq e (cddr e)))
+    n))
+
+(defun ghostherd-memory-page--newest-within (entries bytes)
+  "How many of ENTRIES' newest are about BYTES at most: one at least."
+  (let ((n 0) (sum 0))
+    (catch 'full
+      (dolist (e (reverse entries))
+        (setq sum (+ sum (ghostherd-memory-page--entry-bytes e)))
+        (when (and (> n 0) (> sum bytes)) (throw 'full nil))
+        (setq n (1+ n))))
+    n))
+
+(defconst ghostherd-memory-page--room-drop-max 30
+  "Entries a change may take off a conversation's end and say again: past
+that, it is a conversation read anew, sent whole.")
+
+(defun ghostherd-memory-page--room-delta (old new)
+  "How NEW, a conversation's newest entries now, follows OLD, those the
+page's copy ends with: (DROP . ADD) -- DROP of OLD off its end, ADD after
+-- or nil when they share too little to say.  Both are windows onto the
+same conversation, which grows at its end: what changed is its last
+entries (a turn going on, an ask answered).  Found by the longest run of
+entries alike, the window's first few aside -- its edge may be read
+otherwise as it moves."
+  (let* ((ov (vconcat old)) (nv (vconcat new))
+         (on (length ov)) (nn (length nv))
+         best-m best-i best-j)
+    (dotimes (i (min 4 nn))
+      (dotimes (j on)
+        (when (equal (aref ov j) (aref nv i))
+          (let ((m 1))
+            (while (and (< (+ j m) on) (< (+ i m) nn) (equal (aref ov (+ j m)) (aref nv (+ i m))))
+              (setq m (1+ m)))
+            (when (or (null best-m) (> m best-m))
+              (setq best-m m best-i i best-j j))))))
+    (when (and best-m (<= (- on best-j best-m) ghostherd-memory-page--room-drop-max))
+      (cons (- on best-j best-m) (seq-drop new (+ best-i best-m))))))
+
+(defun ghostherd-memory-page--room-parts-of (held entries earlier fields split)
+  "The parts that bring the page's copy of a conversation from HELD, as
+`ghostherd-memory-page--room-held' keeps it, or nil, to ENTRIES, its
+newest as the sidecar read them -- EARLIER, older ones are there too:
+\(OBJS . NOW), OBJS the calls' objects in order, each with FIELDS, and
+NOW what the page then holds.  A change of HELD when the two share
+enough; else whole -- with SPLIT, its newest first and the rest after,
+newest first, each part prepended to what came before it."
+  (let* ((path (plist-get fields :path))
+         (delta (and held (equal (nth 1 held) path)
+                     (ghostherd-memory-page--room-delta (nth 2 held) entries)))
+         (bool (lambda (x) (if x t :json-false))))
+    (cond
+     ;; As the page has it: nothing to send.
+     ((and delta (zerop (car delta)) (null (cdr delta)))
+      (cons nil held))
+     (delta
+      (let ((v (setq ghostherd-memory-page--room-v (1+ ghostherd-memory-page--room-v))))
+        (cons (list (append fields (list :v v :base (car held) :drop (car delta)
+                                         :entries (vconcat (cdr delta)))))
+              (list v path entries))))
+     (t
+      (let* ((n (length entries))
+             (k (if split
+                    (ghostherd-memory-page--newest-within entries ghostherd-memory-page--room-first-bytes)
+                  n))
+             (v (setq ghostherd-memory-page--room-v (1+ ghostherd-memory-page--room-v)))
+             (objs (list (append fields (list :v v :entries (vconcat (last entries k)) :rest (- n k)
+                                              :earlier (funcall bool (or earlier (< k n)))))))
+             (left (butlast entries k)))
+        (while left
+          (let ((m (ghostherd-memory-page--newest-within left ghostherd-memory-page--room-fill-bytes))
+                (base v))
+            (setq v (setq ghostherd-memory-page--room-v (1+ ghostherd-memory-page--room-v)))
+            (push (append fields (list :v v :base base :head (vconcat (last left m))
+                                       :rest (- (length left) m)
+                                       :earlier (funcall bool (or earlier (> (length left) m)))))
+                  objs)
+            (setq left (butlast left m))))
+        (cons (nreverse objs) (list v path entries)))))))
+
+(defun ghostherd-memory-page--room-deliver (key fn objs)
+  "Send OBJS, conversation KEY's parts in order, to the page's FN, as
+\"In parts\" says: at once unless the page splits; while the room opens,
+a column in view's newest now and the rest once it is out; after, as
+calls that can wait -- so a column's parts keep their order."
+  (cond
+   ((null objs))
+   ((not ghostherd-memory-page--room-split)
+    (dolist (o objs) (ghostherd-memory-page--js fn o)))
+   ((and ghostherd-memory-page--room-opening (not (plist-member (car objs) :base)))
+    ;; Its older parts kept first: the wait below may be over at once.
+    (when (cdr objs)
+      (setq ghostherd-memory-page--room-fills
+            (append ghostherd-memory-page--room-fills
+                    (list (cons key (mapcar (lambda (o) (cons fn o)) (cdr objs)))))))
+    (if (member key ghostherd-memory-page--room-wait)
+        (let ((epoch ghostherd-memory-page--room-epoch))
+          (ghostherd-memory-page--js fn (car objs))
+          (xwapp-when-sent ghostherd-memory-page--app
+                           (lambda ()
+                             (when (= epoch ghostherd-memory-page--room-epoch)
+                               (ghostherd-memory-page--room-unwait key)))))
+      (setq ghostherd-memory-page--room-queue
+            (append ghostherd-memory-page--room-queue (list (cons fn (car objs)))))))
+   (t (dolist (o objs) (ghostherd-memory-page--js-later fn o))))
+  (ghostherd-memory-page--room-release))
+
+(defun ghostherd-memory-page--room-unwait (key)
+  "Column KEY in view is out, or has nothing to send: the rest may follow."
+  (setq ghostherd-memory-page--room-wait (delete key ghostherd-memory-page--room-wait))
+  (ghostherd-memory-page--room-release))
+
+(defun ghostherd-memory-page--room-release ()
+  "Once the room's columns in view are out and every read is in, what
+waited: the other columns' newest, then each one's older parts -- those
+in view first -- as calls that can wait."
+  (when (and ghostherd-memory-page--room-opening
+             (null ghostherd-memory-page--room-wait)
+             (not ghostherd-memory-page--room-ticking)
+             (zerop (hash-table-count ghostherd-memory-page--room-reading))
+             (not ghostherd-memory-page--chat-reading))
+    (let ((queue ghostherd-memory-page--room-queue)
+          (fills (seq-sort-by (lambda (f) (if (member (car f) ghostherd-memory-page--room-first) 0 1))
+                              #'< ghostherd-memory-page--room-fills)))
+      (setq ghostherd-memory-page--room-opening nil
+            ghostherd-memory-page--room-queue nil
+            ghostherd-memory-page--room-fills nil)
+      (dolist (c queue) (ghostherd-memory-page--js-later (car c) (cdr c)))
+      (dolist (f fills)
+        (dolist (c (cdr f)) (ghostherd-memory-page--js-later (car c) (cdr c)))))))
+
+(defun ghostherd-memory-page--room-whole (key fn fields)
+  "Send conversation KEY whole as FIELDS say -- none, an error: a version
+of its own, so what came before it is old."
+  (remhash key ghostherd-memory-page--room-held)
+  (ghostherd-memory-page--room-deliver
+   key fn (list (append fields (list :v (setq ghostherd-memory-page--room-v
+                                              (1+ ghostherd-memory-page--room-v)))))))
+
+(defun ghostherd-memory-page--room-reset (opening)
+  "Forget what the page was sent of the room in parts, as when it opens:
+it is sent anew.  OPENING non-nil: it opens now, as its room-watch said."
+  (clrhash ghostherd-memory-page--room-held)
+  (setq ghostherd-memory-page--room-epoch (1+ ghostherd-memory-page--room-epoch)
+        ghostherd-memory-page--room-queue nil
+        ghostherd-memory-page--room-fills nil
+        ghostherd-memory-page--room-opening (and opening ghostherd-memory-page--room-split t)
+        ghostherd-memory-page--room-wait (and opening ghostherd-memory-page--room-split
+                                              (copy-sequence ghostherd-memory-page--room-first)))
+  (when (xwapp-p ghostherd-memory-page--app)
+    (xwapp-js-forget ghostherd-memory-page--app 'ghostherd-room)))
+
 (defun ghostherd-memory-page--sidecar-error (e)
   "What the page says when the sidecar failed with E."
   (if (string-match-p "Method not found" (format "%s" e))
@@ -2887,9 +3131,11 @@ Field by field: what reaches the page is what is named here."
     (format "%s" e)))
 
 (defun ghostherd-memory-page--chat-entry (e)
-  "Chat item E, from the sidecar, as the page takes it, field by field."
+  "Chat item E, from the sidecar, as the page takes it, field by field,
+less what says nothing (`ghostherd-memory-page--lean')."
   (let ((str #'ghostherd-memory-page--str))
-    (list :who (funcall str (plist-get e :who))
+    (ghostherd-memory-page--lean
+     (list :who (funcall str (plist-get e :who))
           :to (funcall str (plist-get e :to))
           :kind (funcall str (plist-get e :kind))
           :ask (funcall str (plist-get e :ask))
@@ -2901,7 +3147,7 @@ Field by field: what reaches the page is what is named here."
           :failed (if (plist-get e :failed) t :json-false)
           :waiting (if (plist-get e :waiting) t :json-false)
           :images (ghostherd-memory-page--images (plist-get e :images))
-          :answerImages (ghostherd-memory-page--images (plist-get e :answer_images)))))
+          :answerImages (ghostherd-memory-page--images (plist-get e :answer_images))))))
 
 (defun ghostherd-memory-page--chat-read ()
   "Send the room's chat if any of its agents' transcripts changed.
@@ -2918,26 +3164,44 @@ One timeline for the project, which the sidecar builds from them all."
          ;; The limit is part of the signature, so `load earlier' re-reads.
          (sig (list limit absent (mapcar (lambda (a) (cons (car a) (ghostherd-memory-page--room-signature (cdr a))))
                                          known))))
-    (unless (or (equal sig ghostherd-memory-page--chat-sent) ghostherd-memory-page--chat-reading)
+    (unless (or (equal sig ghostherd-memory-page--chat-sent) ghostherd-memory-page--chat-reading
+                ;; Opening in parts, read once: the rest waits its turn.
+                (and ghostherd-memory-page--room-opening
+                     (gethash 'chat ghostherd-memory-page--room-held)))
       (setq ghostherd-memory-page--chat-reading t)
-      (let ((done (lambda (&rest fields)
-                    (setq ghostherd-memory-page--chat-reading nil
-                          ghostherd-memory-page--chat-sent sig)
-                    (when (and (equal room ghostherd-memory-page--room) ghostherd-memory-page--room-chat)
-                      (ghostherd-memory-page--js
-                       "setChat" (append (list :project room :absent (ghostherd-memory-page--vec absent))
-                                         fields))))))
+      (let* ((epoch ghostherd-memory-page--room-epoch)
+             (here (lambda ()
+                     (and (equal room ghostherd-memory-page--room) ghostherd-memory-page--room-chat
+                          (= epoch ghostherd-memory-page--room-epoch))))
+             (meta (list :project room :absent (ghostherd-memory-page--vec absent)))
+             (done (lambda (&rest fields)
+                     (setq ghostherd-memory-page--chat-reading nil
+                           ghostherd-memory-page--chat-sent sig)
+                     (when (funcall here)
+                       (if ghostherd-memory-page--room-parts
+                           (ghostherd-memory-page--room-whole 'chat "setChat" (append meta fields))
+                         (ghostherd-memory-page--js "setChat" (append meta fields))))
+                     (ghostherd-memory-page--room-release))))
         (condition-case err
             (ghostherd-memory-request-async
              "herd_chat"
              (lambda (r)
-               (funcall done
-                        :earlier (if (plist-get r :earlier) t :json-false)
-                        :limit (and (natnump (plist-get r :limit)) (plist-get r :limit))
-                        :missing (ghostherd-memory-page--vec
-                                  (mapcar #'ghostherd-memory-page--str (plist-get r :missing)))
-                        :entries (ghostherd-memory-page--vec
-                                  (mapcar #'ghostherd-memory-page--chat-entry (plist-get r :entries)))))
+               (let ((entries (mapcar #'ghostherd-memory-page--chat-entry (plist-get r :entries)))
+                     (missing (ghostherd-memory-page--vec
+                               (mapcar #'ghostherd-memory-page--str (plist-get r :missing)))))
+                 (if (not (and ghostherd-memory-page--room-parts (funcall here)))
+                     (funcall done
+                              :earlier (if (plist-get r :earlier) t :json-false)
+                              :limit (and (natnump (plist-get r :limit)) (plist-get r :limit))
+                              :missing missing
+                              :entries (ghostherd-memory-page--vec entries))
+                   (setq ghostherd-memory-page--chat-reading nil
+                         ghostherd-memory-page--chat-sent sig)
+                   (let ((out (ghostherd-memory-page--room-parts-of
+                               (gethash 'chat ghostherd-memory-page--room-held) entries (plist-get r :earlier)
+                               (append meta (list :missing missing)) ghostherd-memory-page--room-split)))
+                     (puthash 'chat (cdr out) ghostherd-memory-page--room-held)
+                     (ghostherd-memory-page--room-deliver 'chat "setChat" (car out))))))
              (append (list :agents (vconcat (mapcar (lambda (a) (list :name (car a) :path (cdr a))) known)))
                      (and limit (list :limit limit)))
              (lambda (e) (funcall done :entries [] :error (ghostherd-memory-page--sidecar-error e))))
@@ -2959,37 +3223,63 @@ screen if that is what the page shows of it."
      ((null (car sig))
       (unless (eq (gethash name ghostherd-memory-page--room-sent) 'none)
         (puthash name 'none ghostherd-memory-page--room-sent)
-        (ghostherd-memory-page--room-send name :entries [] :none t)))
+        (if ghostherd-memory-page--room-parts
+            (ghostherd-memory-page--room-whole name "setConversation" (list :name name :entries [] :none t))
+          (ghostherd-memory-page--room-send name :entries [] :none t)))
+      ;; In view, with nothing to read: what is not in view need not wait.
+      (when (member name ghostherd-memory-page--room-wait)
+        (ghostherd-memory-page--room-unwait name)))
      ((or (equal sig (gethash name ghostherd-memory-page--room-sent))
-          (gethash name ghostherd-memory-page--room-reading)))
+          (gethash name ghostherd-memory-page--room-reading)
+          ;; Opening in parts, read once: the rest waits its turn.
+          (and ghostherd-memory-page--room-opening
+               (gethash name ghostherd-memory-page--room-held))))
      (t
       (puthash name t ghostherd-memory-page--room-reading)
-      (let ((done (lambda (&rest fields)
-                    (remhash name ghostherd-memory-page--room-reading)
-                    (puthash name sig ghostherd-memory-page--room-sent)
-                    (when (equal room ghostherd-memory-page--room)
-                      (apply #'ghostherd-memory-page--room-send name :path path fields)))))
+      (let* ((epoch ghostherd-memory-page--room-epoch)
+             (here (lambda () (and (equal room ghostherd-memory-page--room)
+                                   (= epoch ghostherd-memory-page--room-epoch))))
+             (done (lambda (&rest fields)
+                     (remhash name ghostherd-memory-page--room-reading)
+                     (puthash name sig ghostherd-memory-page--room-sent)
+                     (when (funcall here)
+                       (if ghostherd-memory-page--room-parts
+                           (ghostherd-memory-page--room-whole
+                            name "setConversation" (append (list :name name :path path) fields))
+                         (apply #'ghostherd-memory-page--room-send name :path path fields)))
+                     (ghostherd-memory-page--room-release))))
         (condition-case err
             (ghostherd-memory-request-async
              "herd_conversation"
              (lambda (r)
-               (funcall done
-                        :cli (ghostherd-memory-page--str (plist-get r :cli))
-                        :earlier (if (plist-get r :earlier) t :json-false)
-                        :limit (and (natnump (plist-get r :limit)) (plist-get r :limit))
-                        :entries (ghostherd-memory-page--vec
-                                  (mapcar #'ghostherd-memory-page--room-entry
-                                          (plist-get r :entries)))))
+               (let ((cli (ghostherd-memory-page--str (plist-get r :cli)))
+                     (entries (mapcar #'ghostherd-memory-page--room-entry (plist-get r :entries))))
+                 (if (not (and ghostherd-memory-page--room-parts (funcall here)))
+                     (funcall done
+                              :cli cli
+                              :earlier (if (plist-get r :earlier) t :json-false)
+                              :limit (and (natnump (plist-get r :limit)) (plist-get r :limit))
+                              :entries (ghostherd-memory-page--vec entries))
+                   (remhash name ghostherd-memory-page--room-reading)
+                   (puthash name sig ghostherd-memory-page--room-sent)
+                   (let ((out (ghostherd-memory-page--room-parts-of
+                               (gethash name ghostherd-memory-page--room-held) entries (plist-get r :earlier)
+                               (ghostherd-memory-page--lean (list :name name :path path :cli cli))
+                               ghostherd-memory-page--room-split)))
+                     (puthash name (cdr out) ghostherd-memory-page--room-held)
+                     (ghostherd-memory-page--room-deliver name "setConversation" (car out))))))
              (if limit (list :path path :limit limit) (list :path path))
              (lambda (e)
                (funcall done :entries [] :error (ghostherd-memory-page--sidecar-error e))))
           (error (funcall done :entries [] :error (error-message-string err)))))))
     (when (or (null (car sig)) (member name ghostherd-memory-page--room-screens))
-      (ghostherd-memory-page--js
-       "setScreen" (list :name name
-                         :text (or (ignore-errors (ghostherd--host-capture s))
-                                   (gethash (ghostherd-session-id s) ghostherd--screens)
-                                   ""))))))
+      (let ((text (or (ignore-errors (ghostherd--host-capture s))
+                      (gethash (ghostherd-session-id s) ghostherd--screens)
+                      "")))
+        ;; Each tick looks; only a screen that changed is sent.
+        (unless (equal text (gethash name ghostherd-memory-page--room-screen-sent))
+          (puthash name text ghostherd-memory-page--room-screen-sent)
+          (ghostherd-memory-page--js "setScreen" (list :name name :text text)))))))
 
 (defun ghostherd-memory-page--sub-file (path sid)
   "Where sub-agent SID keeps its own transcript, beside parent PATH's."
@@ -3051,9 +3341,19 @@ the sidecar reads it with `read_sub', not the room reader."
 (defun ghostherd-memory-page--room-tick ()
   (if (not (and ghostherd-memory-page--room (xwapp-live-p ghostherd-memory-page--app)))
       (ghostherd-memory-page--room-close)
-    (if ghostherd-memory-page--room-chat
-        (ghostherd-memory-page--chat-read)
-      (mapc #'ghostherd-memory-page--room-read (ghostherd-memory-page--room-sessions)))
+    (let ((sessions (ghostherd-memory-page--room-sessions)))
+      ;; A column in view the room no longer has is not waited for.
+      (when ghostherd-memory-page--room-wait
+        (setq ghostherd-memory-page--room-wait
+              (if ghostherd-memory-page--room-chat
+                  (seq-filter (lambda (k) (eq k 'chat)) ghostherd-memory-page--room-wait)
+                (seq-filter (lambda (k) (seq-some (lambda (s) (equal (ghostherd-session-name s) k)) sessions))
+                            ghostherd-memory-page--room-wait))))
+      (let ((ghostherd-memory-page--room-ticking t))
+        (if ghostherd-memory-page--room-chat
+            (ghostherd-memory-page--chat-read)
+          (mapc #'ghostherd-memory-page--room-read sessions))))
+    (ghostherd-memory-page--room-release)
     (ghostherd-memory-page--sub-read)))
 
 (defun ghostherd-memory-page--room-open (intent)
@@ -3075,6 +3375,16 @@ again only changes which those are."
     (unless (equal project ghostherd-memory-page--room)
       (ghostherd-memory-page--room-close)
       (setq ghostherd-memory-page--room project))
+    ;; How the page takes the room (\"In parts\"): by version, its newest
+    ;; first, the columns it shows before the rest.  A page from before
+    ;; says none of it, and is sent each conversation whole, each change.
+    (setq ghostherd-memory-page--room-parts (ghostherd-memory-page--truthy (alist-get 'parts intent))
+          ghostherd-memory-page--room-split (and ghostherd-memory-page--room-parts
+                                                 (ghostherd-memory-page--truthy (alist-get 'split intent)))
+          ghostherd-memory-page--room-first (if chat '(chat)
+                                              (seq-filter #'stringp (append (alist-get 'first intent) nil))))
+    ;; Each watch is a tap: the screens shown are sent again.
+    (clrhash ghostherd-memory-page--room-screen-sent)
     (let ((mode-changed (not (eq chat ghostherd-memory-page--room-chat))))
       (setq ghostherd-memory-page--room-chat chat)
       ;; Re-send the room's conversation when the page (re)opened it or changed
@@ -3084,9 +3394,10 @@ again only changes which those are."
       ;; while Emacs kept the room) gets the conversation again, rather than
       ;; the reopened same room reading as unchanged (`--chat-sent'/
       ;; `--room-sent') and sitting on "Reading the conversations…".
-      (when (or mode-changed (alist-get 'reopen intent))
+      (when (or mode-changed (ghostherd-memory-page--truthy (alist-get 'reopen intent)))
         (setq ghostherd-memory-page--chat-sent nil)
-        (clrhash ghostherd-memory-page--room-sent)))
+        (clrhash ghostherd-memory-page--room-sent)
+        (ghostherd-memory-page--room-reset t)))
     (setq ghostherd-memory-page--room-screens screens)
     ;; How much of each column, and of the chat, the page has expanded with
     ;; `load earlier' -- so the next read stays that big, not back to the
@@ -3120,7 +3431,24 @@ again only changes which those are."
         ghostherd-memory-page--sub-reading nil
         ghostherd-memory-page--chat-limit nil)
   (clrhash ghostherd-memory-page--room-sent)
-  (clrhash ghostherd-memory-page--room-limits))
+  (clrhash ghostherd-memory-page--room-limits)
+  (clrhash ghostherd-memory-page--room-screen-sent)
+  (ghostherd-memory-page--room-reset nil)
+  ;; How the page took it is its room-watch's to say again.
+  (setq ghostherd-memory-page--room-parts nil
+        ghostherd-memory-page--room-split nil
+        ghostherd-memory-page--room-first nil))
+
+(defun ghostherd-memory-page--room-resend (intent)
+  "The page missed a part of the conversation INTENT names -- an agent's,
+or with `chat' the room's chat -- and asks for it whole: read anew on
+the next tick, sent whole (\"In parts\")."
+  (if (ghostherd-memory-page--truthy (alist-get 'chat intent))
+      (progn (remhash 'chat ghostherd-memory-page--room-held)
+             (setq ghostherd-memory-page--chat-sent nil))
+    (when-let* ((name (ghostherd-memory-page--str (alist-get 'name intent))))
+      (remhash name ghostherd-memory-page--room-held)
+      (remhash name ghostherd-memory-page--room-sent))))
 
 (defun ghostherd-memory-page--room-earlier (intent)
   "Read one earlier page of a room column's conversation -- agent NAME's
@@ -4295,6 +4623,7 @@ user's state (or none) and push."
         ("lint-remove" (ghostherd-memory-page--lint-remove intent))
         ("room-watch" (ghostherd-memory-page--room-open intent))
         ("room-earlier" (ghostherd-memory-page--room-earlier intent))
+        ("room-resend" (ghostherd-memory-page--room-resend intent))
         ("room-find" (ghostherd-memory-page--room-find intent))
         ("room-at" (ghostherd-memory-page--room-at intent))
         ("chat-earlier" (ghostherd-memory-page--chat-earlier intent))

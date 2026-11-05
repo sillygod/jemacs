@@ -383,12 +383,16 @@ breaker, so a page that starts rejecting scripts stops being driven."
           (xwidget-webkit-execute-script xw safe)
         (error (xwapp--poll-failed app))))))
 
-(defun xwapp-js (app fn obj)
-  "Call NAMESPACE[FN] with JSON-encoded OBJ in APP's page."
+(defun xwapp-js (app fn obj &optional later)
+  "Call NAMESPACE[FN] with JSON-encoded OBJ in APP's page.
+LATER non-nil: in a browser tab, the call can wait behind every other --
+see \"Calls that can wait\"; a symbol or string there names it for
+`xwapp-js-forget'.  In Emacs's own page every call runs at once."
   (let ((ns (xwapp-namespace app)))
     (if (xwapp--get app :page)
         (xwapp--call app (format "{\"ns\":%s,\"fn\":%s,\"arg\":%s}"
-                                 (json-encode ns) (json-encode fn) (json-encode obj)))
+                                 (json-encode ns) (json-encode fn) (json-encode obj))
+                     later)
       (when-let* ((xw (xwapp-session app)))
         (xwapp--exec
          app xw
@@ -760,7 +764,10 @@ A request on it came through the proxy; one on `xwapp--server' did not.")
 :sending  that page's `next' while its answer is still going out, from
           a thread (`xwapp--flush'), or nil
 :outbox   calls not yet sent to it, newest first
-:seen     non-nil when it last said you could be looking at it
+:later    calls that can wait, (NAME . CALL) each, oldest first: see
+          \"Calls that can wait\"
+:when-sent  functions to call once the calls in :outbox now are out
+:seen    non-nil when it last said you could be looking at it
 :asked    non-nil from `xwapp-browse' until a tab says hello: that tab
           is the one Emacs opened, and the app is ready for it
 :restored non-nil from a restart until its tab comes back, or does not
@@ -2070,30 +2077,78 @@ long it took\")."
     (process-put proc 'xwapp-app app)
     (process-put proc 'xwapp-gzip gzip)
     (xwapp--put app :waiting proc)
-    (if (or (xwapp--get app :outbox) wake)
+    (if (or (xwapp--get app :outbox) (xwapp--get app :later) wake)
         (xwapp--timer app :flush 0 #'xwapp--flush)
       (xwapp--timer app :hold xwapp--hold #'xwapp--flush))))
 
-(defun xwapp--call (app json)
+;; Calls that can wait.
+;;
+;; A `next' answer goes whole before the page has any of it, and while
+;; it goes nothing else reaches the page: over a phone's slow link -- 10
+;; to 20 KB a second, relayed -- 150 KB of conversations took 25 s, and a
+;; tap's answer waited behind them.  So an app can say a call can wait
+;; (`xwapp-js' LATER): it goes after every other call, and a `next'
+;; carries such calls only up to `xwapp--later-budget' bytes with the
+;; rest -- one at least, so they always move.  The page asks again the
+;; moment it has an answer, and the next part goes then.  What the app
+;; needs out before it sends more, it waits on with `xwapp-when-sent'.
+
+(defconst xwapp--later-budget (* 48 1024)
+  "Bytes of calls a `next' carries at most, when some can wait: about a
+second at a phone's slow link, gzip'd.")
+
+(defun xwapp--call (app json &optional later)
   "Send JSON, one call, to APP's browser page.
 Scrubbed and size-capped like the xwidget path: an oversized or unclean
-payload is dropped rather than queued."
+payload is dropped rather than queued.  LATER non-nil: it can wait
+\(\"Calls that can wait\"), named LATER."
   (when-let* ((safe (xwapp--script-safe json)))
-    (xwapp--put app :outbox (cons safe (xwapp--get app :outbox)))
+    (if later
+        (xwapp--put app :later (append (xwapp--get app :later) (list (cons later safe))))
+      (xwapp--put app :outbox (cons safe (xwapp--get app :outbox))))
     ;; On the next turn, so the calls of one command go out together.
     (when (and (xwapp--get app :waiting) (not (xwapp--get app :flush)))
       (xwapp--timer app :flush 0 #'xwapp--flush))))
 
+(defun xwapp-js-forget (app name)
+  "Drop the calls that can wait named NAME (`xwapp-js' LATER) not yet
+sent to APP's page: what they say is of no use to it any more."
+  (xwapp--put app :later (seq-remove (lambda (c) (equal (car c) name)) (xwapp--get app :later))))
+
+(defun xwapp-when-sent (app fn)
+  "Call FN once the calls made of APP's page so far are out -- not those
+that can wait.  In Emacs's own page each ran as it was made: at once.
+In a browser tab, once the `next' answer that carries the last of them
+has gone, or failed to go.  Not when the page is let go first."
+  (cond ((not (xwapp--get app :page)) (funcall fn))
+        ((xwapp--get app :outbox)
+         (xwapp--put app :when-sent (append (xwapp--get app :when-sent) (list fn))))
+        ((process-live-p (xwapp--get app :sending))
+         (let ((proc (xwapp--get app :sending)))
+           (process-put proc 'xwapp-when-sent (append (process-get proc 'xwapp-when-sent) (list fn)))))
+        (t (funcall fn))))
+
 (defun xwapp--flush (app)
-  "Answer APP's held `next' with the calls gathered since the last."
+  "Answer APP's held `next' with the calls gathered since the last, and
+of those that can wait as many as `xwapp--later-budget' leaves room for."
   (xwapp--untimer app :hold)
   (xwapp--untimer app :flush)
   (when-let* ((proc (xwapp--get app :waiting)))
-    (let ((calls (reverse (xwapp--get app :outbox))))
+    (let* ((calls (reverse (xwapp--get app :outbox)))
+           (size (apply #'+ (mapcar #'string-bytes calls)))
+           (later (xwapp--get app :later))
+           (took nil))
+      (while (and later (or (null took) (<= (+ size (string-bytes (cdar later))) xwapp--later-budget)))
+        (setq size (+ size (string-bytes (cdar later))))
+        (push (cdr (pop later)) took))
+      (setq calls (append calls (nreverse took)))
       (when-let* ((req (process-get proc 'xwapp-req)))
         (plist-put req :tf (float-time)))
+      (process-put proc 'xwapp-when-sent (xwapp--get app :when-sent))
+      (xwapp--put app :when-sent nil)
       (xwapp--put app :waiting nil)
       (xwapp--put app :outbox nil)
+      (xwapp--put app :later later)
       (xwapp--put app :sending proc)
       (xwapp--timer app :gone xwapp--gone-after #'xwapp--gone)
       (let ((body (encode-coding-string (concat "[" (string-join calls ",") "]") 'utf-8))
@@ -2111,7 +2166,11 @@ payload is dropped rather than queued."
 (defun xwapp--sent (app proc)
   "PROC, the answer to APP's page's `next', is out, or failed to go: the
 page has `xwapp--gone-after' from now to ask again -- unless it has, or
-is APP's page no more."
+is APP's page no more.  What waited for it to be out is called."
+  (let ((fns (process-get proc 'xwapp-when-sent)))
+    (process-put proc 'xwapp-when-sent nil)
+    (when (xwapp--get app :page)
+      (dolist (fn fns) (xwapp--done fn))))
   (when (eq (xwapp--get app :sending) proc)
     (xwapp--put app :sending nil)
     (when (and (xwapp--get app :page) (not (xwapp--get app :waiting)))
@@ -2177,7 +2236,7 @@ Only another page, in a tab or in Emacs, takes it from one that waits."
     ;; Before answering: the sentinel must not take the hang-up for a
     ;; page that went.  An answer still going out to it goes on, to a
     ;; page that is not the app's.
-    (dolist (key '(:waiting :page :outbox :seen :restored :sending))
+    (dolist (key '(:waiting :page :outbox :later :when-sent :seen :restored :sending))
       (xwapp--put app key nil))
     (when proc
       (xwapp--refuse proc "taken"))))
@@ -2206,10 +2265,13 @@ to it is still going out: it cannot ask again before it has that, and
 ;; tap to the page drawn -- what the app calls ready (XW.ready), or else
 ;; Emacs's first calls; a wake, from the page shown again to Emacs's
 ;; first answer to a `next' (asked with wake=1, so answered at once);
-;; and an intent answered past `xwapp-timing-slow'.  Once one is over
-;; the page sends its timings, the kit's intent xwapp-timing:
+;; and an intent answered past `xwapp-timing-slow'.  And the app's own:
+;; one it begins (XW.begin(NAME)) and says is over (XW.ready(NAME)) --
+;; the herd page's "room", from a tap on a room to its conversation
+;; drawn -- of kind NAME, a word.  Once one is over the page sends its
+;; timings, the kit's intent xwapp-timing:
 ;;
-;;   {k: "open"|"reload"|"wake"|"intent", at: its start (ms, the page's
+;;   {k: "open"|"reload"|"wake"|"intent"|the app's, at: its start (ms, the page's
 ;;    clock), d: how long, end: what ended it, m: {mark: ms...},
 ;;    r: [{p: path, n: the kit's number, s: start, q: until sent --
 ;;         connecting, dns tcp tls --, w: until the first byte back,
@@ -2472,8 +2534,8 @@ the intent's own request.  Nil when INTENT is no sound one."
   (let* ((kind (xwapp--timing-word (alist-get 'k intent)))
          (at (alist-get 'at intent))
          (d (xwapp--timing-sec (alist-get 'd intent))))
-    (when (and (member kind '("open" "reload" "wake" "intent"))
-               (numberp at) (> at 0) d)
+    ;; The kit's kinds, or an app's moment: a word, as any mark's name.
+    (when (and kind (numberp at) (> at 0) d)
       (let* ((base (/ at 1000.0))
              (raw (let ((r (alist-get 'r intent))) (and (proper-list-p r) r)))
              (page-reqs (delq nil (mapcar #'xwapp--timing-page-req
