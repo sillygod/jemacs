@@ -30,7 +30,12 @@
       xwapp-remote-users '("me@example.com")
       xwapp-remote-socket (expand-file-name "remote.sock" e2e-dir)
       xwapp-browse-function #'ignore
-      xwapp-tailscale-program nil)
+      ;; No tailscale -- or, with E2E_TAILSCALE, the one the test plays
+      ;; in E2E_DIR (herd-kick.js): never the machine's own.
+      xwapp-tailscale-program (and (getenv "E2E_TAILSCALE") (expand-file-name "tailscale" e2e-dir)))
+(when (getenv "E2E_TAILSCALE")
+  (setq xwapp--kick-every 6
+        xwapp-tailscale-hold (let ((h (string-to-number (or (getenv "E2E_HOLD") "0")))) (and (> h 0) h))))
 (require 'ghostherd)
 (require 'ghostherd-memory-page)
 (setq ghostherd-log-file nil)
@@ -224,6 +229,16 @@ older ones precede it."
 ;; timings.jsonl, as JSON.
 (setq xwapp--timing-save t
       xwapp-timing-file (expand-file-name "timings.eld" e2e-dir))
+;; With tailscale played: its status the phone's, relayed or direct as
+;; its last ping found it.
+(when (getenv "E2E_TAILSCALE")
+  (advice-add 'xwapp--tailscale-run :override
+              (lambda (then)
+                (let ((direct (equal (xwapp--peer-path-at "100.94.115.122" (float-time)) "direct")))
+                  (funcall then `((Peer . ((k . ((DNSName . "iphone171.tail0.ts.net.") (OS . "iOS")
+                                                 (TailscaleIPs . ("100.94.115.122"))
+                                                 (CurAddr . ,(if direct "192.168.50.104:41641" ""))
+                                                 (Relay . "hkg") (Active . t)))))))))))
 (add-hook 'xwapp-timing-functions
           (lambda (_app record)
             (write-region (concat (json-encode (plist-put (copy-sequence record) :reqs

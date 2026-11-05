@@ -767,13 +767,14 @@ A request on it came through the proxy; one on `xwapp--server' did not.")
 :later    calls that can wait, (NAME . CALL) each, oldest first: see
           \"Calls that can wait\"
 :when-sent  functions to call once the calls in :outbox now are out
+:peer     the tailnet address its page last came from, through the proxy
 :seen    non-nil when it last said you could be looking at it
 :asked    non-nil from `xwapp-browse' until a tab says hello: that tab
           is the one Emacs opened, and the app is ready for it
 :restored non-nil from a restart until its tab comes back, or does not
 :sets     the files it serves besides its page: (SET . HOW) each, as
           `xwapp-serve-files' was told
-:hold :flush :gone :forget   its timers.
+:hold :flush :gone :forget :unhold   its timers.
 And of its page in Emacs:
 :parts    the long intents it is sending in parts, (N :count C :got G
           :pieces V) each: see `xwapp--part'
@@ -1172,8 +1173,42 @@ memory only.  Timings alone: no page's secret, nothing a page showed."
 (defcustom xwapp-tailscale-program
   (or (executable-find "tailscale") "/Applications/Tailscale.app/Contents/MacOS/Tailscale")
   "The tailscale command, asked how a slow page's device was reached --
-straight or relayed (`tailscale status --json'), or nil not to ask."
+straight or relayed (`tailscale status --json'), and run to find it a
+direct path (`tailscale ping', \"Kicking the path\"), or nil not to."
   :type '(choice (const :tag "Do not ask" nil) file))
+
+(defcustom xwapp-tailscale-hold nil
+  "Seconds at most the calls that can wait wait for a device's path to
+turn direct while Emacs pings it (\"Kicking the path\"), or nil for them
+not to wait -- as by default.  Measured 2026-11-05: on cellular, direct
+was no faster than the relay (9 KB/s against 10-20); on the home
+network direct is the LAN, but what is under way when the path turns
+direct goes on over it -- what was sent over the relay meanwhile is
+ground gained, not lost.  Set it should the timings show a transfer
+that stays slow after its path turned direct.  What you wait for never
+waits."
+  :type '(choice (const :tag "Do not wait" nil) number))
+
+(defconst xwapp--kick-gone 30
+  "Seconds a device goes unheard before its next request is taken for
+an open or a wake: its page, at work, asks at least every
+`xwapp--hold' seconds.")
+
+(defvar xwapp--kick-every 30
+  "Seconds at least between two kicks of a device's path.")
+
+(defvar xwapp--kick-for 15
+  "Seconds a kick may take: its `tailscale ping' is stopped then.")
+
+(defvar xwapp--peers (make-hash-table :test 'equal)
+  "A device's tailnet address -> what Emacs knows of its path, a plist:
+:seen when a request came from it last, through the proxy; :kick its
+latest kick, a plist -- :at when begun, :first (PATH . SECONDS) its
+first pong, :direct seconds until a pong came direct, :end seconds until
+over, :how `direct', `relay' or `none' (no pong) -- and :kicks the five
+latest, the latest first; :proc its `tailscale ping' while under way;
+:paths its path as seen, ((TIME . PATH) ...) the latest first, PATH
+\"direct\", \"relay hkg\", \"peer-relay\".")
 
 ;; A request timed is a plist, put to in place (`plist-put' on one that
 ;; has :via from the first): :app its app, :via its transport, :method,
@@ -1346,6 +1381,13 @@ this machine, where any page in the browser could ask."
     (cond
      ((and (equal secret "open") (equal method "GET")) (xwapp--open proc rest headers transport))
      ((not (and app (xwapp--from-here-p headers transport))) (xwapp--respond proc 404))
+     ;; Answered below; its device seen first -- its path kicked, when it
+     ;; opens or wakes the page (\"Kicking the path\").
+     ((progn (when (eq transport 'proxy)
+               (xwapp--peer-came app (cdr (assoc "x-forwarded-for" headers))
+                                 (or (equal rest '("hello"))
+                                     (and (equal rest '("next")) (equal (cadr (assoc "wake" args)) "1")))))
+             nil))
      ((and (equal method "POST") (equal rest '("hello")) page)
       (xwapp--hello app proc page (equal (cadr (assoc "soft" args)) "1")))
      ((and (equal method "GET") (equal rest '("next")))
@@ -2077,7 +2119,8 @@ long it took\")."
     (process-put proc 'xwapp-app app)
     (process-put proc 'xwapp-gzip gzip)
     (xwapp--put app :waiting proc)
-    (if (or (xwapp--get app :outbox) (xwapp--get app :later) wake)
+    (if (or (xwapp--get app :outbox) wake
+            (and (xwapp--get app :later) (not (xwapp--holding-p app))))
         (xwapp--timer app :flush 0 #'xwapp--flush)
       (xwapp--timer app :hold xwapp--hold #'xwapp--flush))))
 
@@ -2092,6 +2135,9 @@ long it took\")."
 ;; rest -- one at least, so they always move.  The page asks again the
 ;; moment it has an answer, and the next part goes then.  What the app
 ;; needs out before it sends more, it waits on with `xwapp-when-sent'.
+;; And while Emacs finds the page's device a direct path, they may wait
+;; for it, a few seconds at most, when `xwapp-tailscale-hold' says so
+;; ("Kicking the path").
 
 (defconst xwapp--later-budget (* 48 1024)
   "Bytes of calls a `next' carries at most, when some can wait: about a
@@ -2107,7 +2153,8 @@ payload is dropped rather than queued.  LATER non-nil: it can wait
         (xwapp--put app :later (append (xwapp--get app :later) (list (cons later safe))))
       (xwapp--put app :outbox (cons safe (xwapp--get app :outbox))))
     ;; On the next turn, so the calls of one command go out together.
-    (when (and (xwapp--get app :waiting) (not (xwapp--get app :flush)))
+    (when (and (xwapp--get app :waiting) (not (xwapp--get app :flush))
+               (not (and later (xwapp--holding-p app))))
       (xwapp--timer app :flush 0 #'xwapp--flush))))
 
 (defun xwapp-js-forget (app name)
@@ -2137,8 +2184,10 @@ of those that can wait as many as `xwapp--later-budget' leaves room for."
     (let* ((calls (reverse (xwapp--get app :outbox)))
            (size (apply #'+ (mapcar #'string-bytes calls)))
            (later (xwapp--get app :later))
+           (held (and later (xwapp--holding-p app)))
            (took nil))
-      (while (and later (or (null took) (<= (+ size (string-bytes (cdar later))) xwapp--later-budget)))
+      (while (and later (not held)
+                  (or (null took) (<= (+ size (string-bytes (cdar later))) xwapp--later-budget)))
         (setq size (+ size (string-bytes (cdar later))))
         (push (cdr (pop later)) took))
       (setq calls (append calls (nreverse took)))
@@ -2230,6 +2279,8 @@ the page may be gone."
 (defun xwapp--let-go (app)
   "Let APP's browser page go: told so if it is waiting, forgotten anyway.
 Only another page, in a tab or in Emacs, takes it from one that waits."
+  ;; Not :unhold: a kick for the page's device may have just begun,
+  ;; its page saying hello -- let go now, the hello's own.
   (dolist (key '(:hold :flush :gone :forget))
     (xwapp--untimer app key))
   (let ((proc (xwapp--get app :waiting)))
@@ -2555,7 +2606,8 @@ the intent's own request.  Nil when INTENT is no sound one."
              (es (delq nil (mapcar (lambda (r) (plist-get r :e)) reqs)))
              (gcs (delq nil (mapcar (lambda (e) (plist-get e :gc)) es)))
              (skew (if offset (car offset) 0)))
-        (list :id (setq xwapp--timing-id (1+ xwapp--timing-id))
+        (append
+         (list :id (setq xwapp--timing-id (1+ xwapp--timing-id))
               :app (string-trim (xwapp-buffer-name app))
               :kind kind
               :at (xwapp--timing-round base)
@@ -2575,7 +2627,30 @@ the intent's own request.  Nil when INTENT is no sound one."
                                                          (+ base skew -1) (+ base skew d 1)))
               :omit (let ((o (alist-get 'omit intent)))
                       (+ (if (natnump o) o 0) (max 0 (- (length raw) (length page-reqs)))))
-              :reqs (mapcar #'xwapp--timing-req-out reqs))))))
+              :reqs (mapcar #'xwapp--timing-req-out reqs))
+         (xwapp--timing-path-of (and req (plist-get req :fwd)) (+ base skew) d))))))
+
+(defun xwapp--timing-path-of (addr start d)
+  "What a moment of D seconds from START (Emacs's clock) knows of the
+path to ADDR, its device (\"Kicking the path\"): :path0 at its start,
+:path1 at its end, as last seen before each, and :kick, the first kick
+it fell in or followed closely -- :at seconds from the moment's start,
+:first its first pong's path, :direct and :end seconds from its own
+start, :how.  Nothing when ADDR is none; never ADDR itself."
+  (when (xwapp--tailnet-p addr)
+    (let* ((kick (car (last (seq-filter (lambda (k) (<= (- start xwapp--kick-every) (plist-get k :at) (+ start d)))
+                                        (xwapp--peer-get addr :kicks)))))
+           (at (and kick (plist-get kick :at)))
+           (round #'xwapp--timing-round))
+      (append
+       (let ((p (xwapp--peer-path-at addr (+ start 0.5)))) (and p (list :path0 p)))
+       (let ((p (xwapp--peer-path-at addr (+ start d 0.5)))) (and p (list :path1 p)))
+       (when at
+         (list :kick (list :at (funcall round (- at start))
+                           :first (car (plist-get kick :first))
+                           :direct (funcall round (plist-get kick :direct))
+                           :end (funcall round (plist-get kick :end))
+                           :how (symbol-name (or (plist-get kick :how) 'running)))))))))
 
 (defun xwapp--timing-req-out (r)
   "Request R as a record keeps it: numbers and its path alone."
@@ -2705,6 +2780,178 @@ none is."
               :relay (and (stringp relay) (xwapp--timing-word relay))
               :lan (and (stringp addr) (xwapp--tailscale-private-p addr) t))))))
 
+;; Kicking the path
+;;
+;; A phone that wakes reaches this machine through tailscale's relay --
+;; its DERP server, Hong Kong from here, 10-20 KB a second -- until
+;; tailscale finds it a direct path, and tailscale was slow to look: 33 s
+;; after one wake, nearly 2 minutes after another, and then only once
+;; `tailscale ping' was run, which got it direct in 7 s (tailscaled's
+;; log, 2026-11-05).  So the page's first request after an open or a wake
+;; -- its device unheard for `xwapp--kick-gone' seconds, its hello, its
+;; `next' asked with wake=1 -- has Emacs run `tailscale ping' to the
+;; device until its path is direct: in the background, Emacs waiting not;
+;; `xwapp--kick-for' seconds at most; one at a time, and once in
+;; `xwapp--kick-every' seconds, a device.  Its pongs say the path as they
+;; come (\"via DERP(hkg)\", or an address: direct).
+;;
+;; While one is under way, not direct yet, the page's calls that can wait
+;; may wait for it (\"Calls that can wait\"), `xwapp-tailscale-hold'
+;; seconds at most -- off, as measured: on cellular direct was no faster
+;; than the relay (9 KB/s against 10-20), and at home, where direct is the
+;; LAN (19 ms against the relay's 1.5 s), what is under way when the path
+;; turns goes on over it.  What the page is waiting for -- its files, a
+;; tap's answer, a room's newest -- would never wait.
+;;
+;; Each device's kicks and the paths seen, kept here a while, go with a
+;; timing of a moment they fell in: the path at its start and at its end,
+;; when kicked and how soon direct.  No address is kept with them.
+
+(defun xwapp--tailnet-p (addr)
+  "Non-nil when ADDR is a tailnet address -- 100.64.0.0/10, or
+fd7a:115c:a1e0::/48 -- and nothing else: it goes on a command line."
+  (and (stringp addr)
+       (let ((case-fold-search nil))
+         (or (and (string-match "\\`100\\.\\([0-9]\\{1,3\\}\\)\\.[0-9]\\{1,3\\}\\.[0-9]\\{1,3\\}\\'" addr)
+                  (<= 64 (string-to-number (match-string 1 addr)) 127))
+             (string-match-p "\\`fd7a:115c:a1e0:[0-9a-f:]*\\'" addr)))
+       t))
+
+(defun xwapp--peer-get (addr key)
+  (plist-get (gethash addr xwapp--peers) key))
+
+(defun xwapp--peer-put (addr key value)
+  (puthash addr (plist-put (gethash addr xwapp--peers) key value) xwapp--peers)
+  value)
+
+(defun xwapp--peer-saw-path (addr path &optional at)
+  "Note ADDR's path was PATH AT (now): kept, the 20 latest."
+  (when (and (xwapp--tailnet-p addr) (stringp path))
+    (xwapp--peer-put addr :paths (seq-take (cons (cons (or at (float-time)) path)
+                                                 (xwapp--peer-get addr :paths))
+                                           20))))
+
+(defun xwapp--peer-path-at (addr time)
+  "ADDR's path at TIME, as last seen before it -- within a minute -- or nil."
+  (cdr (seq-find (lambda (p) (and (<= (car p) time) (< (- time (car p)) 60)))
+                 (and addr (xwapp--peer-get addr :paths)))))
+
+(defun xwapp--peer-came (app addr wakes)
+  "A request of APP's page through the proxy, from ADDR: the page's
+device now.  The first after `xwapp--kick-gone' seconds unheard, or
+WAKES -- a hello, a `next' asked with wake=1 -- kicks its path."
+  (when (xwapp--tailnet-p addr)
+    (xwapp--put app :peer addr)
+    (let ((seen (xwapp--peer-get addr :seen))
+          (now (float-time)))
+      (xwapp--peer-put addr :seen now)
+      (when (or wakes (not seen) (> (- now seen) xwapp--kick-gone))
+        (xwapp--kick addr)))))
+
+(defconst xwapp--pong
+  "\\`pong from .* via \\(DERP(\\([^)]*\\))\\|peer-relay\\S-*\\|\\S-+\\) in [0-9.]+m?s"
+  "A line of `tailscale ping' that came back, and its path.")
+
+(defun xwapp--kick (addr)
+  "Ping ADDR, a tailnet address, until its path is direct: in the
+background, once at a time, not again within `xwapp--kick-every'
+seconds, `xwapp--kick-for' at most.  Nothing without tailscale."
+  (let ((last (xwapp--peer-get addr :kick))
+        (now (float-time)))
+    (when (and xwapp-tailscale-program
+               (not (process-live-p (xwapp--peer-get addr :proc)))
+               (not (and last (< (- now (plist-get last :at)) xwapp--kick-every))))
+      (let* ((kick (list :at now))
+             (left "")
+             (proc (condition-case nil
+                       (make-process
+                        :name "xwapp-tailscale-ping" :noquery t :connection-type 'pipe
+                        :coding 'utf-8
+                        :command (list xwapp-tailscale-program "ping" "--until-direct"
+                                       "--c" "15" "--timeout" "2s" addr)
+                        :filter (lambda (_p s) (setq left (xwapp--kick-heard addr kick (concat left s))))
+                        :sentinel (lambda (p _e)
+                                    (unless (process-live-p p) (xwapp--kick-over addr kick p))))
+                     (error nil))))
+        (when proc
+          (process-put proc 'xwapp-timer
+                       (run-at-time xwapp--kick-for nil
+                                    (lambda () (when (process-live-p proc) (delete-process proc)))))
+          (xwapp--peer-put addr :kick kick)
+          (xwapp--peer-put addr :kicks (seq-take (cons kick (xwapp--peer-get addr :kicks)) 5))
+          (xwapp--peer-put addr :proc proc)
+          (xwapp--hold-for addr))))))
+
+(defun xwapp--kick-heard (addr kick text)
+  "TEXT, what ADDR's `tailscale ping' said so far: each whole line a
+pong noted in KICK -- the first as ADDR's path when it began, one direct
+as its path from then.  What is left: a line not whole yet."
+  (let ((start 0))
+    (while (string-match "\n" text start)
+      (let ((line (substring text start (match-beginning 0))))
+        (setq start (match-end 0))
+        (when (string-match xwapp--pong line)
+          (let ((path (cond ((match-beginning 2)
+                             (concat "relay " (or (xwapp--timing-word (downcase (match-string 2 line))) "?")))
+                            ((string-prefix-p "peer-relay" (match-string 1 line)) "peer-relay")
+                            (t "direct")))
+                (took (- (float-time) (plist-get kick :at))))
+            (unless (plist-get kick :first)
+              (plist-put kick :first (cons path took))
+              (xwapp--peer-saw-path addr path (plist-get kick :at)))
+            (when (and (equal path "direct") (not (plist-get kick :direct)))
+              (plist-put kick :direct took)
+              (xwapp--peer-saw-path addr "direct")
+              (xwapp--unhold-for addr))))))
+    (substring text start)))
+
+(defun xwapp--kick-over (addr kick proc)
+  "ADDR's kick KICK, its `tailscale ping' PROC, is over: how it went is
+noted, what tailscale said of paths before is old, and what waited for
+it goes."
+  (when-let* ((timer (process-get proc 'xwapp-timer))) (cancel-timer timer))
+  (plist-put kick :end (- (float-time) (plist-get kick :at)))
+  (plist-put kick :how (cond ((plist-get kick :direct) 'direct)
+                             ((plist-get kick :first) 'relay)
+                             (t 'none)))
+  (when (eq (plist-get kick :how) 'relay)
+    (xwapp--peer-saw-path addr (car (plist-get kick :first))))
+  (when (eq (xwapp--peer-get addr :proc) proc)
+    (xwapp--peer-put addr :proc nil))
+  (setq xwapp--tailscale-said nil)
+  (xwapp--unhold-for addr))
+
+(defun xwapp--holding-p (app)
+  "Non-nil while APP's calls that can wait wait for its device's path:
+a kick under way, not direct yet, begun within `xwapp-tailscale-hold'."
+  (when-let* ((hold xwapp-tailscale-hold)
+              (addr (xwapp--get app :peer))
+              (kick (xwapp--peer-get addr :kick))
+              ((process-live-p (xwapp--peer-get addr :proc))))
+    (and (not (plist-get kick :direct))
+         (< (- (float-time) (plist-get kick :at)) hold))))
+
+(defun xwapp--hold-for (addr)
+  "A kick of ADDR has begun: the apps whose page is there are told when
+their calls that can wait may go, at the latest."
+  (when xwapp-tailscale-hold
+    (maphash (lambda (app _)
+               (when (equal (xwapp--get app :peer) addr)
+                 (xwapp--timer app :unhold xwapp-tailscale-hold #'xwapp--unhold)))
+             xwapp--served)))
+
+(defun xwapp--unhold-for (addr)
+  (maphash (lambda (app _)
+             (when (equal (xwapp--get app :peer) addr) (xwapp--unhold app)))
+           xwapp--served))
+
+(defun xwapp--unhold (app)
+  "APP's calls that can wait may go: to its `next', if one waits."
+  (xwapp--untimer app :unhold)
+  (when (and (xwapp--get app :waiting) (xwapp--get app :later) (not (xwapp--holding-p app))
+             (not (xwapp--get app :flush)))
+    (xwapp--timer app :flush 0 #'xwapp--flush)))
+
 ;; Taking one, keeping it
 
 (defun xwapp--timing-take (app intent req)
@@ -2723,7 +2970,12 @@ it reaches it."
         (let ((from (and req (plist-get req :fwd))))
           (xwapp--tailscale-status
            (lambda (status)
-             (xwapp--timing-keep app (append record (list :peer (and status (xwapp--tailscale-peer status from))))))))
+             (let ((peer (and status (xwapp--tailscale-peer status from))))
+               (xwapp--peer-saw-path from (xwapp--timing-path peer))
+               (xwapp--timing-keep app (append record
+                                               (and peer (not (plist-get record :path1))
+                                                    (list :path1 (xwapp--timing-path peer)))
+                                               (list :peer peer)))))))
       (xwapp--timing-keep app record))))
 
 (defun xwapp--timing-keep (app record)
@@ -2780,24 +3032,47 @@ it reaches it."
 
 ;; Saying one
 
+(defun xwapp--timing-path (peer)
+  "PEER's path, as `xwapp--tailscale-peer' says it, in words: \"direct\",
+\"relay hkg\", \"peer-relay\" -- or nil."
+  (pcase (plist-get peer :path)
+    ("relay" (concat "relay " (or (plist-get peer :relay) "?")))
+    ((and p (pred stringp) (guard (not (equal p "unknown")))) p)))
+
+(defun xwapp--timing-kick-said (kick)
+  "KICK, a record's, in words: \"kicked: direct in 6.8 s\"."
+  (pcase (plist-get kick :how)
+    ("direct" (format "kicked: direct in %.1f s" (or (plist-get kick :direct) 0)))
+    ("relay" (format "kicked: no direct path in %.0f s" (or (plist-get kick :end) 0)))
+    ("none" "kicked: no answer")
+    (_ "kicked: under way")))
+
 (defun xwapp-timing-summary (record)
   "RECORD in a line: what it was, how long, and what that went on --
 \"open 3.4 s: network 2.1 s · Emacs busy 0.6 s · page 0.5 s · relay hkg\"."
   (let* ((parts (seq-filter (lambda (c) (>= (cdr c) 0.05))
                             (sort (copy-sequence (plist-get record :sum))
                                   (lambda (a b) (> (cdr a) (cdr b))))))
-         (peer (plist-get record :peer)))
+         (peer (plist-get record :peer))
+         (p0 (plist-get record :path0))
+         (p1 (or (plist-get record :path1) (xwapp--timing-path peer)))
+         (kick (plist-get record :kick)))
     (concat (format "%s %.1f s" (plist-get record :kind) (plist-get record :d))
             (if parts
                 (concat ": " (mapconcat (lambda (c) (format "%s %.1f s" (alist-get (car c) xwapp--timing-names)
                                                            (cdr c)))
                                         parts " · "))
               "")
-            (pcase (plist-get peer :path)
-              ("relay" (format " · relay %s" (or (plist-get peer :relay) "?")))
-              ("peer-relay" " · peer relay")
-              ("direct" (if (plist-get peer :lan) " · direct, LAN" " · direct"))
-              (_ "")))))
+            ;; The path at its start, when it was another at its end.
+            (if (and p0 p1 (not (equal p0 p1)))
+                (format " · %s → %s%s" p0 p1
+                        (if (and (equal p1 "direct") (plist-get peer :lan)) ", LAN" ""))
+              (pcase (plist-get peer :path)
+                ("relay" (format " · relay %s" (or (plist-get peer :relay) "?")))
+                ("peer-relay" " · peer relay")
+                ("direct" (if (plist-get peer :lan) " · direct, LAN" " · direct"))
+                (_ (if p1 (concat " · " p1) ""))))
+            (if kick (concat " · " (xwapp--timing-kick-said kick)) ""))))
 
 (defun xwapp-timing-summary-phases (line)
   "What LINE, as `xwapp-timing-summary' writes one, says its moment
@@ -2848,6 +3123,16 @@ waited on: ((KEY NAME SECONDS) ...), in its order -- KEY one of
                                       (if (equal (plist-get peer :path) "relay")
                                           (concat " " (or (plist-get peer :relay) "?")) ""))
                        ""))
+             (let ((p0 (plist-get record :path0))
+                   (p1 (plist-get record :path1))
+                   (kick (plist-get record :kick)))
+               (and (or p0 p1 kick)
+                    (xwapp--timing-lines
+                     "path:" (delq nil
+                                   (list (and (or p0 p1) (format "%s → %s" (or p0 "?") (or p1 "?")))
+                                         (and kick (format "%s, %s s in"
+                                                           (xwapp--timing-kick-said kick)
+                                                           (funcall s (plist-get kick :at)))))))))
              (xwapp--timing-lines
               "" (mapcar (lambda (c) (format "%s %s" (alist-get (car c) xwapp--timing-names) (funcall s (cdr c))))
                          (seq-filter (lambda (c) (>= (cdr c) 0.005)) (plist-get record :sum))))

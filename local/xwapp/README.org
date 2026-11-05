@@ -135,6 +135,34 @@ another site's page, gets nothing.
   there (some 1 ms for 540 KB).  =xwapp-test-a-secret-never-goes-gzipd=
   inflates every answer that went gzip'd and looks again.
 
+** Kicking the path
+
+A phone that wakes reaches this machine through tailscale's relay ---
+DERP, Hong Kong from here, 10--20 KB a second --- until tailscale finds
+a direct path, and it was slow to look: 33 s after one wake, nearly two
+minutes after another, then 7 s once =tailscale ping= was run
+(tailscaled's log, 2026-11-05).  So a page's first request after an open
+or a wake --- its device unheard for 30 s, its hello, its =next= asked
+with =wake=1= --- has Emacs run =tailscale ping --until-direct --c 15
+--timeout 2s ADDR= to the device: ADDR the tailnet address =tailscale
+serve= forwards (=X-Forwarded-For=, checked to be one), in the
+background, Emacs not waiting; 15 s at most, one at a time, and once in
+30 s a device.  Its pongs say the path as they come.  Without tailscale
+(=xwapp-tailscale-program= nil) nothing runs.
+
+=xwapp-tailscale-hold=, seconds, makes the calls that can wait wait for
+the path meanwhile --- at most so long --- every other call going as
+ever.  Off by default, as measured: on cellular, direct was no faster
+than the relay (9 KB/s against 10--20); at home, where direct is the LAN
+(19 ms against the relay's 1.5 s), what is under way when the path turns
+goes on over it --- emulated (=e2e/herd-kick.js=), a room woken on the
+relay was whole 3.4 s after the tap held, 3.6 s not.
+
+A timing record says the path at its moment's start and end, and the
+kick it fell in: ="slow open 3.6 s: network 3.5 s · relay hkg → direct ·
+kicked: direct in 1.5 s"=, and in its phases =path: relay hkg → direct=.
+No address is kept.
+
 ** A big answer goes from a thread
 
 =process-send-string= returns only once the last byte is in the

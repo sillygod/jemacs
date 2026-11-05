@@ -29,14 +29,18 @@ const log = () => { try { return fs.readFileSync(path.join(E, "log.jsonl"), "utf
 // machine's browser reaches Emacs's loopback port straight, as it does;
 // OPTS.link, {kbps, rtt}: the phone's link, slow -- each way half of RTT
 // ms, and the answers' bytes through KBPS kilobits a second, one after
-// another.  OPTS.spawn(ENV, EL): start that Emacs another way -- in a
+// another; setLink({kbps, rtt}) changes it from then on, as a path that
+// turns direct.  OPTS.peer: the device's tailnet address, said to Emacs
+// as `tailscale serve' says it (X-Forwarded-For) -- only when given, so
+// no Emacs is led to ping a real device.  OPTS.env: more of Emacs's
+// environment.  OPTS.spawn(ENV, EL): start that Emacs another way -- in a
 // terminal, say -- returning what has a kill().
 async function start(opts) {
   opts = opts || {};
   const run = E = fs.mkdtempSync(path.join(os.tmpdir(), "xwapp-e2e-"));
   if (opts.setup) opts.setup(run);
   const port = await freePort();
-  const env = Object.assign({}, process.env, { E2E_DIR: E, E2E_PORT: String(port), E2E_LOCAL: LOCAL });
+  const env = Object.assign({}, process.env, opts.env || {}, { E2E_DIR: E, E2E_PORT: String(port), E2E_LOCAL: LOCAL });
   const el = path.join(__dirname, opts.el || "apps.el");
   const emacs = opts.spawn ? opts.spawn(env, el)
     : spawn(EMACS, ["-Q", "--batch", "-l", el], { env, stdio: ["ignore", "ignore", "pipe"] });
@@ -102,7 +106,8 @@ async function start(opts) {
     else r.on("end", done);
   };
   const forward = (req, res, u) => {
-    const headers = Object.assign({}, req.headers, { host: "localhost", "tailscale-user-login": "me@example.com" });
+    const headers = Object.assign({}, req.headers, { host: "localhost", "tailscale-user-login": "me@example.com" },
+                                  opts.peer ? { "x-forwarded-for": opts.peer } : {});
     delete headers["proxy-connection"];
     const seen = { at: Date.now(), method: req.method, path: u.pathname.replace(/^\/[0-9a-f]{32}\//, "/SECRET/") + u.search,
       status: 0, bytes: 0, enc: "", asked: req.headers["if-none-match"] || "" };
@@ -181,6 +186,7 @@ async function start(opts) {
     else fs.rmSync(run, { recursive: true, force: true });
   };
   return { browser, urls, away, stop, dir: run, port, secretOf: (app) => urls[app].split("/")[3], traffic,
+    setLink: (l) => { if (link) Object.assign(link, l); },
     sleep: () => { asleep = true; open.forEach((res) => res.destroy()); },
     nap: () => { asleep = true; open.forEach((res) => dozing.add(res)); },
     // What slept with the phone, as it wakes: "cut", its connections
