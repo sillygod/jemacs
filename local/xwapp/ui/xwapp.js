@@ -33,6 +33,8 @@
  *                        conversation is drawn -- timed as a load is, of
  *                        kind NAME.  While the page's load or wake is
  *                        timed, that one is, and READY marks it
+ *   XW.drop(name)        the app's moment NAME given up -- you went
+ *                        elsewhere before it was over: no record of it
  *   XW.sanitizer(opts)   a sanitize(html) keeping a whitelist only
  *   XW.browser           true in a web browser, false in Emacs's xwidget
  *   XW.elsewhere         true on another device, through the proxy
@@ -435,6 +437,9 @@
   function beginMoment(name) {
     if (moments && MARK.test(String(name))) moments.begin(String(name));
   }
+  function dropMoment(name) {
+    if (moments && MARK.test(String(name))) moments.drop(String(name));
+  }
 
   let served = null;
   function servedBridge(opts) {
@@ -655,9 +660,16 @@
     // What it asks is all the timings it needs, as a wake's.
     function beginApp(name) {
       appNames.add(name);
+      dropApp(name);  // begun again before it was over: from now
       if (moment) return;
       perf.clearResourceTimings();
       begin(name, perf.now(), { app: true });
+    }
+    // The app's moment NAME given up: no record.
+    function dropApp(name) {
+      if (!(moment && moment.app && moment.k === name)) return;
+      clearTimeout(moment.cap);
+      moment = null;
     }
     // An intent answered: queued at FROM, sent at SENT, numbered N.  One
     // slow from its queueing on is a moment of its own -- the time it
@@ -748,7 +760,7 @@
       pump();
     }
     moments = { mark: (name) => timing(() => markNow(name)), ready: (name) => timing(() => readyNow(name)),
-                begin: (name) => timing(() => beginApp(name)) };
+                begin: (name) => timing(() => beginApp(name)), drop: (name) => timing(() => dropApp(name)) };
     function connect() {
       if (hello) {
         if (waiting) {
@@ -1418,5 +1430,6 @@
     mark: mark,
     ready: ready,
     begin: beginMoment,
+    drop: dropMoment,
   });
 })();

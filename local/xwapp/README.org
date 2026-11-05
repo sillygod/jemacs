@@ -110,6 +110,17 @@ another site's page, gets nothing.
   a smaller one, which the socket takes at once.  From memory, gzip
   reads a file of its own (mode 600, removed once read), not a pipe:
   Emacs writing to a pipe waits as on the socket, 72 ms for 210 KB.
+- *Calls that can wait.*  A =next= goes whole before the page has any of
+  it, and nothing else reaches the page meanwhile: over a phone's slow
+  link (6--20 KB a second, relayed) 146 KB of a herd room took 25 s, a
+  tap's answer behind it.  =(xwapp-js APP FN OBJ LATER)= says a call can
+  wait: it goes after every other, and a =next= carries such calls only
+  up to 48 KB with the rest (=xwapp--later-budget=), one at least; the
+  page asks again at once for the next part.  LATER names them for
+  =xwapp-js-forget=, which drops those not yet sent; =xwapp-when-sent=
+  calls a function once the calls made so far are out --- to send one
+  first, alone, and the rest after.  In Emacs's own page every call
+  runs at once.
 - *Never a secret.*  Compressed, a body is as long as what in it does
   not repeat: one holding a secret beside text someone else can put in
   it --- an agent's, a pull request's --- tells a watcher on the path,
@@ -445,7 +456,11 @@ xwapp-timings= lists them, the latest first.
   answer to a =next= asked after it, with =wake=1=, which Emacs answers
   at once; and an intent answered slowly, from when the page queued it
   --- a tap waiting its turn behind a slow or stuck intent is /queued in
-  the page/.  Its marks (boot, dcl, hello,
+  the page/; and the app's own, from =XW.begin(name)= to
+  =XW.ready(name)=, of kind /name/ --- the herd page's =room=, a tap on a
+  room until its conversation is drawn --- timed as a load is, and none
+  while another moment is (its =ready= then a mark of that one).  Its
+  marks (boot, dcl, hello,
   the first intent and =next= answered, the app's own =XW.mark=) and its
   requests from Resource Timing --- connecting, the wait for the first
   byte, the download, the bytes --- go to Emacs once it is over, as the
