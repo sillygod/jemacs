@@ -2705,6 +2705,206 @@ as its mark \"sent\" says; its own round trip, the network's."
         (should (string-prefix-p "intent 2.0 s: queued in the page 2.0 s · network 0.1 s" (xwapp-timing-summary r)))
         (should (equal (mapcar #'car (xwapp-timing-summary-phases (xwapp-timing-summary r))) '(queue net)))))))
 
+;; Kicking the path
+
+(defconst xwapp-test--phone "100.94.115.122"
+  "The phone's tailnet address, as `tailscale serve' forwards it.")
+
+(defun xwapp-test--tailscale (dir pongs &optional code)
+  "A tailscale played, in DIR: `ping' says PONGS -- ((SECONDS . LINE)
+...), each after waiting so long -- then exits with CODE (0); every run's
+arguments noted in DIR/calls.  Its path."
+  (let ((script (expand-file-name "tailscale" dir)))
+    (with-temp-file (expand-file-name "pongs" dir)
+      (dolist (p pongs) (insert (format "%s %s\n" (car p) (cdr p)))))
+    (with-temp-file script
+      (insert "#!/bin/sh\n"
+              (format "echo \"$@\" >> '%s'\n" (expand-file-name "calls" dir))
+              (format "while read -r d line; do sleep \"$d\"; echo \"$line\"; done < '%s'\n"
+                      (expand-file-name "pongs" dir))
+              (format "exit %d\n" (or code 0))))
+    (set-file-modes script #o700)
+    script))
+
+(defun xwapp-test--pong (path ms)
+  (format "pong from iphone171 (%s) via %s in %dms" xwapp-test--phone path ms))
+
+(defun xwapp-test--calls-made (dir)
+  (let ((f (expand-file-name "calls" dir)))
+    (if (file-exists-p f)
+        (split-string (with-temp-buffer (insert-file-contents f) (buffer-string)) "\n" t)
+      nil)))
+
+(defmacro xwapp-test--kicking (pongs code &rest body)
+  "BODY in `xwapp-test--timing', tailscale played as PONGS and CODE say
+\(`xwapp-test--tailscale'), in `kdir'; `phone' the proxy's headers for
+a request from the phone, `hello' says its page's hello."
+  (declare (indent 2))
+  `(xwapp-test--timing
+     (let* ((kdir (make-temp-file "xwapp-kick" t))
+            (xwapp-tailscale-program (xwapp-test--tailscale kdir ,pongs ,code))
+            (xwapp--peers (make-hash-table :test 'equal))
+            (xwapp-tailscale-hold 4)
+            (xwapp--kick-for 15)
+            (phone (append box (list (cons "X-Forwarded-For" xwapp-test--phone))))
+            (hello (lambda (&optional page)
+                     (xwapp-test--do "POST" (xwapp-test--at app (concat "hello?page=" (or page "p1"))) "{}"
+                                     phone 'proxy))))
+       (ignore hello)
+       (unwind-protect (progn ,@body)
+         (when-let* ((p (xwapp--peer-get xwapp-test--phone :proc)))
+           (when (process-live-p p) (delete-process p)))
+         (delete-directory kdir t)))))
+
+(defun xwapp-test--wait-kick (&optional secs)
+  "Wait until the phone's kick is over, SECS (5) at most; its record."
+  (with-timeout ((or secs 5) nil)
+    (while (process-live-p (xwapp--peer-get xwapp-test--phone :proc))
+      (accept-process-output nil 0.02)))
+  (xwapp--peer-get xwapp-test--phone :kick))
+
+(ert-deftest xwapp-test-kick-finds-a-direct-path ()
+  "The page's hello from a device through the proxy has Emacs ping it
+until its path is direct, in the background: the first pong is its path
+then, a direct one when it turned so.  Once at a time and once in a
+while; never for an address not the tailnet's."
+  (xwapp-test--kicking `((0.2 . ,(xwapp-test--pong "DERP(hkg)" 380))
+                         (0.4 . ,(xwapp-test--pong "192.168.50.104:41641" 19)))
+      0
+    (let ((t0 (float-time)))
+      (funcall hello)
+      ;; Answered at once: Emacs does not wait for the ping's 0.6 s.
+      (should (< (- (float-time) t0) 0.5)))
+    (should (process-live-p (xwapp--peer-get xwapp-test--phone :proc)))
+    (let ((kick (xwapp-test--wait-kick)))
+      (should (eq (plist-get kick :how) 'direct))
+      (should (equal (car (plist-get kick :first)) "relay hkg"))
+      (should (< 0.5 (plist-get kick :direct) 2.5))
+      (should (equal (xwapp--peer-path-at xwapp-test--phone (float-time)) "direct"))
+      (should (equal (xwapp--peer-path-at xwapp-test--phone (+ (plist-get kick :at) 0.1)) "relay hkg")))
+    (should (equal (xwapp-test--calls-made kdir)
+                   (list (concat "ping --until-direct --c 15 --timeout 2s " xwapp-test--phone))))
+    ;; Again at once -- a reload, a wake: not kicked again so soon.
+    (funcall hello "p2")
+    (xwapp-test--do "GET" (xwapp-test--at app "next?page=p2&wake=1") nil phone 'proxy)
+    (should (= (length (xwapp-test--calls-made kdir)) 1))
+    ;; Not a tailnet address, or more than one: nothing runs.
+    (let ((xwapp--peers (make-hash-table :test 'equal)))
+      (dolist (addr (list "10.0.0.5" (concat xwapp-test--phone " ; touch x") "100.200.1.1" "fd00::1"))
+        (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p3") "{}"
+                        (append box (list (cons "X-Forwarded-For" addr))) 'proxy))
+      (should (zerop (hash-table-count xwapp--peers))))
+    (should (= (length (xwapp-test--calls-made kdir)) 1))))
+
+(ert-deftest xwapp-test-kick-that-finds-none ()
+  "A kick that finds no direct path says so -- relayed throughout -- and
+one that runs past `xwapp--kick-for' is stopped, no pong heard."
+  (xwapp-test--kicking `((0.1 . ,(xwapp-test--pong "DERP(hkg)" 380))
+                         (0.1 . ,(xwapp-test--pong "DERP(hkg)" 400)))
+      1
+    (funcall hello)
+    (let ((kick (xwapp-test--wait-kick)))
+      (should (eq (plist-get kick :how) 'relay))
+      (should-not (plist-get kick :direct))
+      (should (equal (xwapp--peer-path-at xwapp-test--phone (float-time)) "relay hkg"))))
+  (xwapp-test--kicking '((5 . "pong never")) 0
+    (let ((xwapp--kick-for 0.4) (t0 (float-time)))
+      (funcall hello)
+      (let ((kick (xwapp-test--wait-kick)))
+        (should (eq (plist-get kick :how) 'none))
+        (should (< (- (float-time) t0) 2))))))
+
+(ert-deftest xwapp-test-kick-without-tailscale ()
+  "Without tailscale nothing is run, and nothing waits."
+  (xwapp-test--kicking nil 0
+    (let ((xwapp-tailscale-program nil))
+      (funcall hello)
+      (should-not (xwapp--peer-get xwapp-test--phone :kick))
+      (should-not (xwapp--holding-p app))
+      (xwapp-js app "fill" "later" 'room)
+      (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1") nil phone 'proxy)))
+        ;; xwapp's own greeting aside.
+        (should (equal (delq nil (mapcar (lambda (c) (alist-get 'arg c))
+                                         (xwapp-test--json (cdr (xwapp-test--answer next)))))
+                       '("later")))))))
+
+(ert-deftest xwapp-test-kick-holds-what-can-wait ()
+  "While the page's device is kicked, not direct yet, its calls that can
+wait wait -- every other goes -- until the path is direct; or
+`xwapp-tailscale-hold' at most, when it is not soon."
+  (let ((args (lambda (next) (delq nil (mapcar (lambda (c) (alist-get 'arg c)) ; xwapp's greeting aside
+                                               (xwapp-test--json (cdr (xwapp-test--answer next))))))))
+    (xwapp-test--kicking `((0.2 . ,(xwapp-test--pong "DERP(hkg)" 380))
+                           (0.6 . ,(xwapp-test--pong "192.168.50.104:41641" 19)))
+        0
+      (funcall hello)
+      (xwapp-js app "fill" "older" 'room)
+      (xwapp-js app "flash" "now")
+      (should (xwapp--holding-p app))
+      (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1") nil phone 'proxy)))
+        (should (equal (funcall args next) '("now"))))
+      ;; Held, not answered empty: the page would ask again at once.
+      (let* ((t0 (float-time))
+             (next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1") nil phone 'proxy)))
+        (should (equal (funcall args next) '("older")))
+        (should (< 0.3 (- (float-time) t0) 1.5))
+        (should (plist-get (xwapp--peer-get xwapp-test--phone :kick) :direct))))
+    ;; Never direct: they go once the hold is up, the kick still under way.
+    (xwapp-test--kicking `((0.1 . ,(xwapp-test--pong "DERP(hkg)" 380)) (3 . ,(xwapp-test--pong "DERP(hkg)" 380))) 1
+      (let ((xwapp-tailscale-hold 0.5))
+        (funcall hello)
+        (xwapp-js app "fill" "older" 'room)
+        ;; The greeting goes at once; what can wait waits.
+        (should-not (funcall args (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1") nil phone 'proxy)))
+        (let* ((t0 (float-time))
+               (next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1") nil phone 'proxy)))
+          (should (equal (funcall args next) '("older")))
+          (should (< 0.4 (- (float-time) t0) 1.5))
+          (should (process-live-p (xwapp--peer-get xwapp-test--phone :proc))))))))
+
+(ert-deftest xwapp-test-kick-holds-nothing-by-default ()
+  "By default (`xwapp-tailscale-hold' nil), what can wait does not wait
+for the path, a kick under way or not."
+  (xwapp-test--kicking `((0.1 . ,(xwapp-test--pong "DERP(hkg)" 380)) (2 . ,(xwapp-test--pong "DERP(hkg)" 380))) 1
+    (let ((xwapp-tailscale-hold (eval (car (get 'xwapp-tailscale-hold 'standard-value)) t)))
+      (should-not xwapp-tailscale-hold)
+      (funcall hello)
+      (should (process-live-p (xwapp--peer-get xwapp-test--phone :proc)))
+      (should-not (xwapp--holding-p app))
+      (xwapp-js app "fill" "older" 'room)
+      (let* ((t0 (float-time))
+             (next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1") nil phone 'proxy)))
+        (should (member "older" (mapcar (lambda (c) (alist-get 'arg c))
+                                        (xwapp-test--json (cdr (xwapp-test--answer next))))))
+        (should (< (- (float-time) t0) 0.5))))))
+
+(ert-deftest xwapp-test-timing-says-the-path-and-the-kick ()
+  "A moment's record says the path at its start and at its end, and the
+kick it fell in -- how soon direct -- in its line and its phases; never
+the device's address."
+  (xwapp-test--kicking `((0.2 . ,(xwapp-test--pong "DERP(hkg)" 380))
+                         (0.3 . ,(xwapp-test--pong "192.168.50.104:41641" 19)))
+      0
+    (let ((base (float-time)))
+      (funcall hello)
+      (xwapp-test--wait-kick)
+      (xwapp--timing-take
+       app (xwapp-test--moment "room" base 2.0
+                               '(((p . "next") (n . 7) (s . 300) (q . 0) (w . 150) (dl . 1500))))
+       (list :app app :via 'proxy :path "intent" :n 8 :page xwapp-test--page-id :fwd xwapp-test--phone))
+      (let* ((r (car xwapp--timings))
+             (kick (plist-get r :kick)))
+        (should (equal (plist-get r :path0) "relay hkg"))
+        (should (equal (plist-get r :path1) "direct"))
+        (should (equal (plist-get kick :how) "direct"))
+        (should (equal (plist-get kick :first) "relay hkg"))
+        (should (< 0.4 (plist-get kick :direct) 1.2))
+        (should (string-match-p " · relay hkg → direct · kicked: direct in 0\\.[0-9] s\\'" (xwapp-timing-summary r)))
+        (should (string-match-p "^path: relay hkg → direct$" (xwapp-timing-describe r)))
+        (should (string-match-p "kicked: direct in 0\\.[0-9] s" (xwapp-timing-describe r)))
+        (let ((print-length nil) (print-level nil))
+          (should-not (string-search xwapp-test--phone (prin1-to-string r))))))))
+
 (ert-deftest xwapp-test-timing-summary-read-back ()
   "What a summary line says the moment waited on is read back from it,
 as written."
