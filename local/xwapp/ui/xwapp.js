@@ -26,7 +26,13 @@
  *                        drawn, which ends its load's timing
  *   XW.mark(name)        a moment of the page's load or wake, for its
  *                        timings (see "How long it took"): a-z0-9-
- *   XW.ready(name)       that, and the page is ready: its load is over
+ *   XW.ready(name)       that, and the page is ready: its load is over;
+ *                        or the end of the app's moment NAME, begun so:
+ *   XW.begin(name)       a moment of the app's own, from now until
+ *                        XW.ready(NAME) -- a room opened until its
+ *                        conversation is drawn -- timed as a load is, of
+ *                        kind NAME.  While the page's load or wake is
+ *                        timed, that one is, and READY marks it
  *   XW.sanitizer(opts)   a sanitize(html) keeping a whitelist only
  *   XW.browser           true in a web browser, false in Emacs's xwidget
  *   XW.elsewhere         true on another device, through the proxy
@@ -400,6 +406,9 @@
   //   intent        an intent slow to be answered, from when the page
   //                 queued it -- its turn waited for, the mark "sent" --
   //                 the page shown throughout
+  //   the app's     from XW.begin(NAME) to XW.ready(NAME), of kind NAME:
+  //                 what it waited on, as a load's.  Begun while another
+  //                 moment is timed, it is not: READY marks that one
   //
   // ended early when the page is hidden ("hidden"), or after a minute
   // ("cap").  Its marks: boot (the kit run), dcl, hello, intent and next
@@ -423,6 +432,9 @@
   function ready(name) {
     if (moments && MARK.test(String(name))) moments.ready(String(name));
   }
+  function beginMoment(name) {
+    if (moments && MARK.test(String(name))) moments.begin(String(name));
+  }
 
   let served = null;
   function servedBridge(opts) {
@@ -439,7 +451,9 @@
     const CAP = 60000;      // ms: a moment not over by then ends
     const REQS = 40;        // requests a record lists at most
     let slowMs = null;      // Emacs's word, with its hello: it takes them
-    let moment = null;      // {k, t0, base, marks, first, last, why, away}
+    let moment = null;      // {k, t0, base, marks, first, last, why, away, app}
+    let running = null;     // the next whose calls run now, for an app's ready
+    const appNames = new Set();  // the app's own moments, by name: begun so
     let numbered = 0;       // the kit's requests so far
     let wakeNext = false;   // the next asked after a wake: wake=1
     let hiddenLast = -1;    // when the page was last hidden
@@ -632,7 +646,18 @@
     function readyNow(name) {
       if (!moment) return;
       markNow(name);
-      if (loading() && byApp) end("ready");
+      // The app's own moment, over: the next that drew it ended it.  Its
+      // end is only a mark of the load it fell in.
+      if (moment.app && moment.k === name) end("ready", running ? running.n : 0);
+      else if (loading() && byApp && !appNames.has(name)) end("ready");
+    }
+    // The app's own moment NAME begun now -- none while another is timed.
+    // What it asks is all the timings it needs, as a wake's.
+    function beginApp(name) {
+      appNames.add(name);
+      if (moment) return;
+      perf.clearResourceTimings();
+      begin(name, perf.now(), { app: true });
     }
     // An intent answered: queued at FROM, sent at SENT, numbered N.  One
     // slow from its queueing on is a moment of its own -- the time it
@@ -722,7 +747,8 @@
       outbox.push({ intent: rec });
       pump();
     }
-    moments = { mark: (name) => timing(() => markNow(name)), ready: (name) => timing(() => readyNow(name)) };
+    moments = { mark: (name) => timing(() => markNow(name)), ready: (name) => timing(() => readyNow(name)),
+                begin: (name) => timing(() => beginApp(name)) };
     function connect() {
       if (hello) {
         if (waiting) {
@@ -880,7 +906,12 @@
         if (mine.wake) wakeNext = false;
         if (timeable) mine.at = perf.now();
         answered();
-        calls.forEach(run);
+        running = mine;
+        try {
+          calls.forEach(run);
+        } finally {
+          running = null;
+        }
         timing(() => nextAnswered(mine, calls.length));
         next();
       }, (e) => {
@@ -1386,5 +1417,6 @@
     file: file,
     mark: mark,
     ready: ready,
+    begin: beginMoment,
   });
 })();

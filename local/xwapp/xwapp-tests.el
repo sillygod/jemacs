@@ -1952,6 +1952,90 @@ made up."
       (xwapp-test--turn)
       (should-not (xwapp--get app :sending)))))
 
+(ert-deftest xwapp-test-browser-calls-that-can-wait ()
+  "Calls that can wait go after every other, a `next' carrying of them
+only what `xwapp--later-budget' leaves room for -- one at least, so they
+always move -- and the rest the next time the page asks.  Those of a
+name are dropped when forgotten."
+  (xwapp-test--with-browser
+    (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+    (let ((xwapp--later-budget 1000)
+          (args (lambda (next) (mapcar (lambda (c) (alist-get 'arg c))
+                                       (xwapp-test--json (cdr (xwapp-test--answer next))))))
+          (big (lambda (c) (make-string 400 c))))
+      (xwapp-js app "fill" (funcall big ?a) 'room)
+      (xwapp-js app "fill" (funcall big ?b) 'room)
+      (xwapp-js app "fill" (funcall big ?c) 'room)
+      (xwapp-js app "flash" "now")
+      (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1"))))
+        (should (equal (funcall args next) (list "now" (funcall big ?a) (funcall big ?b)))))
+      ;; The page asks again: the rest, at once.
+      (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1"))))
+        (should (equal (funcall args next) (list (funcall big ?c)))))
+      ;; One at least, though the others fill the budget.
+      (xwapp-js app "fill" (funcall big ?d) 'room)
+      (xwapp-js app "flash" (make-string 1200 ?n))
+      (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1"))))
+        (should (equal (funcall args next) (list (make-string 1200 ?n) (funcall big ?d)))))
+      ;; Forgotten by name: the others stay.
+      (xwapp-js app "fill" "old" 'room)
+      (xwapp-js app "fill" "other" 'elsewhere)
+      (xwapp-js-forget app 'room)
+      (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1"))))
+        (should (equal (funcall args next) '("other"))))
+      ;; A page that says hello anew has none of what waited.
+      (xwapp-js app "fill" "stale" 'room)
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p2") "{}")
+      (should-not (xwapp--get app :later)))))
+
+(ert-deftest xwapp-test-browser-when-sent ()
+  "What waits for the calls made so far is called once the `next' that
+carries them is out -- not before, nor for one that can wait; with
+nothing to send, at once; never for a page let go first."
+  (xwapp-test--with-browser
+    (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+    (let (said)
+      (xwapp-js app "flash" "first")
+      (xwapp-js app "fill" "later" 'room)
+      (xwapp-when-sent app (lambda () (push 'out said)))
+      (xwapp-test--turn)
+      (should-not said)
+      (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1"))))
+        (should (equal (car (xwapp-test--answer next)) 200))
+        (xwapp-test--turn)
+        (should (equal said '(out))))
+      ;; Nothing waiting to go: at once.
+      (xwapp-when-sent app (lambda () (push 'now said)))
+      (should (equal said '(now out)))
+      ;; The page gone first: not at all.
+      (xwapp-js app "flash" "second")
+      (xwapp-when-sent app (lambda () (push 'never said)))
+      (xwapp--let-go app)
+      (xwapp-test--turn)
+      (should (equal said '(now out))))))
+
+(ert-deftest xwapp-test-timing-an-apps-own-moment ()
+  "A moment the app begins and says is over -- the herd page's room, from
+a tap to its conversation drawn -- is kept as a load's is, of the app's
+kind, and said so.  A kind that is no word is not kept."
+  (xwapp-test--timing
+    (let ((base (- (float-time) 10)))
+      (xwapp--timing-take
+       app (xwapp-test--moment "room" base 2.4
+                               '(((p . "intent") (n . 6) (s . 5) (q . 0) (w . 300) (dl . 0))
+                                 ((p . "next") (n . 7) (s . 300) (q . 0) (w . 150) (dl . 1950)))
+                               '((intent . 305) (room . 2400)))
+       (list :app app :via 'proxy :path "intent" :n 8 :page xwapp-test--page-id))
+      (let ((r (car xwapp--timings)))
+        (should (equal (plist-get r :kind) "room"))
+        (should (plist-get r :slow))
+        (should (string-prefix-p "room 2.4 s: network" (xwapp-timing-summary r)))
+        (should (equal (mapcar #'car (plist-get r :marks)) '("intent" "room"))))
+      (dolist (kind '("Room" "room!" "a-very-long-moment-name-past-24" 7))
+        (xwapp--timing-take app (xwapp-test--moment kind (+ base 1) 2.4 nil)
+                            (list :app app :via 'proxy :path "intent" :n 9 :page xwapp-test--page-id)))
+      (should (= (length xwapp--timings) 1)))))
+
 (defun xwapp-test--slow-next (app page)
   "Ask APP's `next' for PAGE as a reader that does not read until told:
 a plist whose :proc is the client, :bytes what it has read, :done t once
@@ -2574,17 +2658,21 @@ gets through, and if the record is dropped for one."
       (xwapp-test--do "GET" (xwapp-test--at app (concat "app/ui/" secret ".js")) nil box 'proxy)
       (dolist (r (xwapp--reqs-list))
         (should-not (string-search secret (downcase (plist-get r :path)))))
-      (xwapp--timing-take
-       app (xwapp-test--moment
-            "open" base 2.0
-            `(((p . ,(concat "app/ui/" secret ".js")) (s . 10) (q . 0) (w . 50) (dl . 1))
-              ((p . ,(upcase secret)) (s . 20) (q . 0) (w . 50) (dl . 1))
-              ((p . ,(concat "app/ui/" escaped)) (s . 30) (q . 0) (w . 50) (dl . 1))
-              ((p . "app/ui/app.js") (s . 40) (q . 0) (w . 50) (dl . 1)))
-            `((,(intern secret) . 5) (,(intern (concat "a" secret)) . 6) (hello . 7)))
-       (list :app app :via 'proxy :path "intent" :n 1 :page xwapp-test--page-id))
-      (should (= (length told) 1))
-      (should (= (length xwapp--timings) 1))
+      ;; A load's, and a moment of the app's own -- a room opened -- alike;
+      ;; and one whose kind is the secret, not kept at all.
+      (dolist (kind (list "open" "room" secret))
+        (xwapp--timing-take
+         app (xwapp-test--moment
+              kind (if (equal kind "open") base (+ base 1)) 2.0
+              `(((p . ,(concat "app/ui/" secret ".js")) (s . 10) (q . 0) (w . 50) (dl . 1))
+                ((p . ,(upcase secret)) (s . 20) (q . 0) (w . 50) (dl . 1))
+                ((p . ,(concat "app/ui/" escaped)) (s . 30) (q . 0) (w . 50) (dl . 1))
+                ((p . "app/ui/app.js") (s . 40) (q . 0) (w . 50) (dl . 1)))
+              `((,(intern secret) . 5) (,(intern (concat "a" secret)) . 6) (hello . 7)))
+         (list :app app :via 'proxy :path "intent" :n 1 :page xwapp-test--page-id)))
+      (should (= (length told) 2))
+      (should (= (length xwapp--timings) 2))
+      (should (equal (mapcar (lambda (r) (plist-get r :kind)) xwapp--timings) '("room" "open")))
       (let ((leaks (lambda (s)
                      (let ((s (downcase (url-unhex-string s))))
                        (or (string-search secret s) (xwapp--holds-secret-p s))))))
@@ -2595,8 +2683,9 @@ gets through, and if the record is dropped for one."
           (should-not (funcall leaks (xwapp-timing-describe r))))
         (should-not (funcall leaks (with-temp-buffer (insert-file-contents xwapp-timing-file) (buffer-string)))))
       ;; What was not the secret is kept as it was.
-      (should (member "app/ui/app.js" (mapcar (lambda (q) (plist-get q :p)) (plist-get (car told) :reqs))))
-      (should (equal (mapcar #'car (plist-get (car told) :marks)) '("hello"))))))
+      (dolist (r told)
+        (should (member "app/ui/app.js" (mapcar (lambda (q) (plist-get q :p)) (plist-get r :reqs))))
+        (should (equal (mapcar #'car (plist-get r :marks)) '("hello")))))))
 
 (ert-deftest xwapp-test-timing-a-tap-queued-in-the-page ()
   "An intent slow from when the page queued it -- its turn waited for,
