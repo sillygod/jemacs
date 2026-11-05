@@ -208,7 +208,8 @@ older ones precede it."
               (let ((it (ignore-errors (json-parse-string body :object-type 'alist))))
                 (e2e-note (list :intent (alist-get 'op it)
                                 :first (and (equal (alist-get 'op it) "room-watch") (alist-get 'first it))
-                                :split (and (equal (alist-get 'op it) "room-watch") (alist-get 'split it)))))))
+                                :split (and (equal (alist-get 'op it) "room-watch")
+                                            (if (eq (alist-get 'split it) t) t :json-false)))))))
 (advice-add 'xwapp--flush :before
             (lambda (app)
               (when (xwapp--get app :waiting)

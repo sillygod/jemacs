@@ -10,14 +10,16 @@
 // again; that Load earlier and find still work; and that a slow room
 // open lands in the timings and the Log, as a slow page open does.
 //
-// LINKS=slow,wifi picks the links (both by default): slow is a phone
-// relayed through a DERP server, 15 KB/s and 300 ms round trip, as
-// iphone171 was on 2026-11-05.  TIMES=1 prints each `next'.  With LOCAL
+// LINKS=slow,wifi,desk picks the links (all by default): slow is a
+// phone relayed through a DERP server, 15 KB/s and 300 ms round trip, as
+// iphone171 was on 2026-11-05; desk is this machine's browser on Emacs's
+// loopback port, which takes each conversation whole at once and then
+// what changes.  TIMES=1 prints each `next'.  With LOCAL
 // another checkout's local/ -- master's -- its page and Emacs: the
 // numbers before, and the checks that fail on what it does.
 const fs = require("fs");
 const path = require("path");
-const { start, watch, BOX, PHONE, until, sleep } = require("./appslib");
+const { start, watch, BOX, PHONE, until, sleep, log } = require("./appslib");
 
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
@@ -67,10 +69,54 @@ const columns = (page) => page.evaluate(() => {
   return out;
 });
 
+// At the desk: the room comes whole, each column at once, then what
+// changes alone -- no part waits on another.
+async function desk() {
+  console.log("\n-- desk: this machine's browser, Emacs's loopback port");
+  const s = await start({ el: "herd-room.el", desk: true });
+  const W = (n) => "desk: " + n;
+  try {
+    const ctx = await s.browser.newContext({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 2 });
+    const page = await ctx.newPage();
+    const errors = [];
+    watch(page, errors);
+    await page.goto(s.urls.herd);
+    await page.waitForFunction(() => window.GM && window.XW);
+    await page.click('.tab[data-tab="agents"]');
+    await until(() => page.evaluate((p) => !!document.querySelector('.pgroup[data-project="' + p + '"]'), PROJECT), 30000);
+    await sleep(1000);
+    const t0 = Date.now();
+    await page.click('.pgroup[data-project="' + PROJECT + '"] [data-act="a:room"]');
+    await until(() => page.evaluate(() => !!document.querySelector(".rcol .rbody .ent")), 30000);
+    const first = await columns(page);
+    const drawn = Date.now() - t0;
+    await until(async () => Object.values(await columns(page)).every((c) => c.n >= COLUMN), 30000);
+    const all = await columns(page);
+    console.log(`   columns: drawn ${s1(drawn)}, ${Object.values(first).map((c) => c.n).join("/")} entries at once`);
+    const watched = (log(s.dir).filter((w) => w.intent === "room-watch").pop() || {});
+    check(W("the room asks for no split, and each column comes whole"), watched.split === false &&
+          Object.values(first).some((c) => c.n === COLUMN) && Object.values(all).every((c) => c.n === COLUMN),
+          { split: watched.split, first });
+    const name = Object.keys(all)[0];
+    const flushes = () => log(s.dir).filter((w) => w.flush).length;
+    const before = flushes();
+    fs.appendFileSync(path.join(s.dir, "transcripts", name + ".jsonl"),
+                      JSON.stringify({ role: "assistant", text: "A desk turn, said just now.", ts: new Date().toISOString() }) + "\n");
+    const came = await until(() => page.evaluate((n) => /A desk turn/.test(document.querySelector('.rcol[data-name="' + n + '"] .rbody').textContent), name), 15000);
+    const sent = log(s.dir).filter((w) => w.flush).slice(before).flatMap((w) => w.flush).filter((c) => c.fn === "setConversation");
+    check(W("a new turn comes alone"), came && sent.length >= 1 && sent.every((c) => c.bytes < 2048), { came, sent });
+    check(W("no page errors"), errors.length === 0, errors.slice(0, 4));
+    await ctx.close();
+  } finally {
+    await s.stop();
+  }
+}
+
 (async () => {
-  const names = (process.env.LINKS || "slow,wifi").split(",");
+  const names = (process.env.LINKS || "slow,wifi,desk").split(",");
   const summary = [];
   for (const name of names) {
+    if (name === "desk") { await desk(); continue; }
     const link = LINKS[name];
     console.log(`\n-- ${name}: ${link.kbps / 8} KB/s, ${link.rtt} ms round trip`);
     const s = await start({ el: "herd-room.el", link });
