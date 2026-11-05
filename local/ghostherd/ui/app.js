@@ -7290,12 +7290,15 @@
         changed = !!chat;
         if (chat) {
           herdNow.chat = Object.assign(chat, meta);
+          const body = app.querySelector(".chat .cbody");
+          // As a column's: read at its end, the rest drawn once it has come.
           if (chat.grew) {
             chat.grew = false;
-            chat.loading = false;
             herdNow.chatEarlierPending = true;
+            if (chat.rest > 0 && !chat.loading && body && body.hasAttribute("data-drawn") && !scrolledUp(body)) changed = false;
+            chat.loading = false;
           }
-          if (!scrolledUp(app.querySelector(".chat .cbody"))) chat.entries = trimHead(chat.entries);
+          if (!scrolledUp(body)) chat.entries = trimHead(chat.entries);
         }
         partsCame();
       }
@@ -7565,14 +7568,17 @@
           herdNow.convs[p.name] = conv;
           conv.path = p.path || conv.path;
           conv.cli = p.cli || conv.cli;
+          const col = roomColumn(p.name), body = col && col.querySelector(".rbody");
           // The rest come: prepended, the reader held where they are --
-          // a Load earlier pressed meanwhile is answered by it.
+          // a Load earlier pressed meanwhile is answered by it.  Read at
+          // its end, what comes above is out of sight: drawn once, with
+          // the last of it, not a whole column again for each part.
           if (conv.grew) {
             conv.grew = false;
-            conv.loading = false;
             herdNow.earlierPending.add(p.name);
+            if (conv.rest > 0 && !conv.loading && body && body.hasAttribute("data-drawn") && !scrolledUp(body)) changed = false;
+            conv.loading = false;
           }
-          const col = roomColumn(p.name), body = col && col.querySelector(".rbody");
           if (!scrolledUp(body)) conv.entries = trimHead(conv.entries);
         }
         partsCame();
