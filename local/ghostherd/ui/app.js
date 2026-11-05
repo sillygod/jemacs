@@ -2658,8 +2658,25 @@
     herdNow.away = {};
     app.innerHTML = "";
     chrome();
-    watchRoom(true); // a (re)open: Emacs re-sends the conversation
+    // From the tap to its conversation drawn: a moment of the page's own,
+    // in its timings (XW.begin; roomDrawn ends it).
+    herdNow.roomTimed = false;
+    if (XW.begin) XW.begin("room");
+    // Drawn first, so the watch can say which columns are in view; told
+    // here what it watches, so the drawing does not watch it too.
+    herdNow.watchedChat = roomIsChat();
     renderRoom();
+    watchRoom(true); // a (re)open: Emacs re-sends the conversation
+  }
+
+  // The room's first conversation drawn -- in a column in view, NAME, or
+  // the chat: its moment over (openRoom).  Once a tap.
+  function roomDrawn(name) {
+    if (herdNow.roomTimed) return;
+    const first = herdNow.roomFirst || [];
+    if (name && first.length && !first.includes(name)) return;
+    herdNow.roomTimed = true;
+    XW.ready("room");
   }
 
   // Pagination: the poll refreshes the recent tail; `load earlier' fetches
@@ -2698,20 +2715,111 @@
   // room, false for a screen or view toggle of a room already open: on a
   // reopen Emacs re-sends the conversation, since a reloaded page lost it while
   // Emacs kept the room; a screen toggle must not re-read the whole thing.
+  //
+  // In parts (ghostherd-memory-page.el, "In parts"): each conversation by
+  // version, then what changed alone; on another device -- a phone's slow
+  // link -- its newest first (SPLIT) and the rest after, the columns in
+  // view (FIRST) before any other.  An Emacs from before sends it whole.
   function watchRoom(reopen) {
+    const chat = roomIsChat();
+    if (reopen || !herdNow.roomFirst) herdNow.roomFirst = chat ? [] : colsInView();
     emit("room-watch", {
       project: herdNow.room, screens: [...herdNow.roomScreen],
       // The primary room is always a chat (it has no columns view), so ask
       // Emacs for the chat whatever roomView's default is on this device --
       // otherwise the desktop default (columns) leaves it "Reading…" forever.
-      view: roomIsChat() ? "chat" : herdNow.roomView,
+      view: chat ? "chat" : herdNow.roomView,
       reopen: !!reopen,
+      parts: true, split: !!XW.elsewhere, first: herdNow.roomFirst,
     });
-    herdNow.watchedChat = roomIsChat();
+    herdNow.watchedChat = chat;
+  }
+
+  // The room's columns you can see, by name: most of each on the screen.
+  // Before they are drawn, the first on a phone -- one to the screen --
+  // and every one at the desk.
+  function colsInView() {
+    const box = app.querySelector(".rcols");
+    if (!box) {
+      const agents = roomAgents().map((a) => a.name);
+      return NARROW ? agents.slice(0, 1) : agents;
+    }
+    const r = box.getBoundingClientRect();
+    return [...box.querySelectorAll(".rcol")].filter((c) => {
+      const b = c.getBoundingClientRect();
+      return b.width > 0 && Math.min(b.right, r.right) - Math.max(b.left, r.left) >= b.width * 0.4;
+    }).map((c) => c.getAttribute("data-name"));
+  }
+
+  // A part of a conversation, P, taken into HELD, what the page has of it
+  // (a column's conv, or the chat): HELD as it now is, or null when it is
+  // as it was.  P.v is its version.  With no P.base it is whole -- its
+  // newest P.entries, P.rest older ones still to come; MAKE makes it.
+  // Else a change of version P.base: P.drop entries off the end and
+  // P.entries after them, or P.head, older, before it all.  One older
+  // than what is held was overtaken by a whole: old news.  One that does
+  // not follow what is held -- a part missed, on a wake -- asks for the
+  // whole again (RESEND), once until it comes.  A change with nothing
+  // held waits for its whole, coming.
+  function takePart(held, p, make, resend) {
+    if (p.base == null) {
+      if (held && held.v != null && p.v <= held.v) return null;
+      return make();
+    }
+    if (!held || held.v == null || p.v <= held.v) return null;
+    if (p.base !== held.v) {
+      if (!held.resending) { held.resending = true; resend(); }
+      return null;
+    }
+    held.v = p.v;
+    if (p.head) {
+      held.entries = p.head.concat(held.entries || []);
+      held.rest = p.rest || 0;
+      held.more = !!p.earlier;
+      held.grew = true;
+    } else {
+      const keep = Math.max(0, (held.entries || []).length - (p.drop || 0));
+      held.entries = (held.entries || []).slice(0, keep).concat(p.entries || []);
+    }
+    return held;
+  }
+
+  // While a conversation's rest is on its way, a part of the room comes
+  // every so often; none for PARTS_WAIT, one was lost -- the page slept,
+  // say -- and what still waits is asked for whole.  No timer otherwise.
+  const PARTS_WAIT = 20000;
+  let partsDog = null;
+  function partsCame() {
+    clearTimeout(partsDog);
+    partsDog = null;
+    const waiting = () => Object.keys(herdNow.convs).filter((n) => herdNow.convs[n] && herdNow.convs[n].rest > 0);
+    const chatWaits = () => !!(herdNow.chat && herdNow.chat.rest > 0);
+    if (!herdNow.room || !(waiting().length || chatWaits())) return;
+    const room = herdNow.room;
+    partsDog = setTimeout(() => {
+      partsDog = null;
+      if (herdNow.room !== room) return;
+      waiting().forEach((name) => {
+        const c = herdNow.convs[name];
+        if (!c.resending) { c.resending = true; emit("room-resend", { project: room, name }); }
+      });
+      if (chatWaits() && !herdNow.chat.resending) {
+        herdNow.chat.resending = true;
+        emit("room-resend", { project: room, chat: true });
+      }
+    }, PARTS_WAIT);
+  }
+
+  // Left before its conversation was drawn: no moment to time.
+  function roomLeft() {
+    if (herdNow.roomTimed) return;
+    herdNow.roomTimed = true;
+    if (XW.drop) XW.drop("room");
   }
 
   function closeRoom() {
     if (!herdNow.room) return;
+    roomLeft();
     herdNow.room = null;
     if (herdNow.subView) { herdNow.subView = null; herdNow.subConv = null; emit("sub-unwatch", {}); }
     emit("room-close");
@@ -3097,7 +3205,10 @@
     if (p.error) { conv.more = false; conv.error = p.error; return; }
     const page = p.entries || [];
     if (page.length) {
-      conv.entries = trimTail(prependPage(page, conv.entries || []));
+      const all = prependPage(page, conv.entries || []);
+      conv.entries = trimTail(all);
+      // Its newest cut away: no longer what Emacs's next change follows.
+      if (conv.v != null && all.length > conv.entries.length) conv.v = -1;
       conv.more = !!p.earlier;
       conv.limitReached = false;
     } else {
@@ -3135,7 +3246,9 @@
     if (p.error) { chat.more = false; chat.error = p.error; return; }
     const page = p.entries || [];
     if (page.length) {
-      chat.entries = trimTail(prependPage(page, chat.entries || []));
+      const all = prependPage(page, chat.entries || []);
+      chat.entries = trimTail(all);
+      if (chat.v != null && all.length > chat.entries.length) chat.v = -1;
       chat.more = !!p.earlier;
       chat.limitReached = false;
     } else {
@@ -3175,12 +3288,16 @@
     renderColJump(a.name);
     const conv = herdNow.convs[a.name];
     if (herdNow.jumpPend === "col:" + a.name && conv && !conv.loading) {
-      herdNow.jumpPend = null;
       const list = youItems(entries), k = youAt(list, herdNow.jump.col[a.name]);
       if (k < list.length - 1) {
+        herdNow.jumpPend = null;
         herdNow.jump.col[a.name] = list[k + 1].ts; renderColJump(a.name);
         flashMsg(body, '.ent.you[data-i="' + list[k + 1].i + '"]');
-      } else noteJump("col:" + a.name, "Older questions are in the transcript, past what is loaded here.", () => renderColJump(a.name));
+      } else if (conv.rest > 0) conv.loading = true;  // the rest, on its way, may hold it
+      else {
+        herdNow.jumpPend = null;
+        noteJump("col:" + a.name, "Older questions are in the transcript, past what is loaded here.", () => renderColJump(a.name));
+      }
     }
   }
 
@@ -3394,13 +3511,17 @@
     renderChatJump();
     // A `load earlier' fired to reach an older "You" has arrived: step to it.
     if (herdNow.jumpPend === "chat" && c && !c.loading) {
-      herdNow.jumpPend = null;
       const list = youItems(entries), k = youAt(list, herdNow.jump.chat);
       if (k < list.length - 1) {
+        herdNow.jumpPend = null;
         herdNow.jump.chat = list[k + 1].ts;
         renderChatJump();
         flashMsg(body, '.cmsg[data-i="' + list[k + 1].i + '"]');
-      } else noteJump("chat", "Older questions are in the transcript, past what is loaded here.", renderChatJump);
+      } else if (c.rest > 0) c.loading = true;  // the rest, on its way, may hold it
+      else {
+        herdNow.jumpPend = null;
+        noteJump("chat", "Older questions are in the transcript, past what is loaded here.", renderChatJump);
+      }
     }
   }
 
@@ -3436,10 +3557,15 @@
     if (!list.length) return extra ? '<div class="jump"><span class="jfill"></span>' + extra + "</div>" : "";
     const k = youAt(list, curTs), cur = list[k];
     const older = k < list.length - 1 || !!(conv && conv.more);
+    // Of yours among what is loaded; while the rest of the conversation
+    // is on its way, among what has come so far -- "…" says so.
+    const part = !!(conv && conv.rest > 0);
     return '<div class="jump">' +
       '<button type="button" class="jline" data-act="a:jump-go" title="Jump to this message">' +
       '<span class="jwho">You:</span> <span class="jtext">' + esc(cur.text || "(no text)") + "</span></button>" +
-      (list.length > 1 ? '<span class="jpos">' + (list.length - k) + "/" + list.length + "</span>" : "") +
+      (list.length > 1 || part ? '<span class="jpos"' +
+        (part ? ' title="Your messages among the turns come so far: the rest of the conversation is on its way"' : "") + ">" +
+        (list.length - k) + "/" + list.length + (part ? "…" : "") + "</span>" : "") +
       '<button type="button" class="jstep" data-act="a:jump-prev"' + (older ? "" : " disabled") + ' title="Earlier question">↑</button>' +
       '<button type="button" class="jstep" data-act="a:jump-next"' + (k > 0 ? "" : " disabled") + ' title="Later question">↓</button>' +
       extra + "</div>";
@@ -3449,9 +3575,18 @@
     const bar = app.querySelector(".chat .cjump");
     if (!bar) return;
     if (findOpen("chat")) return renderFindBar("chat", bar);
-    bar.innerHTML = jumpBarHtml(youItems((herdNow.chat && herdNow.chat.entries) || []),
+    stripOver(app.querySelector(".chat .cbody"), bar, jumpBarHtml(youItems((herdNow.chat && herdNow.chat.entries) || []),
       herdNow.jump.chat, herdNow.chat, herdNow.jumpNote.chat,
-      herdNow.chat && !herdNow.chat.error && chatFindAgent() ? findButton("chat") : "");
+      herdNow.chat && !herdNow.chat.error && chatFindAgent() ? findButton("chat") : ""));
+  }
+
+  // The strip over a conversation, BAR, made HTML: one that comes, or
+  // grows, takes its height from BODY below it -- which, at its end,
+  // stays there, as under a strip below it (stripUnder).
+  function stripOver(body, bar, html) {
+    const atEnd = body && body.hasAttribute("data-drawn") && body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+    bar.innerHTML = html;
+    if (atEnd) body.scrollTop = body.scrollHeight;
   }
 
   function flashMsg(body, sel) {
@@ -3475,9 +3610,9 @@
     if (!bar) return;
     if (findOpen(findKey(name))) return renderFindBar(findKey(name), bar);
     const conv = herdNow.convs[name];
-    bar.innerHTML = jumpBarHtml(youItems((conv && conv.entries) || []),
+    stripOver(col.querySelector(".rbody"), bar, jumpBarHtml(youItems((conv && conv.entries) || []),
       herdNow.jump.col[name], conv, herdNow.jumpNote["col:" + name],
-      conv && !conv.none && !conv.error ? findButton(findKey(name)) : "");
+      conv && !conv.none && !conv.error ? findButton(findKey(name)) : ""));
   }
 
   function colJump(name, dir) {
@@ -3495,7 +3630,8 @@
         const a = roomAgents().find((x) => x.name === name);
         if (!a) return;
         herdNow.jumpPend = "col:" + name; conv.loading = true; conv.paged = true; herdNow.earlierPending.add(name);
-        emit("room-earlier", { project: herdNow.room, name: name, before: entries.length });
+        // The rest of it, on its way, is the page before.
+        if (!(conv.rest > 0)) emit("room-earlier", { project: herdNow.room, name: name, before: entries.length });
         renderRoomBody(a);
       } else noteJump("col:" + name, "Older questions are in the transcript, past what is loaded here.", () => renderColJump(name));
     } else if (k > 0) {          // ↓ later
@@ -3517,7 +3653,7 @@
         flashMsg(body, '.cmsg[data-i="' + list[k + 1].i + '"]');
       } else if (chat && chat.more && !chat.loading) {
         herdNow.jumpPend = "chat"; chat.loading = true; chat.paged = true; herdNow.chatEarlierPending = true;
-        emit("chat-earlier", { project: herdNow.room, before: entries.length });
+        if (!(chat.rest > 0)) emit("chat-earlier", { project: herdNow.room, before: entries.length });
         renderChatBody();
       } else noteJump("chat", "Older questions are in the transcript, past what is loaded here.", renderChatJump);
     } else if (k > 0) {          // ↓ later
@@ -4188,8 +4324,10 @@
       if (v === herdNow.roomView) return;
       herdNow.roomView = v;
       remember();
-      watchRoom();
-      return renderRoom();
+      herdNow.watchedChat = roomIsChat();
+      renderRoom();
+      herdNow.roomFirst = null;  // the columns in view now
+      return watchRoom();
     }
     if (act === "copy-entry") {
       const list = drawn.get(el.closest(".rbody, .cbody, .subbody"));
@@ -4267,7 +4405,8 @@
       conv.loading = true;
       conv.paged = true;  // the poll now merges its tail, not replaces the view
       herdNow.earlierPending.add(name);
-      emit("room-earlier", { project: herdNow.room, name: name, before: (conv.entries || []).length });
+      // The rest of it, on its way, is the page before: shown as it comes.
+      if (!(conv.rest > 0)) emit("room-earlier", { project: herdNow.room, name: name, before: (conv.entries || []).length });
       const a = roomAgents().find((x) => x.name === name);
       if (a) renderRoomBody(a);  // show "Loading earlier…"
       return;
@@ -4278,7 +4417,7 @@
       c.loading = true;
       c.paged = true;
       herdNow.chatEarlierPending = true;
-      emit("chat-earlier", { project: herdNow.room, before: (c.entries || []).length });
+      if (!(c.rest > 0)) emit("chat-earlier", { project: herdNow.room, before: (c.entries || []).length });
       renderChatBody();  // show "Loading earlier…"
       return;
     }
@@ -6105,6 +6244,7 @@
   // Room state torn down without a view change (showInbox leaves agents).
   function closeRoomState() {
     if (!herdNow.room) return;
+    roomLeft();
     herdNow.room = null;
     if (herdNow.subView) { herdNow.subView = null; herdNow.subConv = null; emit("sub-unwatch"); }
     emit("room-close");
@@ -7140,8 +7280,27 @@
     // The room's chat: the poll's recent tail of its timeline, merged in.
     setChat: (p) => {
       if (!p || !herdNow.room || p.project !== herdNow.room) return;
-      const changed = mergeRecentChat(p);
+      let changed;
+      if (p.v == null) changed = mergeRecentChat(p);
+      else {
+        const meta = { project: p.project, absent: p.absent, missing: p.missing, error: p.error };
+        const chat = takePart(herdNow.chat, p, () => Object.assign({
+          entries: (p.entries || []).slice(), more: !!p.earlier, loading: false, paged: false, v: p.v, rest: p.rest || 0,
+        }, meta), () => emit("room-resend", { project: herdNow.room, chat: true }));
+        changed = !!chat;
+        if (chat) {
+          herdNow.chat = Object.assign(chat, meta);
+          if (chat.grew) {
+            chat.grew = false;
+            chat.loading = false;
+            herdNow.chatEarlierPending = true;
+          }
+          if (!scrolledUp(app.querySelector(".chat .cbody"))) chat.entries = trimHead(chat.entries);
+        }
+        partsCame();
+      }
       if (roomIsChat() && changed && !herdNow.away.chat) renderChatBody();
+      if (changed && roomIsChat()) roomDrawn(null);
     },
 
     // An older page of the chat timeline (from `load earlier'): prepended.
@@ -7394,12 +7553,36 @@
     // The poll's recent tail for a column: merged into what is held.
     setConversation: (p) => {
       if (!p || !p.name || !herdNow.room) return;
-      const changed = mergeRecentConv(p.name, p);
+      let changed;
+      if (p.v == null) changed = mergeRecentConv(p.name, p);
+      else {
+        const conv = takePart(herdNow.convs[p.name], p, () => ({
+          entries: (p.entries || []).slice(), more: !!p.earlier, loading: false, paged: false,
+          none: p.none, error: p.error, cli: p.cli, path: p.path, v: p.v, rest: p.rest || 0,
+        }), () => emit("room-resend", { project: herdNow.room, name: p.name }));
+        changed = !!conv;
+        if (conv) {
+          herdNow.convs[p.name] = conv;
+          conv.path = p.path || conv.path;
+          conv.cli = p.cli || conv.cli;
+          // The rest come: prepended, the reader held where they are --
+          // a Load earlier pressed meanwhile is answered by it.
+          if (conv.grew) {
+            conv.grew = false;
+            conv.loading = false;
+            herdNow.earlierPending.add(p.name);
+          }
+          const col = roomColumn(p.name), body = col && col.querySelector(".rbody");
+          if (!scrolledUp(body)) conv.entries = trimHead(conv.entries);
+        }
+        partsCame();
+      }
       if (view !== "agents") return;
       const a = roomAgents().find((x) => x.name === p.name);
       if (!a) return;
       // A body showing a page of the conversation at a hit stays as it is.
       if (changed && !herdNow.away[findKey(a.name)]) renderRoomBody(a);
+      if (changed && !roomIsChat()) roomDrawn(a.name);
       // Whether it has a conversation decides its Screen button -- in a
       // column: one that comes as the room turns to its chat has none.
       const col = roomColumn(a.name);
