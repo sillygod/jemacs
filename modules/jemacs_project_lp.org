@@ -276,90 +276,12 @@ value is the terminal lagging behind the window while you drag.")
         (when-let* ((cmd (python-vterm-setup-string)))
           (ghostel-send-string (concat cmd "\n")))))
 
-    (defun project-run-ghostel (&optional arg)
-      "Open ghostel in the current project's root.
-    Reuse the project terminal if it already exists.  ARG is passed to
-    `ghostel-project' (non-numeric prefix starts a second terminal)."
-      (interactive "P")
-      (require 'ghostel)
-      (let* ((mmode major-mode)
-             (root (project-root (project-current t)))
-             (identity (ghostel--project-buffer-name root))
-             (before (ghostel--find-buffer-by-identity identity))
-             (buf (ghostel-project arg)))
-        (unless (eq buf before)
-          (with-current-buffer buf
-            (project-ghostel-setup mmode)))
-        buf))
-
-    (defun new-terminal ()
-      "Open a ghostel terminal in the project root, or the current directory."
-      (interactive)
-      (require 'ghostel)
-      (let ((display-buffer-overriding-action
-             '((display-buffer-pop-up-window)
-               (inhibit-same-window . t))))
-        (if (project-current nil)
-            (project-run-ghostel)
-          (ghostel))))
-
     (defun jemacs-project-layer-name (dir)
       "Workspace/layer name for DIR, same rule as `consult-switch-project'."
       (when-let* ((proj (project-current nil dir)))
         (file-name-nondirectory
          (directory-file-name
           (file-name-directory (project-root proj))))))
-
-    (defvar switch-terminal-history nil
-      "History for `switch-terminal'.")
-
-    (defun switch-terminal--read (bufs)
-      "Pick one of BUFS with Consult, previewing the terminal like `consult-buffer'."
-      (require 'consult)
-      (let* ((names (mapcar #'buffer-name bufs))
-             (idx (cl-position (current-buffer) bufs))
-             (default (if idx
-                          (nth (mod (1+ idx) (length bufs)) names)
-                        (car names))))
-        (get-buffer
-         (consult--read
-          names
-          :prompt "Ghostel buffer: "
-          :default default
-          :sort nil
-          :require-match t
-          :category 'buffer
-          :history 'switch-terminal-history
-          ;; Same preview as consult-buffer.  Debounce so a TUI is not
-          ;; SIGWINCH-strobed while moving through the list.
-          :state (consult--buffer-preview)
-          :preview-key '(:debounce 0.15 any)))))
-
-    (defun switch-terminal ()
-      "Pick a ghostel buffer, switch to its jworkspace layer, then display it.
-
-    Must list *all* terminals, not `ghostel-project-list-buffers': that
-    command is already scoped to the current project, whose layer is the
-    one you are on.  Switch the layer *before* displaying the buffer so
-    `window-state-put' does not wipe the selection.
-
-    The list previews the terminal in the current window, like
-    `consult-buffer'."
-      (interactive)
-      (require 'ghostel)
-      (let* ((bufs (ghostel--all-buffers))
-             (buf (progn
-                    (unless bufs
-                      (user-error "No ghostel buffers"))
-                    (switch-terminal--read bufs)))
-             (dir (buffer-local-value 'default-directory buf))
-             (layer (and dir (jemacs-project-layer-name dir))))
-        (when layer
-          (if (or (jworkspace-worsapce-existp layer)
-                  (y-or-n-p (format "create a new layer: %s" layer)))
-              (jworkspace-switch-workspace layer)))
-        (pop-to-buffer buf (append display-buffer--same-window-action
-                                   '((category . comint))))))
 
     (defun avy-jump-url ()
       "Use avy to go to url in the buffer."
@@ -384,6 +306,68 @@ value is the terminal lagging behind the window while you drag.")
                         ghostel-project-cmd-edit
                         ghostel-project-cmd-delete
                         ghostel-project-cmd-open-save-file)))
+  #+end_src
+
+
+* project terminals: the dock
+
+  A project's terminals live in =local/ghostel-dock/=: named ones
+  (=*PROJECT:NAME*=, dev, test, shell...) in a bottom panel.  =SPC '=
+  shows the panel with the terminal last used in the project, or hides
+  it; =C-u SPC '= starts another, asking its name.  =SPC b t= lists
+  every project's terminals in a ghostel-cmd style overlay: what each
+  runs, its last exit status, its directory, how long since its output.
+
+  The panel is kept per jworkspace layer.  Everything in jworkspace
+  that snapshots a layer's windows or puts one back runs with the panel
+  down (=ghostel-dock-without-panel=), so a layer never holds it in its
+  layout; the dock shows each layer's own panel again after.  A
+  snapshot that held it would bring it back unmarked, and maximize asks
+  =one-window-p=, which a panel would answer.
+
+  #+begin_src emacs-lisp
+    (defun jemacs-ghostel-dock-layer ()
+      "Name of the jworkspace layer shown: the dock keeps a panel per layer."
+      (when-let* (((fboundp 'jworkspace--get-current-workspace))
+                  (workspace (jworkspace--get-current-workspace)))
+        (jworkspace-name workspace)))
+
+    (defun jemacs-ghostel-dock-switch-layer (root)
+      "Switch to ROOT's jworkspace layer before the dock opens a terminal of it.
+    The layer is named after the project, as `consult-switch-project' names
+    it; a new one is made only when asked."
+      (when-let* ((layer (jemacs-project-layer-name root)))
+        (when (or (jworkspace-worsapce-existp layer)
+                  (y-or-n-p (format "create a new layer: %s" layer)))
+          (jworkspace-switch-workspace layer))))
+
+    (defun jemacs-ghostel-dock-setup (buffer caller)
+      "Set up the new terminal BUFFER for the mode of CALLER, asked from."
+      (when (buffer-live-p caller)
+        (with-current-buffer buffer
+          (project-ghostel-setup (buffer-local-value 'major-mode caller)))))
+
+    (eval `(use-package ghostel-dock
+             :straight (:local-repo ,(concat home-dir "local/ghostel-dock")
+                                    :files ("ghostel-dock.el"))
+             :commands (ghostel-dock-toggle
+                        ghostel-dock-manager
+                        ghostel-dock-new
+                        ghostel-dock-show
+                        ghostel-dock-rerun)
+             :init
+             ;; ghostel-cmd pastes into the dock's terminal when it can
+             ;; call this; it asks with `fboundp'.
+             (autoload 'ghostel-dock-terminal "ghostel-dock")
+             :config
+             (setq ghostel-dock-layer-function #'jemacs-ghostel-dock-layer
+                   ghostel-dock-switch-layer-function #'jemacs-ghostel-dock-switch-layer)
+             (add-hook 'ghostel-dock-after-create-functions #'jemacs-ghostel-dock-setup)
+             (dolist (fn '(jworkspace-switch-workspace
+                           jworkspace-toggle-maximize-window
+                           jworkspace-delete-workspace
+                           jworkspace-save-workspace))
+               (advice-add fn :around #'ghostel-dock-without-panel))))
   #+end_src
 
 
