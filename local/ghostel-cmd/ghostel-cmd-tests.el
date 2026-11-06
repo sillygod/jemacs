@@ -125,6 +125,37 @@ Keys go through the real keymaps with `execute-kbd-macro'."
           (kill-buffer ghostel-cmd--buffer-name))
         (delete-other-windows)))))
 
+(ert-deftest ghostel-cmd-test-reopen-drops-a-fill-left-behind ()
+  "A fill left in a side window (another window selected, no Esc) does
+not keep its keys when the overlay opens again: they would take every
+key while no fill is there."
+  (ghostel-cmd-tests--with-store
+    (let* ((root ghostel-cmd--root)
+           (project-find-functions (list (lambda (_) (cons 'transient root))))
+           (ghostel-cmd-use-posframe nil)
+           (ghostel-cmd--query "")
+           (ghostel-cmd--filtering nil)
+           (ghostel-cmd--fill nil)
+           (caller (get-buffer-create " *ghostel-cmd-caller2*")))
+      (ghostel-cmd--set-commands (list (list :name "dep" :cmd "deploy {{env:dev|prod}}")) root)
+      (unwind-protect
+          (progn
+            (delete-other-windows)
+            (set-window-buffer (selected-window) caller)
+            (with-current-buffer caller (ghostel-cmd-sidebar))
+            (with-current-buffer ghostel-cmd--buffer-name
+              (ghostel-cmd-paste)
+              (should ghostel-cmd-fill-mode))
+            (select-window (get-buffer-window caller))
+            (with-current-buffer caller (ghostel-cmd-sidebar))
+            (with-current-buffer ghostel-cmd--buffer-name
+              (should-not ghostel-cmd--fill)
+              (should-not ghostel-cmd-fill-mode)))
+        (kill-buffer caller)
+        (when (get-buffer ghostel-cmd--buffer-name)
+          (kill-buffer ghostel-cmd--buffer-name))
+        (delete-other-windows)))))
+
 (ert-deftest ghostel-cmd-test-apply-replaces-all-occurrences ()
   (should (equal (ghostel-cmd--apply
                   "echo {{name:x}} && {{name}}"

@@ -2986,6 +2986,9 @@ presses Enter."
         ghostel-cmd--preview-id nil
         ghostel-cmd--targets nil)
   (ghostel-cmd--set-filtering nil)
+  ;; A fill left in a side window keeps its keys, which would take
+  ;; every key with no fill there: the posframe drops them on hiding.
+  (ghostel-cmd--set-filling nil)
   (setq ghostel-cmd--display (and (ghostel-cmd--use-posframe-p) 'posframe))
   (let* ((overlay (eq ghostel-cmd--display 'posframe))
          (ghostel-cmd--target-width
