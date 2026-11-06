@@ -111,10 +111,14 @@ const HERD_M = Object.assign({}, HERD, { agents: HERD.agents.map((a) =>
       await sleep(150);
       await page.evaluate((name) => GM.setConversation({ name, path: "/x.jsonl", cli: "claude", earlier: false,
         entries: [{ role: "user", ts: "c1", text: "col question one" }, { role: "assistant", ts: "c2", text: "ok" },
-                  { role: "user", ts: "c3", text: "col question two" }] }), LEAD);
+                  // Notes, as the room has them: said by no one.
+                  { role: "user", who: "", kind: "note", ts: "c2b", text: 'Background command "Run the tests" completed (exit code 0)' },
+                  { role: "user", ts: "c3", text: "col question two" },
+                  { role: "user", who: "", kind: "note", ts: "c4", text: "Request interrupted by user" }] }), LEAD);
       await sleep(120);
       const colSel = '.rcol[data-name="' + LEAD + '"]';
-      check(W("the column's jump line shows the latest You there"), /col question two/.test(await txt(colSel + " .rjump .jtext")));
+      check(W("the column's jump line shows the latest You there, not a note"), /col question two/.test(await txt(colSel + " .rjump .jtext")));
+      check(W("notes are not counted among yours"), /2\s*\/\s*2/.test(await txt(colSel + " .rjump .jpos")), await txt(colSel + " .rjump .jpos"));
       await tap(colSel + ' .rjump [data-act="a:jump-prev"]');
       await sleep(60);
       check(W("↑ in the column steps to the earlier question"), /col question one/.test(await txt(colSel + " .rjump .jtext")));
