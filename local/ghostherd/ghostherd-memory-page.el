@@ -3613,7 +3613,11 @@ from the newest -- and send it to the page to prepend."
                    (format "Running it in %s's shell" name)
                  (ghostherd-tell s text)
                  (format "Sent to %s" name))))
-            ("agent-interrupt" (ghostherd-interrupt s) (format "Esc to %s" name))
+            ;; Esc, or for a grok at work Ctrl+C; nothing to a grok at rest
+            ;; (`ghostherd-interrupt') -- said as a toast, not an error.
+            ("agent-interrupt"
+             (condition-case e (ghostherd-interrupt s)
+               (user-error (error-message-string e))))
             ("agent-login"
              ;; The card's one-click /login for an expired-login turn end.
              (ghostherd-send s "/login" t)

@@ -591,11 +591,121 @@ happened."
   (ghostherd--host-send-keys session keys)
   keys)
 
+;; Interrupting grok.  Esc does not stop its turn -- it says "Press Ctrl+c
+;; to cancel the turn" and goes on -- Ctrl+C does.  But Ctrl+C at rest is
+;; not harmless: it clears its input box, and arms its quit, "Ctrl+c:press
+;; again to quit", for under a second, in which a second Ctrl+C exits grok
+;; (the press that cancels a turn arms nothing; two more do).  Its panels
+;; close on Esc ("Esc close"); its permission card does not -- Esc only
+;; moves the focus off it, the turn waiting on -- and offers
+;; "Ctrl+c:cancel".  Measured 2026-11-06 in a scratch tmux, grok 1.0.77.  So the herd sends grok Ctrl+C only while its live
+;; screen shows a turn under way, never twice in a row, and Esc to what
+;; Esc closes.
+
+(defcustom ghostherd-interrupt-ctrl-c-quiet 3
+  "Seconds after the herd sent a grok Ctrl+C to stop its turn in which it
+sends it no other: a second press, once the turn is stopped, is half of
+grok's quit."
+  :type 'number
+  :group 'ghostherd)
+
+(defvar ghostherd--ctrl-c-at (make-hash-table :test 'equal)
+  "Session id -> when the herd last sent it Ctrl+C to stop its turn.")
+
+(defun ghostherd--grok-esc-closes-p (screen)
+  "Non-nil when grok's SCREEN offers Esc for what it shows: a panel's
+\"Esc close\", a form's \"Esc: cancel\" -- its own words (grok 1.0.77):
+\"Esc close\", \"Esc cancel\", \"n/Esc: cancel\", \"Esc back\", \"Esc
+done\", \"Esc exit filter\"."
+  (let ((lines (vconcat (split-string (or screen "") "\n")))
+        (case-fold-search nil))
+    (cl-loop for i from (max 0 (- (length lines) 16)) below (length lines)
+             thereis (string-match-p "\\bEsc:? \\(?:to \\)?\\(?:close\\|cancel\\|back\\|dismiss\\|done\\|exit\\)\\b"
+                                     (aref lines i)))))
+
+(defun ghostherd--grok-mid-turn-p (screen)
+  "Non-nil when grok's SCREEN shows a turn under way: its footer offers
+\"Ctrl+c:cancel\" -- under its input box, or under a permission card
+that took the box's place, where Esc does not close the card -- or its
+spinner sits over its box: a braille glyph, then [stop] at the line's end."
+  (let* ((lines (vconcat (split-string (or screen "") "\n")))
+         (foot (last (seq-remove #'string-blank-p (append lines nil)) 3))
+         (top (ghostherd--box-top lines))
+         (case-fold-search nil))
+    (or (seq-some (lambda (l) (string-match-p "Ctrl\\+c:cancel\\b" l)) foot)
+        (and top
+             (cl-loop for i downfrom (1- top) to (max 0 (- top 4))
+                      thereis (string-match-p "\\`[[:blank:]]*[⠁-⣿][[:blank:]].*\\[stop\\][[:blank:]]*\\'"
+                                              (aref lines i)))))))
+
+(defun ghostherd--grok-menu-p (screen)
+  "Non-nil when grok's SCREEN shows a menu or dialog that offers neither
+Esc nor Ctrl+C by name: one its rules call blocked, or a card where its
+input box should be -- its folder-trust prompt, say.  Esc, as the herd
+always sent."
+  (let ((spec (ignore-errors (ghostherd--spec 'grok))))
+    (or (not (ghostherd--box-top (vconcat (split-string (or screen "") "\n"))))
+        (eq (car-safe (ghostherd--match-rules screen (plist-get spec :screen-rules)
+                                              (plist-get spec :prompt-replaces-input)))
+            'blocked))))
+
+(defun ghostherd--interrupt-keys (session)
+  "What interrupting SESSION means now: (KEYS . SAID), KEYS to send and
+SAID what that does -- or (nil . WHY), nothing to send.  Esc for every
+kind but grok.  For grok, read off its live screen: Esc where it offers
+Esc (a panel, a form); Ctrl+C, which stops its turn, while one is under
+way -- its permission card too, which Esc does not close; Esc to another
+menu or dialog, as before; nothing at rest, nor a second Ctrl+C within
+`ghostherd-interrupt-ctrl-c-quiet'."
+  (let ((name (ghostherd-session-name session)))
+    (if (not (eq (ghostherd-session-kind session) 'grok))
+        (cons '("esc") (format "Esc to %s" name))
+      (let ((screen (ghostherd--host-capture session ghostherd-screen-tail-lines))
+            (at (gethash (ghostherd-session-id session) ghostherd--ctrl-c-at)))
+        (cond
+         ((and at (< (- (float-time) at) ghostherd-interrupt-ctrl-c-quiet))
+          (cons nil (format "Ctrl+C went to %s a moment ago: not again, a second one could quit it" name)))
+         ((null screen)
+          (cons nil (format "%s's screen could not be read: nothing sent" name)))
+         ((ghostherd--grok-esc-closes-p screen)
+          (cons '("esc") (format "Esc to %s: closes what it shows" name)))
+         ((ghostherd--grok-mid-turn-p screen)
+          (cons '("C-c") (format "Ctrl+C to %s: stops its turn" name)))
+         ((ghostherd--grok-menu-p screen)
+          (cons '("esc") (format "Esc to %s" name)))
+         (t
+          (cons nil (format "%s is not at work: nothing to stop (Ctrl+C at rest would clear its box)"
+                            name))))))))
+
 ;;;###autoload
 (defun ghostherd-interrupt (session)
-  "Send Escape to SESSION -- what agent CLIs bind to \"esc to interrupt\"."
+  "Interrupt SESSION's turn, with the key its CLI stops a turn on, and
+return what was done.  Escape for claude and agy (\"esc to interrupt\"),
+and for what Esc closes; Ctrl+C for a grok at work, read off its live
+screen as it is pressed (`ghostherd--interrupt-keys') -- and nothing,
+saying why, to a grok at rest, where Ctrl+C would clear its box and arm
+its quit.  The page's Esc, Telegram's interrupt and the sidecar's
+cancel of an ask all come here."
   (interactive (list (ghostherd--read-session "Interrupt agent: ")))
-  (ghostherd-send-keys session "esc"))
+  (setq session (ghostherd-get session))
+  (unless (ghostherd--session-live-p session)
+    (user-error "Session host is not live"))
+  (pcase-let ((`(,keys . ,said) (ghostherd--interrupt-keys session)))
+    (unless keys
+      (user-error "%s" said))
+    (when (equal keys '("C-c"))
+      (puthash (ghostherd-session-id session) (float-time) ghostherd--ctrl-c-at)
+      (ghostherd--log-add session 'input "⌃C to stop its turn (Esc does not stop grok's)"))
+    (apply #'ghostherd-send-keys session keys)
+    (when (called-interactively-p 'interactive)
+      (message "%s" said))
+    said))
+
+(defun ghostherd--ctrl-c-forget (session)
+  "Drop when the herd last sent SESSION Ctrl+C, when it is gone."
+  (remhash (ghostherd-session-id session) ghostherd--ctrl-c-at))
+
+(add-hook 'ghostherd-session-removed-hook #'ghostherd--ctrl-c-forget)
 
 ;;;###autoload
 (defun ghostherd-abort (session)

@@ -25,6 +25,8 @@
 (declare-function ghostherd--ask-on-state "ghostherd-mail" (session old new))
 (declare-function ghostherd--submit-of "ghostherd-comm" (session))
 (declare-function ghostherd--unsent-p "ghostherd-comm" (screen text))
+(declare-function ghostherd--grok-mid-turn-p "ghostherd-comm" (screen))
+(defvar ghostherd--ctrl-c-at)
 (declare-function ghostherd-memory-rpc-url "ghostherd-memory" ())
 (declare-function ghostherd-memory-request-async "ghostherd-memory" (method callback &optional params error-callback))
 
@@ -1523,12 +1525,31 @@ transcript's last entry."
                                     (substring w 0 (min 40 (length w)))))))
             (string-prefix-p (funcall head words) (funcall head prompt)))))))
 
+(defconst ghostherd--ctrl-c-heard-within 20
+  "Seconds after the herd's own Ctrl+C to a grok at work in which its
+screen at rest says the Ctrl+C stopped its turn.")
+
+(defun ghostherd--ctrl-c-stopped-p (session screen)
+  "Non-nil when the herd sent grok SESSION Ctrl+C a moment ago -- which it
+does only while grok's live screen shows a turn under way
+\(`ghostherd-interrupt') -- and SCREEN now shows it at rest, its input box
+back at the foot: that Ctrl+C stopped the turn, whatever grok drew for it
+\(a line, its prompt back in the box, or neither, on a permission card)."
+  (when-let* (((eq (ghostherd-session-kind session) 'grok))
+              ((boundp 'ghostherd--ctrl-c-at))
+              (at (gethash (ghostherd-session-id session) ghostherd--ctrl-c-at)))
+    (and (< (- (float-time) at) ghostherd--ctrl-c-heard-within)
+         (ghostherd--box-top (vconcat (split-string (or screen "") "\n")))
+         (not (ghostherd--grok-mid-turn-p screen)))))
+
 (defun ghostherd--interrupted (session screen)
   "How SESSION's CLI says its turn was interrupted since its own last
 report, or nil: `screen' when SCREEN shows it over the input box,
 `transcript' when claude's transcript ends on its record of one,
 written after that report, `taken-back' when the turn's own prompt is
-back in its input box (`ghostherd--taken-back-p')."
+back in its input box (`ghostherd--taken-back-p'), `ctrl-c' when the
+herd's own Ctrl+C to a grok at work left it at rest
+\(`ghostherd--ctrl-c-stopped-p')."
   (cond
    ((or (ghostherd--screen-read screen 'interrupted #'ghostherd--interrupted-screen-p)
         ;; Over a blank gap taller than the poll's tail: the whole pane
@@ -1545,7 +1566,8 @@ back in its input box (`ghostherd--taken-back-p')."
                      (mtime (file-attribute-modification-time (file-attributes path))))
            (time-less-p at mtime)))
     'transcript)
-   ((ghostherd--taken-back-p session screen) 'taken-back)))
+   ((ghostherd--taken-back-p session screen) 'taken-back)
+   ((ghostherd--ctrl-c-stopped-p session screen) 'ctrl-c)))
 
 (defun ghostherd--interrupt-heard (session how)
   "SESSION's turn was interrupted, as HOW (`ghostherd--interrupted') says:
@@ -1564,6 +1586,7 @@ work still out makes it `waiting'.  Returns the state and reason."
                                 (pcase how
                                   ('transcript "its transcript says so")
                                   ('taken-back "its prompt is back in its input box")
+                                  ('ctrl-c "the herd's Ctrl+C left it at rest")
                                   (_ "its screen says so"))))
     (when (and (fboundp 'ghostherd-memory-rpc-url) (ghostherd-memory-rpc-url))
       (ignore-errors

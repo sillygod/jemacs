@@ -267,8 +267,7 @@ on for room (`ghostherd-handoff-lead')."
              (ghostherd-answer name (truncate (or n 1))))
            (setq text "answering"))
           ("interrupt"
-           (ghostherd-interrupt name)
-           (setq text "interrupted"))
+           (setq text (ghostherd-interrupt name)))
           ("abort"
            (ghostherd-abort name)
            (setq text "aborted"))

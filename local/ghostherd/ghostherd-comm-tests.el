@@ -905,6 +905,175 @@ that never read it -- and settled at its turn's end once taken."
         (ghostherd--set-state taker 'done)
         (should (equal (mapcar #'car requests) '("herd_settle"))))))))
 
+;;; Interrupting grok: Ctrl+C at work, Esc to a menu, nothing at rest
+
+(defun ghostherd-test--grok-screen (above footer &optional box)
+  "A grok screen: ABOVE its framed input box holding BOX, FOOTER under."
+  (string-join (append above
+                       (list (concat "  ╭" (make-string 60 ?─) "╮")
+                             (concat "  │ ❯ " (or box "") (make-string (max 0 (- 56 (length (or box "")))) ? ) "│")
+                             (concat "  ╰" (make-string 30 ?─) " Grok 4.7 (xhigh) · always-approve ─╯")
+                             "" footer ""))
+               "\n"))
+
+;; Real grok 1.0.77 screens, scratch tmux, 2026-11-06.
+(defconst ghostherd-test--grok-interrupt-screens
+  `((working-tool
+     . ,(ghostherd-test--grok-screen
+         '("     ◆ Running ping localhost 40 times, show last line"
+           "    ⠸ Ping localhost 40 times, show last line… 5.4s                                   21s ⇣21.3k [↓][stop]"
+           "  [Click here to Upgrade] or use Ctrl+O")
+         "  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+b:send to bg  │  Ctrl+x:shortcuts"))
+    (working-retry
+     . ,(ghostherd-test--grok-screen
+         '("     ❯ Run the shell command `ping -c 3 127.0.0.1 | tail -1`, then reply with one line.      4:21 PM"
+           "    ⠙ Server error (500) | Retrying (attempt 6)... 4.5s                            1m20s ⇣1.33k [stop]"
+           "  [Click here to Upgrade] or use Ctrl+O")
+         "  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+x:shortcuts"))
+    (working-queued
+     . ,(ghostherd-test--grok-screen
+         '("    #1 grok sendnow: 5+5?"
+           "    ⠴ Ping localhost 30 times, show last line… 13s                          15s ⇣22.9k [↓][stop]"
+           "  [Click here to Upgrade] or use Ctrl+O")
+         "  Enter:send now  │  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+b:send to bg  │  Ctrl+;:queue  │  Ctrl+x:shortcuts"))
+    (rest
+     . ,(ghostherd-test--grok-screen
+         '("     Worked for 4.1s" "  [Click here to Upgrade] or use Ctrl+O")
+         "  Shift+Tab:mode  │  Ctrl+x:shortcuts"))
+    (rest-cancelled
+     . ,(ghostherd-test--grok-screen
+         '("     Turn cancelled by user in 10s." "  [Click here to Upgrade] or use Ctrl+O")
+         "  Shift+Tab:mode  │  Ctrl+x:shortcuts"))
+    ;; One Ctrl+C at rest: a second, now, quits.
+    (rest-quit-armed
+     . ,(ghostherd-test--grok-screen '("   Tip: Use Ctrl+O or click [Click here to Upgrade] to subscribe.")
+                                     "  Ctrl+c:press again to quit"))
+    ;; Ctrl+C at rest would clear it.
+    (rest-draft
+     . ,(ghostherd-test--grok-screen '("  [Click here to Upgrade] or use Ctrl+O")
+                                     "  Enter:send  │  Opt+Enter:newline  │  Shift+Tab:mode  │  Ctrl+x:shortcuts"
+                                     "some draft words"))
+    (panel
+     . ,(string-join
+         (list "                    │                                                                              │"
+               "  [Click here to Upg│                                                                              │"
+               "                    │  ↑/↓ nav  |  f filter  |  e/Space/→ expand  |  ← collapse  |  Enter details  │"
+               (concat "  ╭─────────────────│                            / search  |  Esc close                            │" (make-string 17 ?─) "╮")
+               "  │ ❯               └──────────────────────────────────────────────────────────────────────────────┘                 │"
+               (concat "  ╰" (make-string 95 ?─) " Grok 4.7 (xhigh) ─╯") "")
+         "\n"))
+    ;; Its permission card, where its box was (scratch herd, 2026-11-06):
+    ;; focused, then after Esc, which only moved the focus off it.
+    (permission
+     . ,(string-join
+         (list "  ┃  ◆ rtk ping -c 40 127.0.0.1 | tail -1" "  ┃"
+               "  ┃  1 (○) Yes, and always allow: rtk ping -c" "  ┃  2 (○) Yes, and always allow in this session"
+               "  ┃  3 (●) Yes, proceed" "  ┃  4 (○) No, reject (type to add feedback)"
+               "  ┃  5 (○) Never allow: rtk ping -c" "  ┃"
+               "  1/5:select  │  Tab:next option  │  ←/→:scope  │  e:edit pattern  │  Ctrl+o:always-approve  │  Ctrl+c:cancel" "")
+         "\n"))
+    (permission-unfocused
+     . ,(string-join
+         (list "  ┃  3 (●) Yes, proceed" "  ┃  4 (○) No, reject (type to add feedback)" "  ┃  5 (○) Never allow: rtk ping -c" "  ┃"
+               "  Tab/Space:permission  │  Ctrl+e:expand thinking  │  Ctrl+c:cancel  │  Ctrl+b:send to bg  │  Ctrl+x:shortcuts" "")
+         "\n"))
+    (trust
+     . ,(string-join
+         (list "                                           Do you trust the contents of this directory?"
+               "/x/proj" "                                     Grok Build may run or modify contents in this directory,"
+               "                                                      posing security risks."
+               "                                                  Yes, proceed                 y"
+               "                                                  No, quit                     n" "")
+         "\n")))
+  "grok's screens: at work, at rest, with a panel or a menu.")
+
+(ert-deftest ghostherd-test-interrupting-grok-reads-its-live-screen ()
+  "The herd's Esc stops a grok's turn with Ctrl+C -- Esc does not stop it
+-- only while its live screen shows one under way, its permission card
+too (Esc does not close that); Esc where grok offers Esc (a panel, a
+form), and to a dialog that names neither key; nothing at rest, where
+Ctrl+C would clear its box and arm its quit, saying why; and no second
+Ctrl+C in a row.  Every other kind gets Esc, its screen unread."
+  (ghostherd-tests--with-herd ((ghostherd--ctrl-c-at (make-hash-table :test 'equal)))
+    (let ((g (ghostherd-tests--session :name "gk" :kind 'grok :backend 'fake))
+          (c (ghostherd-tests--session :name "cl" :kind 'claude :backend 'fake))
+          (a (ghostherd-tests--session :name "ag" :kind 'agy :backend 'fake))
+          (screen nil) (keys nil) (captured 0))
+      (cl-letf (((symbol-function 'ghostherd--session-live-p) (lambda (_s) t))
+                ((symbol-function 'ghostherd--host-capture) (lambda (_s &optional _n) (cl-incf captured) screen))
+                ((symbol-function 'ghostherd--host-send-keys) (lambda (_s k) (push k keys))))
+        (cl-flet ((press (name) (setq screen (alist-get name ghostherd-test--grok-interrupt-screens))
+                    (clrhash ghostherd--ctrl-c-at) (setq keys nil)
+                    (condition-case e (ghostherd-interrupt g) (user-error (cons 'refused (cadr e))))))
+          (dolist (name '(working-tool working-retry working-queued permission permission-unfocused))
+            (ert-info ((symbol-name name))
+              (should (equal (press name) "Ctrl+C to gk: stops its turn"))
+              (should (equal keys '(("C-c")))))
+            (should (string-match-p "⌃C to stop its turn" (ghostherd-log-entry-text (car ghostherd--log)))))
+          (dolist (name '(rest rest-cancelled rest-quit-armed rest-draft))
+            (ert-info ((symbol-name name))
+              (let ((r (press name)))
+                (should (eq (car-safe r) 'refused))
+                (should (string-match-p "gk is not at work: nothing to stop" (cdr r))))
+              (should-not keys)))
+          ;; A form's foot, as grok words one: Esc cancels it.
+          (setq screen (ghostherd-test--grok-screen '("  Delete Persona 'reviewer'?") "  y: confirm | n/Esc: cancel")
+                keys nil)
+          (should (equal (ghostherd-interrupt g) "Esc to gk: closes what it shows"))
+          (should (equal (press 'panel) "Esc to gk: closes what it shows"))
+          (should (equal keys '(("esc"))))
+          ;; A dialog that names neither key -- its folder-trust prompt: Esc, as always.
+          (should (equal (press 'trust) "Esc to gk"))
+          (should (equal keys '(("esc"))))
+          ;; A second press, the first's Ctrl+C just sent: nothing, though
+          ;; the screen has not caught up yet.
+          (press 'working-tool)
+          (setq keys nil)
+          (let ((r (condition-case e (ghostherd-interrupt g) (user-error (cadr e)))))
+            (should (string-match-p "a moment ago" r)))
+          (should-not keys)
+          ;; ...and once the quiet is over, at work again: Ctrl+C.
+          (puthash "gk" (- (float-time) (1+ ghostherd-interrupt-ctrl-c-quiet)) ghostherd--ctrl-c-at)
+          (should (equal (ghostherd-interrupt g) "Ctrl+C to gk: stops its turn"))
+          ;; Every other kind: Esc, whatever its screen.
+          (setq captured 0 keys nil screen (alist-get 'rest ghostherd-test--grok-interrupt-screens))
+          (should (equal (ghostherd-interrupt c) "Esc to cl"))
+          (should (equal (ghostherd-interrupt a) "Esc to ag"))
+          (should (equal keys '(("esc") ("esc"))))
+          (should (= captured 0)))))))
+
+(ert-deftest ghostherd-test-the-page-esc-says-what-it-did ()
+  "The page's Esc shows what was done -- or, refused, why -- and the
+command a Telegram tap or an ask's cancel runs answers the same."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd ((ghostherd--ctrl-c-at (make-hash-table :test 'equal)))
+    (let ((g (ghostherd-tests--session :name "gk" :kind 'grok :backend 'fake))
+          (screen (alist-get 'rest ghostherd-test--grok-interrupt-screens))
+          flashed)
+      (ignore g)
+      (cl-letf (((symbol-function 'ghostherd--session-live-p) (lambda (_s) t))
+                ((symbol-function 'ghostherd--host-capture) (lambda (_s &optional _n) screen))
+                ((symbol-function 'ghostherd--host-send-keys) #'ignore)
+                ((symbol-function 'ghostherd-memory-page--js) (lambda (fn arg) (push (cons fn arg) flashed)))
+                ((symbol-function 'ghostherd-memory-page--send-herd) #'ignore)
+                ((symbol-function 'ghostherd-memory-page--send-context) #'ignore)
+                ((symbol-function 'ghostherd-memory-page--serve-files) #'ignore))
+        (ghostherd-memory-page--handle '((op . "agent-interrupt") (name . "gk")))
+        ;; A toast, not an error.
+        (should (cl-some (lambda (f) (and (equal (car f) "flash") (string-match-p "gk is not at work" (cdr f))))
+                         flashed))
+        (should-not (assoc "showError" flashed))
+        (setq screen (alist-get 'working-tool ghostherd-test--grok-interrupt-screens) flashed nil)
+        (ghostherd-memory-page--handle '((op . "agent-interrupt") (name . "gk")))
+        (should (member '("flash" . "Ctrl+C to gk: stops its turn") flashed))
+        (clrhash ghostherd--ctrl-c-at)
+        (should (equal (plist-get (ghostherd--herd-run-command '(:id 1 :op "interrupt" :session "gk")) :text)
+                       "Ctrl+C to gk: stops its turn"))
+        (setq screen (alist-get 'rest ghostherd-test--grok-interrupt-screens))
+        (clrhash ghostherd--ctrl-c-at)
+        (should (string-match-p "not at work"
+                                (plist-get (ghostherd--herd-run-command '(:id 2 :op "interrupt" :session "gk")) :text)))))))
+
 (ert-deftest ghostherd-test-return-again-on-request-only-while-unsent ()
   "The card's and the Inbox's Press Return: pressed only while the text
 is verifiably still in the box, then watched as a fresh submit.  Gone
