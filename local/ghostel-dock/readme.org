@@ -68,21 +68,31 @@ terminals come back after an Emacs restart.
 =SPC b t= (and =t= in the =SPC b .= transient).  Posframe at the top of
 the frame, clear of the panel, else a top side window.  This project's
 terminals first, then each other project's, grouped (the project shows
-on its first row), each group most recently used first.
+on its first row), each group most recently used first.  Under a
+project, dimmed, the terminals saved for it that are not open: those of
+a project whose terminals have not come back this session (see "After
+an Emacs restart").  A saved project whose directory is gone shows its
+rows "missing".
 
 | Key            | Action                                                       |
 |----------------+--------------------------------------------------------------|
 | =j= =k=        | Move (=C-n= =C-p=, =gg= =G=); the panel previews the row     |
 | =RET=          | Open in the panel, selected; another project's terminal      |
-|                | switches to its jworkspace layer first                       |
-| =o=            | Open in the window the manager was opened from               |
+|                | switches to its jworkspace layer first.  A saved one: bring  |
+|                | it back, alone, then the same                                |
+| =o=            | Open in the window the manager was opened from (a saved one: |
+|                | brought back first)                                          |
 | =n=            | New terminal in the selected row's project; asks its name    |
-| =r=            | Rename (=*PROJECT:NAME*=)                                    |
-| =x=            | Kill; asks only when it runs something                       |
+| =r=            | Rename (=*PROJECT:NAME*=); a saved one in the file           |
+| =x=            | Kill; asks only when it runs something.  A saved one: drop   |
+|                | it from the file, asked first                                |
 | =K=            | Kill the selected row's project's idle ones; lists, asks     |
-| =R=            | Rerun its last command (Up, Return) when idle; list stays    |
-| =S=            | After a restart, start with its bound command, or no more    |
-| =F=            | Forget it: not back after a restart (again: keep it)         |
+| =R=            | Rerun its last command (Up, Return) when idle; list stays.   |
+|                | Not on a saved one: a fresh shell's Up is another history's  |
+| =S=            | After a restart, start with its bound command, or no more;   |
+|                | a saved one's flag, in the file                              |
+| =F=            | Forget it: not back after a restart (again: keep it).  A     |
+|                | saved one: out of the file, dimmed until the session ends    |
 | =/=            | Filter: words matched in name, project, command, directory   |
 | =g= (=gr=)     | Look again                                                   |
 | =?=            | Key legend                                                   |
@@ -196,7 +206,24 @@ used first:
   used last before is the last used again.  Only a terminal marked with
   =S= runs its command, once its prompt shows.
 - A project not back yet keeps its saved terminals through every save
-  this session: they are not gone, only not started.
+  this session: they are not gone, only not started.  The manager lists
+  them under their project.
+- =RET= on one of them brings back that terminal alone, in its
+  directory, in its project's layer; marked =S=, it runs its command.
+  Its project then counts as /picked/: its other saved terminals stay
+  saved and listed, and no first =SPC '= there starts them behind your
+  back -- you chose one by hand, so the rest wait for =RET= too.
+  (Marking the project restored instead would drop the others from the
+  file: phase 2 saves a restored project as it is open.)  Once open, the
+  terminal's entry leaves the saved list: it is saved as it is now, and
+  killed, it is gone.  A bound command for a saved terminal of a picked
+  project brings that one back, as saved, and runs only the bound
+  command.
+- The manager's own project still comes back whole on its first
+  =SPC b t=, as on =SPC '= and a bound run: the first touch of a project
+  is one rule, whatever key it is.
+- One that fails to start loses nothing: it stays saved and listed,
+  and its project counts as picked.
 - =x= kills it and it is gone from the file; =F= keeps it open but
   never brings it back.
 
@@ -272,9 +299,8 @@ panel; without it, as before.
 
 * Later (not built)
 
-- The manager lists only open terminals: another project's saved ones
-  come back when that project asks.  Rows for them, dimmed, =RET= to
-  start, would show them first.
+- A key to bring back all of a picked project's saved terminals at once
+  (=RET= on each does it now).
 
 * Customization
 

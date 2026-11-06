@@ -1032,5 +1032,251 @@ the input at the prompt before the last -- or at the last, while it runs."
         (execute-kbd-macro (kbd "x")))
       (should-not (buffer-live-p dev)))))
 
+;;; Phase 3: other projects' saved terminals in the manager
+
+(defmacro ghostel-dock-tests--with-saved (&rest body)
+  "BODY in the manager opened from web's file, with api's terminals saved
+from a past session: server (bound, starts with it), shell, worker.
+Binds web, api, file, sent; `sent' collects what goes to terminals."
+  (declare (indent 0) (debug t))
+  `(ghostel-dock-tests--with
+     (let* ((web (ghostel-dock-tests--project "web"))
+            (api (ghostel-dock-tests--project "api"))
+            (file (ghostel-dock-tests--file web))
+            (sent nil))
+       (ignore sent)
+       (make-directory (expand-file-name "srv" api))
+       (ghostel-dock-tests--write-save
+        `((,api (:name "server" :dir ,(expand-file-name "srv/" api)
+                 :command "make run" :start t)
+                (:name "shell" :dir ,api)
+                (:name "worker" :dir ,api :command "make work"))))
+       (switch-to-buffer file)
+       (ghostel-dock-tests--keys sent
+         (ghostel-dock-manager)
+         (with-current-buffer ghostel-dock--buffer-name
+           ,@body)))))
+
+(defun ghostel-dock-tests--goto-row (id)
+  "Select the manager's row ID."
+  (ghostel-dock--select (cl-position id ghostel-dock--matched :key #'car :test #'equal))
+  (should (equal (tabulated-list-get-id) id))
+  ;; As after a key: the details follow the row.
+  (ghostel-dock--draw-preview))
+
+(defun ghostel-dock-tests--saved-names (root)
+  "Names the save file holds for ROOT."
+  (mapcar (lambda (entry) (plist-get entry :name))
+          (cdr (assoc root (plist-get (ghostel-dock-tests--read-save) :terminals)))))
+
+(ert-deftest ghostel-dock-test-manager-lists-saved-terminals-dimmed ()
+  (ghostel-dock-tests--with-saved
+    (let ((shell (get-buffer "*web:shell*")))
+      ;; This project's own: started, as before (here: none saved, a shell).
+      (should-not (get-buffer "*api:server*"))
+      (should (equal ghostel-dock--rows
+                     (append (delq nil (list shell))
+                             (list (ghostel-dock--saved-key api "server")
+                                   (ghostel-dock--saved-key api "shell")
+                                   (ghostel-dock--saved-key api "worker")))))
+      (let ((lines (ghostel-dock-tests--manager-lines)))
+        (should (string-match-p "\\` api +server ↻ +saved +\\./srv" (nth 0 lines)))
+        (should (string-match-p "\\` +worker +saved" (nth 2 lines))))
+      (ghostel-dock-tests--goto-row (ghostel-dock--saved-key api "server"))
+      (let ((detail (buffer-substring-no-properties ghostel-dock--preview-start (point-max))))
+        (should (string-match-p "\\*api:server\\*  saved, not open" detail))
+        (should (string-match-p "RET starts it in /" detail))
+        (should (equal (plist-get (gethash (tabulated-list-get-id) ghostel-dock--infos) :dir)
+                       (expand-file-name "srv/" api)))
+        (should (string-match-p "starts with: make run" detail)))
+      (ghostel-dock-tests--goto-row (ghostel-dock--saved-key api "worker"))
+      (should (string-match-p "bound: make work · opens its shell only"
+                              (buffer-substring-no-properties ghostel-dock--preview-start (point-max))))
+      ;; The filter takes saved rows too.
+      (execute-kbd-macro (kbd "/ w o r k RET"))
+      (should (equal (mapcar #'car ghostel-dock--matched)
+                     (list (ghostel-dock--saved-key api "worker")))))))
+
+(ert-deftest ghostel-dock-test-manager-ret-brings-back-that-one-only ()
+  "RET on a saved row starts that terminal alone, in its directory, in its
+project's layer; one marked S runs its command.  The others stay saved,
+listed, and in the file -- a later SPC ' there does not start them."
+  (ghostel-dock-tests--with-saved
+    (let ((switched nil))
+      (let ((ghostel-dock-switch-layer-function (lambda (root) (push root switched))))
+        (ghostel-dock-tests--goto-row (ghostel-dock--saved-key api "server"))
+        (execute-kbd-macro (kbd "RET")))
+      (let ((server (get-buffer "*api:server*")))
+        (should server)
+        (should (equal switched (list api)))
+        (should (eq (window-buffer (ghostel-dock--panel)) server))
+        (should (eq (selected-window) (ghostel-dock--panel)))
+        (should (equal (buffer-local-value 'default-directory server) (expand-file-name "srv/" api)))
+        (should-not (get-buffer "*api:shell*"))
+        (ghostel-dock-tests--quiet server)
+        (ghostel-dock--poll-waiters)
+        (should (equal (reverse sent) `((,server . "make run") (,server . "return"))))
+        (should (equal (sort (ghostel-dock-tests--saved-names api) #'string<)
+                       '("server" "shell" "worker")))
+        ;; SPC ' in api now: the panel, not the rest.
+        (let ((default-directory api))
+          (ghostel-dock-toggle)
+          (ghostel-dock-toggle))
+        (should-not (get-buffer "*api:shell*"))
+        ;; Killed, it is gone from the file; the others stay.
+        (let ((kill-buffer-query-functions nil)) (kill-buffer server))
+        (ghostel-dock--save)
+        (should (equal (sort (ghostel-dock-tests--saved-names api) #'string<)
+                       '("shell" "worker")))))))
+
+(ert-deftest ghostel-dock-test-manager-o-on-saved-opens-it-here ()
+  (ghostel-dock-tests--with-saved
+    (ghostel-dock-tests--goto-row (ghostel-dock--saved-key api "shell"))
+    (execute-kbd-macro (kbd "o"))
+    (should (eq (window-buffer (selected-window)) (get-buffer "*api:shell*")))
+    (should-not (ghostel-dock--panel))))
+
+(ert-deftest ghostel-dock-test-manager-saved-row-keys ()
+  "x drops (asked), F forgets (again: keeps), r renames, S toggles the
+start, R refuses -- each in the file."
+  (ghostel-dock-tests--with-saved
+    ;; R: no shell to rerun in.
+    (ghostel-dock-tests--goto-row (ghostel-dock--saved-key api "shell"))
+    (should-error (ghostel-dock-manager-rerun) :type 'user-error)
+    ;; r
+    (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "worker")))
+      (should-error (ghostel-dock-manager-rename) :type 'user-error))
+    (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "repl")))
+      (execute-kbd-macro (kbd "r")))
+    (should (equal (tabulated-list-get-id) (ghostel-dock--saved-key api "repl")))
+    (should (member "repl" (ghostel-dock-tests--saved-names api)))
+    ;; S
+    (should-error (ghostel-dock-manager-start) :type 'user-error)
+    (ghostel-dock-tests--goto-row (ghostel-dock--saved-key api "worker"))
+    (execute-kbd-macro (kbd "S"))
+    (should (plist-get (ghostel-dock--saved-entry api "worker") :start))
+    (should (string-match-p "worker ↻" (ghostel-dock-tests--line-of-row)))
+    ;; F, and F again
+    (execute-kbd-macro (kbd "F"))
+    (should-not (member "worker" (ghostel-dock-tests--saved-names api)))
+    (should (equal (tabulated-list-get-id) (ghostel-dock--saved-key api "worker")))
+    (execute-kbd-macro (kbd "F"))
+    (should (member "worker" (ghostel-dock-tests--saved-names api)))
+    (should (equal (seq-find (lambda (e) (equal (plist-get e :name) "worker"))
+                             (cdr (assoc api (plist-get (ghostel-dock-tests--read-save) :terminals))))
+                   `(:name "worker" :dir ,api :command "make work" :start t)))
+    ;; x: asked; no keeps it
+    (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) nil)))
+      (execute-kbd-macro (kbd "x")))
+    (should (member "worker" (ghostel-dock-tests--saved-names api)))
+    (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t)))
+      (execute-kbd-macro (kbd "x")))
+    (should-not (member "worker" (ghostel-dock-tests--saved-names api)))
+    (should-not (member (ghostel-dock--saved-key api "worker") ghostel-dock--rows))))
+
+(defun ghostel-dock-tests--line-of-row ()
+  "The selected row as printed."
+  (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
+
+(ert-deftest ghostel-dock-test-manager-missing-project ()
+  "A saved project whose root is gone shows missing; RET refuses, x drops,
+and nothing makes the directory."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (gone (file-name-as-directory (expand-file-name "gone" tmp)))
+           (file (ghostel-dock-tests--file web)))
+      (ghostel-dock-tests--write-save `((,gone (:name "shell" :dir ,gone))))
+      (switch-to-buffer file)
+      (ghostel-dock-manager)
+      (with-current-buffer ghostel-dock--buffer-name
+        (ghostel-dock-tests--goto-row (ghostel-dock--saved-key gone "shell"))
+        (should (string-match-p "\\` gone +shell +missing" (ghostel-dock-tests--line-of-row)))
+        (should-error (ghostel-dock-manager-open) :type 'user-error)
+        (should-error (ghostel-dock-manager-new) :type 'user-error)
+        (should-not (file-exists-p gone))
+        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t)))
+          (execute-kbd-macro (kbd "x")))
+        (should-not (assoc gone (plist-get (ghostel-dock-tests--read-save) :terminals)))
+        (should-not (file-exists-p gone))))))
+
+(ert-deftest ghostel-dock-test-run-in-a-picked-project-uses-the-saved-one ()
+  "A bound command for a saved terminal of a project picked from: that
+terminal comes back as saved (its directory), and only the bound command
+runs -- not its own start command as well."
+  (ghostel-dock-tests--with-saved
+    (ghostel-dock-tests--goto-row (ghostel-dock--saved-key api "shell"))
+    (execute-kbd-macro (kbd "RET"))
+    (setq sent nil)
+    (let ((server (ghostel-dock-run "make test" "server" api t)))
+      (should (equal (buffer-local-value 'default-directory server) (expand-file-name "srv/" api)))
+      (ghostel-dock-tests--quiet server)
+      (ghostel-dock--poll-waiters)
+      (should (equal (reverse sent) `((,server . "make test") (,server . "return")))))))
+
+(ert-deftest ghostel-dock-test-manager-open-with-broken-file ()
+  "A save file that does not read: no saved rows, the file untouched."
+  (ghostel-dock-tests--with
+    (let ((web (ghostel-dock-tests--project "web")))
+      (with-temp-file ghostel-dock-save-file (insert "(:version 1 :terminals ((\"/x/\" "))
+      (switch-to-buffer (ghostel-dock-tests--file web))
+      (ghostel-dock-manager)
+      (with-current-buffer ghostel-dock--buffer-name
+        (should-not (seq-some #'ghostel-dock--saved-key-p ghostel-dock--rows)))
+      (ghostel-dock--save)
+      (should (equal (with-temp-buffer (insert-file-contents ghostel-dock-save-file)
+                                       (buffer-string))
+                     "(:version 1 :terminals ((\"/x/\" ")))))
+
+(ert-deftest ghostel-dock-test-restore-failure-loses-nothing ()
+  "A saved terminal that does not start stays saved, listed; the project
+counts as picked, so the file keeps it."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (file (ghostel-dock-tests--file web))
+           (real (symbol-function 'ghostel)))
+      (ghostel-dock-tests--write-save
+       `((,web (:name "dev" :dir ,web) (:name "bad" :dir ,web) (:name "shell" :dir ,web))))
+      (switch-to-buffer file)
+      (cl-letf (((symbol-function 'ghostel)
+                 (lambda (&rest args)
+                   (if (string-match-p "bad" ghostel-buffer-name)
+                       (error "No shell")
+                     (apply real args)))))
+        (ghostel-dock-toggle))
+      (should (get-buffer "*web:dev*"))
+      (should (get-buffer "*web:shell*"))
+      (should-not (get-buffer "*web:bad*"))
+      (ghostel-dock--save)
+      (should (equal (sort (ghostel-dock-tests--saved-names web) #'string<)
+                     '("bad" "dev" "shell")))
+      (should (member (ghostel-dock--saved-key web "bad") (ghostel-dock--saved-keys))))))
+
+(ert-deftest ghostel-dock-test-foreground-ignores-emacs-own-group ()
+  "A shell just forked still reports the terminal it came from: in a
+terminal Emacs, Emacs's own group holds that foreground.  Not a job."
+  (ghostel-dock-tests--with
+    (let* ((buffer (ghostel-dock-tests--terminal "*web:shell*" tmp))
+           (ghostel-dock--emacs-pgrp 4242)
+           (table '((100 (tpgid . 4242) (comm . "bash"))
+                    (4242 (comm . "emacs") (args . "emacs -nw")))))
+      (with-current-buffer buffer (setq ghostel--pid 100))
+      (cl-letf (((symbol-function 'process-attributes) (lambda (pid) (cdr (assq pid table)))))
+        (should-not (ghostel-dock--foreground buffer))))))
+
+(ert-deftest ghostel-dock-test-run-a-new-terminal-never-asks ()
+  "A terminal the run just started waits for its prompt, whatever a look
+at it says meanwhile."
+  (ghostel-dock-tests--with
+    (let ((web (ghostel-dock-tests--project "web"))
+          (sent nil))
+      (ghostel-dock-tests--keys sent
+        (cl-letf (((symbol-function 'ghostel-dock--busy-p) (lambda (_) t))
+                  ((symbol-function 'y-or-n-p) (lambda (&rest _) (error "Asked"))))
+          (let ((dev (ghostel-dock-run "make run" "dev" web t)))
+            (ghostel-dock-tests--quiet dev)
+            (cl-letf (((symbol-function 'ghostel-dock--foreground) #'ignore))
+              (ghostel-dock--poll-waiters))
+            (should (equal (car sent) (cons dev "return")))))))))
+
 (provide 'ghostel-dock-tests)
 ;;; ghostel-dock-tests.el ends here

@@ -148,6 +148,11 @@ binding ran in it with whether it starts with it.  No output, no history."
 (defvar ghostel-dock--restored nil
   "Roots whose saved terminals this session brought back, or looked for.")
 
+(defvar ghostel-dock--picked nil
+  "Roots some of whose saved terminals were brought back one by one.
+Their other saved terminals stay saved, listed in the manager: no first
+SPC ' there brings them all back.")
+
 (defvar-local ghostel-dock--root nil
   "Directory this terminal belongs to: its project's root, or where it began.
 Set when the dock makes it or first sees it; kept across `cd'.")
@@ -398,6 +403,18 @@ native PTY's event pipe, which gets an event for every read."
                (cdr words)))
        " "))))
 
+(defvar ghostel-dock--emacs-pgrp nil
+  "Emacs's own process group, once asked.")
+
+(defun ghostel-dock--emacs-pgrp ()
+  "Emacs's own process group.
+A shell just forked, before it takes its own terminal, still reports
+the one it came from: in a terminal Emacs, Emacs's, whose foreground is
+Emacs itself."
+  (or ghostel-dock--emacs-pgrp
+      (setq ghostel-dock--emacs-pgrp
+            (or (alist-get 'pgrp (process-attributes (emacs-pid))) -1))))
+
 (defun ghostel-dock--foreground (buffer)
   "(PGID . COMMAND) of the job in BUFFER's foreground; nil while its shell is.
 The terminal's foreground process group, which every process on it can
@@ -406,6 +423,7 @@ tell: `ghostel--pid' is the shell, or the login(1) that runs it."
               (pid (ghostel-dock--local 'ghostel--pid buffer))
               (tpgid (alist-get 'tpgid (process-attributes pid)))
               ((> tpgid 0))
+              ((/= tpgid (ghostel-dock--emacs-pgrp)))
               (attrs (process-attributes tpgid))
               (comm (alist-get 'comm attrs))
               ((not (ghostel-dock--shell-p comm))))
@@ -476,17 +494,20 @@ yet, unless it runs.  A screen that waits for its redraw is stale: nil."
                     (buffer-local-value 'ghostel-dock--last-command buffer))
           :command (buffer-local-value 'ghostel-dock--command buffer)
           :start (buffer-local-value 'ghostel-dock--start buffer)
+          :forgotten (buffer-local-value 'ghostel-dock--forgotten buffer)
           :kept (ghostel-dock--kept-p buffer))))
 
 (defun ghostel-dock--busy-p (info)
   "Non-nil when the terminal INFO tells of runs something."
   (let ((job (plist-get info :job)))
-    (and job (not (eq job 'exited)))))
+    (or (stringp job) (eq job 'running))))
 
 (defun ghostel-dock--job-text (info)
   "What INFO's terminal runs, as its row says it."
   (pcase (plist-get info :job)
     ('exited (propertize "exited" 'face 'error))
+    ('saved (propertize "saved" 'face 'shadow))
+    ('missing (propertize "missing" 'face 'error))
     ('running (propertize "▶ running" 'face 'font-lock-string-face))
     ('nil (propertize "idle" 'face 'shadow))
     (job (propertize (concat "▶ " job) 'face 'font-lock-string-face))))
@@ -495,6 +516,8 @@ yet, unless it runs.  A screen that waits for its redraw is stale: nil."
   "What INFO's terminal runs, for a sentence."
   (pcase (plist-get info :job)
     ('exited "nothing: it exited")
+    ('saved "nothing: it is saved, not open")
+    ('missing "nothing: its project is gone")
     ('running "a command")
     ('nil "nothing")
     (job job)))
@@ -706,7 +729,11 @@ Return the terminal."
   (let* ((root (ghostel-dock--norm (or root (ghostel-dock--current-root))))
          (_ (ghostel-dock--ensure-restored root))
          (existing (ghostel-dock--named root name))
-         (buffer (or existing (ghostel-dock--create root name (current-buffer))))
+         (fresh (not existing))
+         (buffer (or existing
+                     ;; Saved, in a project picked from: that one, as saved.
+                     (ghostel-dock--bring-back root name t)
+                     (ghostel-dock--create root name (current-buffer))))
          (info (ghostel-dock--info buffer))
          (go (lambda (ok)
                (if ok
@@ -718,7 +745,8 @@ Return the terminal."
       (user-error "%s has exited" (buffer-name buffer)))
     (ghostel-dock-show buffer t)
     (cond
-     ((not (ghostel-dock--busy-p info))
+     ;; Just started: it waits for its prompt, whatever a look says now.
+     ((or fresh (not (ghostel-dock--busy-p info)))
       (ghostel-dock--when buffer #'ghostel-dock--ready-p go ghostel-dock-ready-timeout))
      ((ghostel-dock--running-p buffer command)
       (message "Restarting %s in %s" command (buffer-name buffer))
@@ -921,7 +949,12 @@ it, it was not forgotten, and its project is local."
 A root whose terminals this session has not brought back yet keeps what
 was saved of it: they are not gone, only not started."
   (let ((live (ghostel-dock--live-store))
-        (stored (ghostel-dock--stored))
+        ;; One forgotten in the list is never written: gone at the next save.
+        (stored (mapcar (lambda (cell)
+                          (cons (car cell)
+                                (seq-remove (lambda (entry) (plist-get entry :forgotten))
+                                            (cdr cell))))
+                        (ghostel-dock--stored)))
         out)
     (dolist (cell live)
       (let* ((root (car cell))
@@ -965,9 +998,10 @@ was saved of it: they are not gone, only not started."
 
 (add-hook 'kill-emacs-hook #'ghostel-dock--save-on-exit)
 
-(defun ghostel-dock--restore-entry (root entry)
+(defun ghostel-dock--restore-entry (root entry &optional no-run)
   "Start ROOT's saved terminal ENTRY, shown nowhere.
-Its command runs only when it is marked to start with it."
+Its command runs only when it is marked to start with it, and not with
+NO-RUN."
   (let ((name (plist-get entry :name))
         (command (plist-get entry :command))
         (dir (plist-get entry :dir)))
@@ -976,8 +1010,9 @@ Its command runs only when it is marked to start with it."
                      root name nil (and (stringp dir) (not (file-remote-p dir)) dir) t)))
         (with-current-buffer buffer
           (setq ghostel-dock--command (and (stringp command) command)
-                ghostel-dock--start (and (stringp command) (plist-get entry :start) t)))
-        (when (buffer-local-value 'ghostel-dock--start buffer)
+                ghostel-dock--start (and (stringp command) (plist-get entry :start) t)
+                ghostel-dock--forgotten (and (plist-get entry :forgotten) t)))
+        (when (and (not no-run) (buffer-local-value 'ghostel-dock--start buffer))
           (ghostel-dock--when
            buffer #'ghostel-dock--ready-p
            (lambda (ok)
@@ -992,12 +1027,100 @@ Its command runs only when it is marked to start with it."
 Each shell starts in its directory, in saved order, so the one used
 last before the restart is the last used again."
   (let ((root (ghostel-dock--norm root)))
-    (unless (member root ghostel-dock--restored)
-      (let ((entries (cdr (assoc root (ghostel-dock--stored)))))
-        (push root ghostel-dock--restored)
+    (unless (or (member root ghostel-dock--restored)
+                ;; Picked from by hand: the rest stay saved.
+                (member root ghostel-dock--picked))
+      (let ((entries (cdr (assoc root (ghostel-dock--stored))))
+            started failed)
         (when (and entries (not (file-remote-p root)) (file-directory-p root))
           (dolist (entry entries)
-            (ghostel-dock--restore-entry root entry)))))))
+            (unless (plist-get entry :forgotten)
+              (condition-case err
+                  (progn (ghostel-dock--restore-entry root entry)
+                         (push entry started))
+                (error
+                 (setq failed t)
+                 (message "ghostel-dock: %s did not start: %s"
+                          (ghostel-dock--buffer-name root (plist-get entry :name))
+                          (error-message-string err)))))))
+        (if (not failed)
+            (push root ghostel-dock--restored)
+          ;; Never lose one: those that did not start stay saved, listed;
+          ;; those that did are saved as they are now.
+          (cl-pushnew root ghostel-dock--picked :test #'equal)
+          (ghostel-dock--update-stored
+           root (lambda (entries) (seq-remove (lambda (entry) (memq entry started))
+                                              entries))))))))
+
+(defun ghostel-dock--saved-key (root name)
+  "The manager's row id of ROOT's saved terminal NAME."
+  (list 'ghostel-dock-saved root name))
+
+(defun ghostel-dock--saved-key-p (id)
+  "Non-nil when ID is a saved terminal's row id, not a buffer."
+  (eq (car-safe id) 'ghostel-dock-saved))
+
+(defun ghostel-dock--saved-entry (root name)
+  "ROOT's saved entry NAME, while ROOT's terminals are not all back."
+  (unless (member root ghostel-dock--restored)
+    (seq-find (lambda (entry) (equal (plist-get entry :name) name))
+              (cdr (assoc root (ghostel-dock--stored))))))
+
+(defun ghostel-dock--saved-keys ()
+  "Row ids of the saved terminals not open, of projects not all back."
+  (cl-loop for (root . entries) in (ghostel-dock--stored)
+           unless (member root ghostel-dock--restored)
+           nconc (cl-loop for entry in entries
+                          for name = (plist-get entry :name)
+                          unless (ghostel-dock--named root name)
+                          collect (ghostel-dock--saved-key root name))))
+
+(defun ghostel-dock--plist-set (plist key value)
+  "PLIST, a fresh copy, with KEY VALUE in its place; without KEY when
+VALUE is nil."
+  (let ((copy (copy-sequence plist)))
+    (if value
+        (plist-put copy key value)
+      (cl-remf copy key)
+      copy)))
+
+(defun ghostel-dock--update-stored (root fn)
+  "Make ROOT's saved entries (FN ENTRIES), and write the file at once.
+A file that did not read stays untouched."
+  (let ((stored (ghostel-dock--stored)))
+    (when (listp ghostel-dock--store)
+      (let ((new (funcall fn (cdr (assoc root stored)))))
+        (setq ghostel-dock--store
+              (seq-filter #'cdr
+                          (if (assoc root stored)
+                              (mapcar (lambda (cell)
+                                        (if (equal (car cell) root) (cons root new) cell))
+                                      stored)
+                            (append stored (list (cons root new))))))
+        (ghostel-dock--save)))))
+
+(defun ghostel-dock--edit-saved (root name fn)
+  "Make ROOT's saved entry NAME (FN ENTRY); write the file at once."
+  (ghostel-dock--update-stored
+   root (lambda (entries)
+          (mapcar (lambda (entry)
+                    (if (equal (plist-get entry :name) name) (funcall fn entry) entry))
+                  entries))))
+
+(defun ghostel-dock--bring-back (root name &optional no-run)
+  "Start ROOT's saved terminal NAME alone, and return it; nil when none is.
+ROOT then counts as picked: its other saved terminals stay saved.  Once
+open, its entry leaves the saved list -- the open terminal is saved as
+it is, and killed, it is gone.  NO-RUN: its command does not run even
+when it is marked to start with it."
+  (when-let* ((entry (ghostel-dock--saved-entry root name)))
+    (unless (file-directory-p root)
+      (user-error "%s is gone: x drops its saved terminals" (abbreviate-file-name root)))
+    (cl-pushnew root ghostel-dock--picked :test #'equal)
+    (let ((buffer (or (ghostel-dock--named root name)
+                      (ghostel-dock--restore-entry root entry no-run))))
+      (ghostel-dock--update-stored root (lambda (entries) (remq entry entries)))
+      buffer)))
 
 
 ;;; Layers
@@ -1048,8 +1171,8 @@ snapshot named; a maximize asking `one-window-p' would count it."
 
 (defvar ghostel-dock--rows nil
   "The terminals the manager lists, in order: this project's first.")
-(defvar ghostel-dock--infos (make-hash-table :test 'eq)
-  "BUFFER -> its row's plist, as of the last look.")
+(defvar ghostel-dock--infos (make-hash-table :test 'equal)
+  "ROW -> its plist, as of the last look; a row is a buffer or a saved id.")
 (defvar ghostel-dock--matched nil
   "((BUFFER . INFO) ...): the rows the filter keeps.")
 (defvar ghostel-dock--index 0 "Index in `ghostel-dock--matched' of the selected row.")
@@ -1077,13 +1200,13 @@ snapshot named; a maximize asking `one-window-p' would count it."
 (defconst ghostel-dock-help
   '(("j, k"        "Move; the panel previews the terminal")
     ("gg, G"       "First / last")
-    ("RET"         "Open in the panel; another project's in its layer")
-    ("o"           "Open in the window the list was opened from")
+    ("RET"         "Open in the panel; another project's in its layer; saved: bring it back")
+    ("o"           "Open in the window the list was opened from (saved: brought back)")
     ("n"           "New terminal in the selected one's project")
-    ("r"           "Rename")
-    ("x"           "Kill; asks when it runs something")
+    ("r"           "Rename (saved: in the file)")
+    ("x"           "Kill; asks when it runs something.  Saved: drop it (asks)")
     ("K"           "Kill the selected project's idle ones (lists, asks)")
-    ("R"           "Rerun its last command (Up, Return) when idle")
+    ("R"           "Rerun its last command (Up, Return) when idle; not saved ones")
     ("S"           "After a restart, start with its bound command, or not")
     ("F"           "Forget it: not back after a restart (again: keep it)")
     ("/"           "Filter: name, project, command, directory")
@@ -1096,24 +1219,56 @@ snapshot named; a maximize asking `one-window-p' would count it."
 
 (defun ghostel-dock--collect ()
   "List the terminals: the caller's project's first, then each other
-project's, a project's most recently used first."
+project's, a project's most recently used first.  Under a project, its
+saved terminals that are not open: of a project not all back yet."
   (let* ((all (ghostel-dock-terminals t))
+         (saved (ghostel-dock--saved-keys))
          (here (plist-get ghostel-dock--caller :root))
-         (roots (delete-dups (cons here (mapcar #'ghostel-dock--root-of all)))))
+         (roots (delete-dups (append (list here)
+                                     (mapcar #'ghostel-dock--root-of all)
+                                     (mapcar #'cadr saved)))))
     (setq ghostel-dock--rows
           (mapcan (lambda (root)
-                    (seq-filter (lambda (buffer)
-                                  (equal (ghostel-dock--root-of buffer) root))
-                                all))
+                    (append (seq-filter (lambda (buffer)
+                                          (equal (ghostel-dock--root-of buffer) root))
+                                        all)
+                            (seq-filter (lambda (key) (equal (cadr key) root)) saved)))
                   roots))
     (ghostel-dock--look)))
 
+(defun ghostel-dock--row-current-p (row)
+  "Non-nil while ROW is still one to list: a terminal, or one still saved."
+  (if (bufferp row)
+      (ghostel-dock--terminal-p row)
+    (pcase-let ((`(,_ ,root ,name) row))
+      (and (ghostel-dock--saved-entry root name)
+           (not (ghostel-dock--named root name))))))
+
+(defun ghostel-dock--saved-info (key)
+  "What a row tells of saved terminal KEY, a plist like an open one's."
+  (pcase-let* ((`(,_ ,root ,name) key)
+               (entry (ghostel-dock--saved-entry root name))
+               (missing (not (file-directory-p root)))
+               (dir (plist-get entry :dir))
+               (dir-ok (and (stringp dir) (not missing) (file-directory-p dir))))
+    (list :root root :name name :saved t :missing missing
+          :job (if missing 'missing 'saved)
+          :dir (if dir-ok dir root)
+          :dir-gone (and (stringp dir) (not missing) (not dir-ok))
+          :command (plist-get entry :command)
+          :start (and (plist-get entry :command) (plist-get entry :start) t)
+          :forgotten (plist-get entry :forgotten)
+          :kept (not (plist-get entry :forgotten)))))
+
 (defun ghostel-dock--look ()
   "Find out again what each listed terminal does; forget the dead ones."
-  (setq ghostel-dock--rows (seq-filter #'ghostel-dock--terminal-p ghostel-dock--rows))
-  (clrhash ghostel-dock--infos)
-  (dolist (buffer ghostel-dock--rows)
-    (puthash buffer (ghostel-dock--info buffer) ghostel-dock--infos)))
+  (setq ghostel-dock--rows (seq-filter #'ghostel-dock--row-current-p ghostel-dock--rows))
+  ;; A saved row's id is a list: `equal'.  Made anew, so a table an older
+  ;; version left (`eq') does not stay after a reload.
+  (setq ghostel-dock--infos (make-hash-table :test 'equal))
+  (dolist (row ghostel-dock--rows)
+    (puthash row (if (bufferp row) (ghostel-dock--info row) (ghostel-dock--saved-info row))
+             ghostel-dock--infos)))
 
 (defun ghostel-dock--matches-p (info query)
   "Non-nil when every word of QUERY is in INFO's name, project, job or dir."
@@ -1121,7 +1276,12 @@ project's, a project's most recently used first."
                (string-join
                 (list (plist-get info :name)
                       (ghostel-dock--root-name (plist-get info :root))
-                      (let ((job (plist-get info :job))) (if (stringp job) job ""))
+                      (pcase (plist-get info :job)
+                        ((and (pred stringp) job) job)
+                        ('saved "saved")
+                        ('missing "missing")
+                        (_ ""))
+                      (or (plist-get info :command) "")
                       (ghostel-dock--dir-text info))
                 " "))))
     (seq-every-p (lambda (word) (string-search word text))
@@ -1180,8 +1340,8 @@ printed.  NOW is the time the ages count from."
                                       'face (if here 'bold 'font-lock-type-face))
                         "")
                       (concat (propertize (plist-get info :name)
-                                          'face (if (buffer-local-value 'ghostel-dock--forgotten
-                                                                        (car row))
+                                          'face (if (or (plist-get info :saved)
+                                                        (plist-get info :forgotten))
                                                     'shadow
                                                   'font-lock-keyword-face))
                               (if (plist-get info :start) (propertize " ↻" 'face 'success) ""))
@@ -1213,7 +1373,8 @@ printed.  NOW is the time the ages count from."
          (now (float-time)))
     (setq ghostel-dock--goto nil
           ghostel-dock--matched matched
-          ghostel-dock--index (max 0 (min (or (and keep (cl-position keep matched :key #'car))
+          ghostel-dock--index (max 0 (min (or (and keep (cl-position keep matched
+                                                                     :key #'car :test #'equal))
                                                 ghostel-dock--index)
                                             (1- count)))
           ghostel-dock--top (ghostel-cmd--window-top ghostel-dock--index ghostel-dock--top
@@ -1234,12 +1395,17 @@ printed.  NOW is the time the ages count from."
   (setq ghostel-dock--preview-start nil))
 
 (defun ghostel-dock--detail (buffer info width)
-  "The lines under the list telling of BUFFER and its INFO, WIDTH wide."
-  (if (null buffer)
-      (propertize (if (string-empty-p ghostel-dock--query)
-                      "No terminals yet: n starts one."
-                    "No terminal matches.")
-                  'face 'shadow)
+  "The lines under the list telling of BUFFER and its INFO, WIDTH wide.
+BUFFER is a saved terminal's row id for one not open."
+  (cond
+   ((null buffer)
+    (propertize (if (string-empty-p ghostel-dock--query)
+                    "No terminals yet: n starts one."
+                  "No terminal matches.")
+                'face 'shadow))
+   ((ghostel-dock--saved-key-p buffer)
+    (ghostel-dock--saved-detail info width))
+   (t
     (let* ((job (plist-get info :job))
            (head (concat (propertize (buffer-name buffer) 'face 'bold) "  "
                          (abbreviate-file-name (plist-get info :dir))))
@@ -1264,9 +1430,39 @@ printed.  NOW is the time the ages count from."
                           'face 'shadow)
               "\n"
               (propertize (ghostel-cmd--truncate (ghostel-dock--detail-more buffer info) width)
-                          'face 'shadow)))))
+                          'face 'shadow))))))
 
-(defun ghostel-dock--detail-more (buffer info)
+(defun ghostel-dock--saved-detail (info width)
+  "The lines under the list for a saved terminal not open, INFO, WIDTH wide:
+where it would start, and whether it runs its command."
+  (let* ((root (plist-get info :root))
+         (command (plist-get info :command))
+         (head (concat (propertize (ghostel-dock--buffer-name root (plist-get info :name))
+                                   'face 'bold)
+                       "  saved, not open"))
+         (where (cond ((plist-get info :missing)
+                       (format "missing: %s is gone · x drops it; nothing is made"
+                               (abbreviate-file-name root)))
+                      ((plist-get info :dir-gone)
+                       (format "RET starts it in %s: its own directory is gone"
+                               (abbreviate-file-name root)))
+                      (t (format "RET starts it in %s"
+                                 (abbreviate-file-name (plist-get info :dir))))))
+         (run (concat (cond ((and command (plist-get info :start))
+                             (concat "starts with: " command))
+                            (command
+                             (format "bound: %s · opens its shell only (S: start with it)" command))
+                            (t "opens its shell only"))
+                      (if (plist-get info :forgotten)
+                          " · forgotten: not in the file, F keeps it"
+                        ""))))
+    (concat (ghostel-cmd--truncate head width) "\n"
+            (propertize (ghostel-cmd--truncate where width)
+                        'face (if (plist-get info :missing) 'error 'shadow))
+            "\n"
+            (propertize (ghostel-cmd--truncate run width) 'face 'shadow))))
+
+(defun ghostel-dock--detail-more (_buffer info)
   "The third line about BUFFER: its last command line, its binding, and
 whether it comes back after a restart."
   (string-join
@@ -1277,7 +1473,7 @@ whether it comes back after a restart."
                  (format "bound: %s%s" command
                          (if (plist-get info :start) ", starts with it" "")))
                (cond ((plist-get info :kept) "back after a restart")
-                     ((buffer-local-value 'ghostel-dock--forgotten buffer)
+                     ((plist-get info :forgotten)
                       "forgotten: not back after a restart")
                      ((file-remote-p (plist-get info :root)) "remote: not kept")
                      (t "made before the dock: r names it, then it is kept"))))
@@ -1623,9 +1819,10 @@ Selected, a posframe's own frame would answer `posframe-workable-p' no
   "The row the manager opens on: the project's most recent terminal not on
 screen already, so RET goes back to the one before; else the first."
   (let ((here (plist-get ghostel-dock--caller :root)))
-    (or (seq-find (lambda (buffer)
-                    (and (equal (ghostel-dock--root-of buffer) here)
-                         (not (get-buffer-window buffer))))
+    (or (seq-find (lambda (row)
+                    (and (bufferp row)
+                         (equal (ghostel-dock--root-of row) here)
+                         (not (get-buffer-window row))))
                   ghostel-dock--rows)
         (car ghostel-dock--rows))))
 
@@ -1662,18 +1859,29 @@ previews the terminal in the panel; RET opens it there."
 ;;; The manager: acting
 
 (defun ghostel-dock--selected ()
-  "The terminal of the selected row; signals when there is none."
-  (let ((buffer (tabulated-list-get-id)))
-    (unless (buffer-live-p buffer)
-      (user-error "No terminal here"))
-    buffer))
+  "The terminal of the selected row; signals when there is none, or when
+it is saved, not open."
+  (let ((row (ghostel-dock--selected-row)))
+    (when (ghostel-dock--saved-key-p row)
+      (user-error "%s is saved, not open: RET brings it back"
+                  (ghostel-dock--buffer-name (nth 1 row) (nth 2 row))))
+    row))
+
+(defun ghostel-dock--selected-row ()
+  "The selected row's terminal, or its saved id; signals when there is none."
+  (let ((row (tabulated-list-get-id)))
+    (cond ((and (bufferp row) (buffer-live-p row)) row)
+          ((and (ghostel-dock--saved-key-p row)
+                (ghostel-dock--saved-entry (nth 1 row) (nth 2 row)))
+           row)
+          (t (user-error "No terminal here")))))
 
 (defun ghostel-dock--selected-root ()
   "The project of the selected row, else of where the manager opened."
-  (if-let* ((buffer (tabulated-list-get-id))
-            ((buffer-live-p buffer)))
-      (ghostel-dock--root-of buffer)
-    (plist-get ghostel-dock--caller :root)))
+  (let ((row (tabulated-list-get-id)))
+    (cond ((and (bufferp row) (buffer-live-p row)) (ghostel-dock--root-of row))
+          ((ghostel-dock--saved-key-p row) (nth 1 row))
+          (t (plist-get ghostel-dock--caller :root)))))
 
 (defun ghostel-dock--ask (fn &optional closing)
   "Call FN where the minibuffer works, then show the manager again.
@@ -1707,8 +1915,26 @@ first, so it opens in that project's layer."
   (interactive)
   (when ghostel-dock--filtering
     (ghostel-dock--set-filtering nil))
-  (let* ((buffer (ghostel-dock--selected))
-         (root (ghostel-dock--root-of buffer))
+  (if (ghostel-dock--saved-key-p (ghostel-dock--selected-row))
+      (ghostel-dock--open-saved (ghostel-dock--selected-row) here)
+    (ghostel-dock--open-buffer (ghostel-dock--selected) here)))
+
+(defun ghostel-dock--open-saved (key here)
+  "Bring back saved terminal KEY alone, then open it as RET (or o, HERE) does."
+  (pcase-let ((`(,_ ,root ,name) key))
+    (unless (file-directory-p root)
+      (user-error "%s is gone: x drops its saved terminals" (abbreviate-file-name root)))
+    (ghostel-dock--close)
+    (ghostel-dock--switch-layer root)
+    (let ((buffer (ghostel-dock--bring-back root name)))
+      (if here
+          (pop-to-buffer-same-window buffer)
+        (ghostel-dock-show buffer t))
+      buffer)))
+
+(defun ghostel-dock--open-buffer (buffer here)
+  "Open terminal BUFFER in the panel, or with HERE in the caller's window."
+  (let* ((root (ghostel-dock--root-of buffer))
          (moves (or here (and ghostel-dock-switch-layer-function
                               (not (equal root (plist-get ghostel-dock--caller :root)))))))
     ;; The preview stays when the panel keeps it: no flicker back and forth.
@@ -1733,7 +1959,12 @@ first, so it opens in that project's layer."
   (let* ((root (ghostel-dock--selected-root))
          (caller (plist-get ghostel-dock--caller :buffer))
          name)
+    (unless (file-directory-p root)
+      (user-error "%s is gone: x drops its saved terminals" (abbreviate-file-name root)))
     (ghostel-dock--ask (lambda () (setq name (ghostel-dock--read-name root))) t)
+    ;; Made by hand in a project not back: its saved ones stay saved.
+    (unless (member root ghostel-dock--restored)
+      (cl-pushnew root ghostel-dock--picked :test #'equal))
     (ghostel-dock--close)
     (ghostel-dock--switch-layer root)
     (ghostel-dock-show (or (ghostel-dock--named root name)
@@ -1758,10 +1989,31 @@ first, so it opens in that project's layer."
     buffer))
 
 (defun ghostel-dock-manager-rename ()
-  "Rename the selected terminal."
+  "Rename the selected terminal; a saved one in the file."
   (interactive)
-  (let* ((buffer (ghostel-dock--selected))
-         (old (ghostel-dock--name-of buffer)))
+  (if (ghostel-dock--saved-key-p (ghostel-dock--selected-row))
+      (ghostel-dock--rename-saved (ghostel-dock--selected-row))
+    (ghostel-dock--rename-open (ghostel-dock--selected))))
+
+(defun ghostel-dock--rename-saved (key)
+  "Rename saved terminal KEY in the file."
+  (pcase-let ((`(,_ ,root ,name) key))
+    (let (new)
+      (ghostel-dock--ask
+       (lambda ()
+         (setq new (string-trim (read-string (format "Rename saved %s to: " name) name)))))
+      (when (and new (not (string-empty-p new)) (not (equal new name)))
+        (when (member new (ghostel-dock-terminal-names root))
+          (user-error "%s already has a terminal %s" (ghostel-dock--root-name root) new))
+        (ghostel-dock--edit-saved root name
+                                  (lambda (entry) (ghostel-dock--plist-set entry :name new)))
+        (setq ghostel-dock--goto (ghostel-dock--saved-key root new)))
+      (ghostel-dock--collect)
+      (ghostel-dock--refresh))))
+
+(defun ghostel-dock--rename-open (buffer)
+  "Rename open terminal BUFFER."
+  (let ((old (ghostel-dock--name-of buffer)))
     (ghostel-dock--ask
      (lambda ()
        (let ((name (string-trim (read-string (format "Rename %s to: " old)
@@ -1787,8 +2039,29 @@ told not to."
   "Kill the selected terminal; asked first when it runs something.
 With OSC 133 ghostel asks; without, the dock does, from its processes."
   (interactive)
-  (let* ((buffer (ghostel-dock--selected))
-         (info (ghostel-dock--info buffer))
+  (if (ghostel-dock--saved-key-p (ghostel-dock--selected-row))
+      (ghostel-dock--drop-saved (ghostel-dock--selected-row))
+    (ghostel-dock--kill-open (ghostel-dock--selected))))
+
+(defun ghostel-dock--drop-saved (key)
+  "Drop saved terminal KEY from the file, once asked."
+  (pcase-let ((`(,_ ,root ,name) key))
+    (let (ok)
+      (ghostel-dock--ask
+       (lambda ()
+         (setq ok (yes-or-no-p (format "Drop the saved terminal %s from %s? "
+                                       (ghostel-dock--buffer-name root name)
+                                       (file-name-nondirectory ghostel-dock-save-file))))))
+      (when ok
+        (ghostel-dock--update-stored
+         root (lambda (entries)
+                (seq-remove (lambda (entry) (equal (plist-get entry :name) name)) entries))))
+      (ghostel-dock--collect)
+      (ghostel-dock--refresh))))
+
+(defun ghostel-dock--kill-open (buffer)
+  "Kill open terminal BUFFER, asked about as `ghostel-dock-manager-kill' says."
+  (let* ((info (ghostel-dock--info buffer))
          (ok t))
     (cond
      ((plist-get info :osc133)
@@ -1841,7 +2114,29 @@ With OSC 133 ghostel asks; without, the dock does, from its processes."
   "Start the selected terminal with its command after a restart, or no more.
 Its command is the one a ghostel-cmd binding last ran there."
   (interactive)
-  (let ((buffer (ghostel-dock--selected)))
+  (if (ghostel-dock--saved-key-p (ghostel-dock--selected-row))
+      (ghostel-dock--start-saved (ghostel-dock--selected-row))
+    (ghostel-dock--start-open (ghostel-dock--selected))))
+
+(defun ghostel-dock--start-saved (key)
+  "Toggle whether saved terminal KEY starts with its command, in the file."
+  (pcase-let* ((`(,_ ,root ,name) key)
+               (entry (ghostel-dock--saved-entry root name)))
+    (unless (plist-get entry :command)
+      (user-error "%s ran no command from a ghostel-cmd binding"
+                  (ghostel-dock--buffer-name root name)))
+    (ghostel-dock--edit-saved
+     root name (lambda (entry)
+                 (ghostel-dock--plist-set entry :start (not (plist-get entry :start)))))
+    (message (if (plist-get (ghostel-dock--saved-entry root name) :start)
+                 "Brought back, %s starts with: %s"
+               "Brought back, %s opens its shell only (%s)")
+             (ghostel-dock--buffer-name root name) (plist-get entry :command))
+    (ghostel-dock--refresh t)))
+
+(defun ghostel-dock--start-open (buffer)
+  "Toggle whether open terminal BUFFER starts with its command after a restart."
+  (progn
     (with-current-buffer buffer
       (unless ghostel-dock--command
         (user-error "%s ran no command from a ghostel-cmd binding" (buffer-name)))
@@ -1859,7 +2154,26 @@ Its command is the one a ghostel-cmd binding last ran there."
   "Forget the selected terminal for good: it does not come back after a
 restart.  Again on a forgotten one, keep it after all."
   (interactive)
-  (let ((buffer (ghostel-dock--selected)))
+  (if (ghostel-dock--saved-key-p (ghostel-dock--selected-row))
+      (ghostel-dock--forget-saved (ghostel-dock--selected-row))
+    (ghostel-dock--forget-open (ghostel-dock--selected))))
+
+(defun ghostel-dock--forget-saved (key)
+  "Forget saved terminal KEY: out of the file; the row stays this session,
+and F again keeps it."
+  (pcase-let ((`(,_ ,root ,name) key))
+    (ghostel-dock--edit-saved
+     root name (lambda (entry)
+                 (ghostel-dock--plist-set entry :forgotten (not (plist-get entry :forgotten)))))
+    (message (if (plist-get (ghostel-dock--saved-entry root name) :forgotten)
+                 "%s is forgotten: out of the file, gone after this session"
+               "%s is saved again")
+             (ghostel-dock--buffer-name root name))
+    (ghostel-dock--refresh t)))
+
+(defun ghostel-dock--forget-open (buffer)
+  "Forget open terminal BUFFER for good, or keep it after all."
+  (progn
     (with-current-buffer buffer
       (unless ghostel-dock--name
         (user-error "%s was made before the dock and is not kept: r names it" (buffer-name)))
