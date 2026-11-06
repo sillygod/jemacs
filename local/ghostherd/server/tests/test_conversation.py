@@ -108,6 +108,61 @@ def test_claude_turns(home):
     assert all("key" not in e for e in r["entries"])
 
 
+def queued(prompt, **kw):
+    "claude's record of a message it took mid-turn (2.1.319, measured 2026-11-06)."
+    return {"type": "attachment", "isSidechain": False, "timestamp": "2026-10-09T01:00:02Z",
+            "attachment": {"type": "queued_command", "prompt": prompt, "commandMode": "prompt",
+                           "origin": {"kind": "human"}, **kw}}
+
+
+def qop(op, content=None, **kw):
+    r = {"type": "queue-operation", "operation": op, "timestamp": "2026-10-09T01:00:01Z", **kw}
+    if content is not None:
+        r["content"] = content
+    return r
+
+
+def test_a_message_typed_while_it_worked_is_said_where_it_reached_it(home):
+    """Typed while claude works, a message is queued; it is taken at the
+    agent's next step as the attachment of the queued command -- never a
+    user record -- or, when the turn ends first, as a user record after a
+    dequeue.  Either way the room says it once, where it reached the agent;
+    the queue itself is not said (the page reads it off the screen)."""
+    path = _claude_file(home, [
+        u("Run the slow tests"),
+        a("m1", use("t1", "Bash", command="make test")),
+        qop("enqueue", "also check the linter"),
+        qop("enqueue", ASK_TEXT),
+        u([result("t1", "ok")]),
+        qop("remove", "also check the linter", reason="absorbed_mid_turn"),
+        qop("remove", ASK_TEXT, reason="absorbed_mid_turn"),
+        queued("also check the linter"),
+        queued([{"type": "text", "text": "[Image #1] and this"}, {"type": "image", "source": {}}]),
+        # The herd's ask, pasted while it worked: still the herd's.
+        queued(ASK_TEXT),
+        # A sub-agent's hand-back comes this way too: read off the queue.
+        queued("<agent-message from=\"a1\">\nhi\n</agent-message>", isMeta=True),
+        a("m2", text("Linter is clean.")),
+        # Typed with no tool call left in the turn: delivered when it ends.
+        # claude 2.1.x wrote this one's enqueue without its text.
+        qop("enqueue"),
+        a("m3", text("Done.")),
+        qop("dequeue"),
+        u("thanks, now commit", origin={"kind": "human"}),
+    ])
+    got = [(e["role"], e.get("kind"), e.get("text"), e.get("who")) for e in conv.read(path)["entries"]
+           if e["role"] != "tools"]
+    assert got == [
+        ("user", "prompt", "Run the slow tests", ""),
+        ("user", "prompt", "also check the linter", ""),
+        ("user", "prompt", "[Image #1] and this", ""),
+        ("user", "ask", "Test the login flow.\nBoth browsers.", "rd"),
+        ("assistant", None, "Linter is clean.", None),
+        ("assistant", None, "Done.", None),
+        ("user", "prompt", "thanks, now commit", ""),
+    ]
+
+
 def test_what_the_herd_said_is_attributed(home):
     path = _claude_file(home, [u(ASK_TEXT), u(ANSWER_TEXT), u(AUTO_TEXT), u(FAILED_TEXT),
                                u("[ghostherd message from user → qa]\nplease hurry\n")])

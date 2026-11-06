@@ -110,6 +110,111 @@
     return bg.length ? '<span class="det bgw" title="' + esc(title) + '">' + esc(bg.join(" · ")) + " running</span>" : "";
   }
 
+  // ---- What a CLI holds queued --------------------------------------------
+  //
+  // A message typed to an agent at work -- at its terminal, or sent from
+  // here while it is busy -- waits in its CLI's queue until the agent can
+  // read it: claude at its next step, grok and agy once the turn ends.
+  // Emacs reads the queue off the agent's screen (a.queued: as drawn, cut
+  // to a line by grok and agy).  Its room ends with each, faint, until its
+  // conversation says it: that entry is then the message, and this one
+  // goes.  Gone from the screen before the transcript has it, it stays a
+  // moment (QUEUE_LINGER) rather than blink out and back in.
+  const QUEUE_LINGER = 10000;
+  const QUEUE_WHEN = { claude: "it reads it after its current step", grok: "it reads it after this turn",
+                       agy: "it reads it after this turn" };
+  let queueTimer = 0;
+
+  // Each agent's queue as last read, every message with when the page
+  // first saw it and when it left the screen.
+  function trackQueued(agents) {
+    const now = Date.now(), next = {};
+    let lingering = false;
+    (agents || []).forEach((a) => {
+      const left = (herdNow.queued[a.name] || []).slice(), cur = [];
+      (a.queued || []).forEach((text) => {
+        // The same one, though drawn cut before and whole now (agy cuts
+        // the last to fit its alt+m), or the other way.
+        let k = left.findIndex((q) => !q.gone && q.text === text);
+        if (k < 0) k = left.findIndex((q) => sameQueued(q.text, text));
+        if (k >= 0) {
+          const q = left.splice(k, 1)[0];
+          cur.push(Object.assign(q, { text, gone: 0 }));
+        } else cur.push({ text, seen: now, gone: 0 });
+      });
+      const gone = left.filter((q) => (q.gone = q.gone || now) > now - QUEUE_LINGER);
+      if (gone.length) lingering = true;
+      if (gone.length || cur.length) next[a.name] = gone.concat(cur);
+    });
+    herdNow.queued = next;
+    clearTimeout(queueTimer);
+    if (lingering) queueTimer = setTimeout(() => { if (herdNow.data) GM.renderHerdAgain(); }, QUEUE_LINGER / 2);
+  }
+
+  // A message's words, to tell two reads of it alike: no spaces, and a
+  // CLI's cut ("…", "...") off its end.
+  function qwords(t) { return String(t || "").replace(/\s+/g, "").replace(/(?:…|\.\.\.)$/, ""); }
+  const qcut = (t) => /(?:…|\.\.\.)$/.test(String(t || "").trim());
+
+  // Whether A and B are one message read twice: alike, or one cut short
+  // of the other.
+  function sameQueued(a, b) {
+    const A = qwords(a), B = qwords(b);
+    return !!A && !!B && (A === B || (qcut(a) && B.startsWith(A)) || (qcut(b) && A.startsWith(B)));
+  }
+
+  // Whether ENTRIES, a conversation's, already say Q was said to the agent
+  // (SAID picks what was said to it): delivered, its own entry there.
+  // Among the newest only, and not long before the queue showed it.  A
+  // herd message the conversation says by its body; the queue, whole.
+  function queuedSaid(q, entries, said) {
+    const a = qwords(q.text), cut = qcut(q.text);
+    if (!a) return false;
+    return (entries || []).slice(-12).some((e) => {
+      if (!said(e) || Date.parse(e.ts) < q.seen - 60000) return false;
+      const b = qwords(e.text);
+      return !!b && (a === b || (cut && b.startsWith(a)) || (b.length >= 8 && a.includes(b.slice(0, 40))));
+    });
+  }
+
+  // What of NAME's queue its conversation, ENTRIES, does not say yet.
+  function queuedLeft(name, entries, said) {
+    return (herdNow.queued[name] || []).filter((q) => !queuedSaid(q, entries, said));
+  }
+
+  // The column's own entries said to it, and the chat's said to NAME.
+  const saidToCol = (e) => e.role === "user" && e.kind !== "note" && e.kind !== "command";
+  const saidToIn = (name) => (e) => e.to === name && e.who !== name && e.kind !== "turn";
+
+  // The end of a room: each message A's CLI holds, faint, marked queued,
+  // and the key that sends them now while its CLI offers one.  CHAT says
+  // whom each is to.  Send now carries the first's words, for Emacs to
+  // press the key only while it is still there.
+  function queuedHtml(a, list, chat) {
+    if (!list.length) return "";
+    const first = list.find((q) => !q.gone);
+    return '<div class="queued" data-name="' + esc(a.name) + '">' + list.map((q) =>
+      '<div class="ent you qd' + (q.gone ? " leaving" : "") + '">' +
+      entHead((chat ? "You → " + a.name : "You") + " · queued", "", null, "", "") + plainBody(q.text) + "</div>").join("") +
+      '<div class="qnote"><span>' + esc((first ? "" : "sent to it · ") + (QUEUE_WHEN[a.kind] || "it reads it when it can")) + "</span>" +
+      (first && a.queuedNow ? '<button type="button" class="ghost small" data-act="a:send-now" data-name="' + esc(a.name) +
+        '" data-text="' + esc(first.text) + '" title="Its CLI\'s own key for it: ' + esc(a.name) +
+        ' reads what is queued now, not when it can">Send now</button>' : "") + "</div></div>";
+  }
+
+  // A's card: how many messages its CLI holds queued.
+  function queuedMark(a) {
+    const n = (a.queued || []).length;
+    return n ? '<span class="det qdw" title="' + esc("Queued, it reads them when it can:\n" + a.queued.join("\n")) + '">' +
+      n + " queued</span>" : "";
+  }
+
+  // What decides whether a view's queue is drawn again.
+  function queuedKey(names) {
+    return names.map((n) => (herdNow.queued[n] || []).map((q) => q.text + (q.gone ? "~" : "")).join("\u0001") +
+      ((agentByName(n) || {}).queuedNow ? "!" : "")).join("\u0002");
+  }
+
   // An agent's name opens its terminal in Emacs: at the desk.  On another
   // device that would open on the desk's screen, so it is only its name.
   function agentName(name) {
@@ -1338,6 +1443,8 @@
     // The room as one chat: the view shown, the timeline Emacs sent, who
     // the box writes to in each project, and the long messages opened.
     roomView: NARROW ? "chat" : "columns", chat: null, chatTo: {}, chatOpen: new Set(),
+    // What each agent's CLI holds queued, as the page has seen it (trackQueued).
+    queued: {},
     // A column (by name) or the chat whose `load earlier' is in flight: when
     // its older page arrives, the view holds the message you were reading
     // instead of jumping, the prepended turns pushing it down by their height.
@@ -2421,7 +2528,7 @@
       (a.startedBy ? '<span class="det startedby" title="Started by ' + esc(a.startedBy) + ' through herd start">by ' + esc(a.startedBy) + "</span>" : "") +
       (a.detached ? '<span class="det" title="Running, no view attached">▪ detached</span>' : "") +
       (a.manual ? '<span class="det" title="State set by hand">manual</span>' : "") +
-      (a.progress != null ? '<span class="det">' + esc(a.progress) + "%</span>" : "") + backgroundHtml(a) +
+      (a.progress != null ? '<span class="det">' + esc(a.progress) + "%</span>" : "") + backgroundHtml(a) + queuedMark(a) +
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
@@ -2901,7 +3008,7 @@
     const work = (a.work ? workHtml(a.work) : "") + linksHtml(a);
     return '<div class="amain">' + stateBadge(a.state, a.reason) +
       '<span class="rdot" style="color:' + sessionColor(name) + '" title="Its colour in every column">●</span>' +
-      agentName(name) + agentBadge(a.kind) + leadBadge(a) + backgroundHtml(a) +
+      agentName(name) + agentBadge(a.kind) + leadBadge(a) + backgroundHtml(a) + queuedMark(a) +
       (a.startedBy ? '<span class="det startedby" title="Started by ' + esc(a.startedBy) + ' through herd start">by ' + esc(a.startedBy) + "</span>" : "") +
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
@@ -3147,11 +3254,17 @@
         "Its screen meanwhile:</p>" + screen;
     }
     if (herdNow.roomScreen.has(name)) return screen;
-    if (!conv) return '<p class="rnote">Reading its conversation…</p>';
-    if (conv.error) return '<p class="rnote error">Could not read its conversation: ' + esc(conv.error) + "</p>";
+    // Its queue is its screen's: shown whether its conversation is or not.
+    if (!conv) return '<p class="rnote">Reading its conversation…</p>' + queuedHtml(a, queuedLeft(name, [], saidToCol));
+    if (conv.error) {
+      return '<p class="rnote error">Could not read its conversation: ' + esc(conv.error) + "</p>" +
+        queuedHtml(a, queuedLeft(name, [], saidToCol));
+    }
     const entries = conv.entries || [];
+    const queued = queuedLeft(name, entries, saidToCol);
     return earlierHtml(conv, "a:load-earlier") +
-      (entries.length ? entries.map((e, i) => entryHtml(e, i, name, a.kind)).join("") : '<p class="rnote">Nothing said yet.</p>');
+      (entries.length ? entries.map((e, i) => entryHtml(e, i, name, a.kind)).join("")
+        : queued.length ? "" : '<p class="rnote">Nothing said yet.</p>') + queuedHtml(a, queued);
   }
 
   function roomColumn(name) {
@@ -3499,7 +3612,8 @@
       : c.error ? '<p class="rnote error">Could not read the conversations: ' + esc(c.error) + "</p>"
       : earlierHtml(c, "a:chat-earlier") +
         (entries.length ? entries.map(chatItemHtml).join("") : '<p class="rnote">Nobody has said anything yet.</p>') +
-        (out.length ? '<p class="rnote">Not in the chat, no conversation known: ' + esc(out.join(", ")) + "</p>" : "");
+        (out.length ? '<p class="rnote">Not in the chat, no conversation known: ' + esc(out.join(", ")) + "</p>" : "") +
+        roomAgents().map((a) => queuedHtml(a, queuedLeft(a.name, entries, saidToIn(a.name)), true)).join("");
     drawn.set(body, entries);
     body.setAttribute("data-drawn", "1");
     if (first || atBottom) body.scrollTop = body.scrollHeight;
@@ -4242,6 +4356,12 @@
     renderSubView();
     if (chat) {
       const foot = room.querySelector(".chat .cfoot");
+      const cbody = room.querySelector(".chat .cbody");
+      const qk = queuedKey(agents.map((a) => a.name));
+      if (cbody && (cbody.getAttribute("data-queued") || "") !== qk) {
+        cbody.setAttribute("data-queued", qk);
+        if (cbody.hasAttribute("data-drawn")) renderChatBody();
+      }
       if (foot) suggestIn(foot, foot.getAttribute("data-name"), chatHint(foot.getAttribute("data-name")));
       renderChatMeter();
       return;
@@ -4252,8 +4372,10 @@
         (herdNow.chipsOpen.has(a.name) ? " chips-open" : "") + (narrowCols.get(col) ? " narrow" : "");
       col.querySelector(".rtop").innerHTML = roomTop(a, asksFor(a.name, asks));
       const body = col.querySelector(".rbody");
-      if ((body.getAttribute("data-subs") || "") !== subsKey(a)) {
+      if ((body.getAttribute("data-subs") || "") !== subsKey(a) ||
+          (body.getAttribute("data-queued") || "") !== queuedKey([a.name])) {
         body.setAttribute("data-subs", subsKey(a));
+        body.setAttribute("data-queued", queuedKey([a.name]));
         if (body.hasAttribute("data-drawn")) renderRoomBody(a);
       }
       stripUnder(body, col.querySelector(".rsubs"), subsHtml(a));
@@ -4313,6 +4435,12 @@
     if (act === "work-task") return emit("open-task", { id: el.getAttribute("data-id") });
     if (act === "work-changes") return emit("open-changes", { root: el.getAttribute("data-root") });
     if (act === "use-suggestion") return useSuggestion(name, row && row.querySelector("textarea.agent-text"));
+    // A queued message's Send now: Emacs presses its CLI's key for it,
+    // only while that message is still queued on its screen.
+    if (act === "send-now") {
+      el.disabled = true;
+      return emit("agent-send-now", { name: el.getAttribute("data-name") || name, text: el.getAttribute("data-text") || "" });
+    }
     if (act === "work-more") {
       const key = el.getAttribute("data-key");
       if (herdNow.workOpen.has(key)) herdNow.workOpen.delete(key);
@@ -7483,6 +7611,7 @@
 
     renderHerd: (p) => {
       herdNow.data = p || null;
+      trackQueued(p && p.agents);
       if (view !== "agents") return;
       if (busyEditing()) herdNow.pending = true;
       else {

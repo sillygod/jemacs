@@ -2193,6 +2193,23 @@ go; its Relay names the CLI, which must be one an agent runs on."
         (should-error (ghostherd-memory-page--agent-act "agent-relay" '((name . "rd") (kind . "shell")))
                       :type 'user-error)))))
 
+;; The room's Send now for a message its CLI holds queued.
+(ert-deftest ghostherd-test-page-send-now-presses-the-clis-key-for-what-it-showed ()
+  "Send now hands Emacs the message the page showed; Emacs presses the
+CLI's key only while that message is still queued (`ghostherd-send-queued-now')."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd ()
+    (let ((rd (ghostherd-tests--session :name "rd" :kind 'claude :state 'working :backend 'fake))
+          asked flashed)
+      (cl-letf (((symbol-function 'ghostherd-send-queued-now) (lambda (s &optional words) (setq asked (list s words))))
+                ((symbol-function 'ghostherd-memory-page--js) (lambda (fn arg) (push (cons fn arg) flashed)))
+                ((symbol-function 'ghostherd-memory-page--send-herd) #'ignore))
+        (ghostherd-memory-page--agent-act "agent-send-now" '((name . "rd") (text . "also check the linter")))
+        (should (equal asked (list rd "also check the linter")))
+        (should (member '("flash" . "Sent rd its queued message now") flashed))
+        (ghostherd-memory-page--agent-act "agent-send-now" '((name . "rd") (text . "")))
+        (should (equal asked (list rd nil)))))))
+
 (ert-deftest ghostherd-test-page-meters-each-agent-once-per-change ()
   "Each agent's meter, read by the sidecar from its transcript when that
 changed -- not on every look -- and sent field by field.  None for an

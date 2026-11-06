@@ -609,6 +609,11 @@ sidecar here, or ps does not say.  ps runs on its own: Emacs waits not."
           ;; the prompt it suggests you send next.
           :background (ghostherd-memory-page--vec (ghostherd-session-background s))
           :suggestion (or (ghostherd-session-suggestion s) "")
+          ;; What its CLI holds queued, typed while it worked: the room ends
+          ;; with each, the card counts them.  `queuedNow': its CLI offers
+          ;; the key that sends them now (`ghostherd-send-queued-now').
+          :queued (ghostherd-memory-page--vec (ghostherd-session-queued s))
+          :queuedNow (if (ghostherd-session-queued-now-p s) t :json-false)
           :said (ghostherd-memory-page--str (plist-get (ghostherd--link s) :last_head))
           :saidAt (plist-get (ghostherd--link s) :last_ms)
           ;; Its last turn is an Inbox item for a non-lead only when the herd
@@ -3635,6 +3640,13 @@ from the newest -- and send it to the page to prepend."
              ;; pressed only while it is verifiably still in the box.
              (ghostherd-submit-again s)
              (format "Pressed Return for %s" name))
+            ("agent-send-now"
+             ;; The room's Send now for a message its CLI holds queued: the
+             ;; CLI's key for it, pressed only while that message is
+             ;; verifiably still queued on its screen.
+             (let ((words (alist-get 'text intent)))
+               (ghostherd-send-queued-now s (and (stringp words) (not (string-empty-p words)) words))
+               (format "Sent %s its queued message now" name)))
             ("agent-answer"
              (let ((n (alist-get 'n intent)))
                (unless (and (integerp n) (<= 1 n 9)) (user-error "Choice is 1 to 9"))

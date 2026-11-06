@@ -644,6 +644,8 @@ button.mchip.mbare:hover { color: var(--text); border-color: var(--accent); }
 .det { font-size: 11px; color: var(--muted); }
 /* Work it has running in the background: it is not done yet. */
 .det.bgw { color: #58a6ff; }
+/* Messages its CLI holds queued, typed while it worked: not read yet. */
+.det.qdw { color: var(--warn); }
 /* Started by a lead through `herd start'. */
 .det.startedby { color: var(--muted); }
 .anotes { color: var(--muted); font-style: italic; max-width: 30em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -799,6 +801,8 @@ button.pname:hover { color: var(--accent); text-decoration: underline; }
   .rcol.narrow:not(.expanded) .rtop .amain > * { flex-shrink: 0; }
   .rcol.narrow:not(.expanded) .rtop .amain .aname { flex: 0 0.001 auto; min-width: 4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rcol.narrow:not(.expanded) .rtop .amain .det { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* How many it holds queued is not cut away: its name gives way first. */
+  .rcol.narrow:not(.expanded) .rtop .amain .det.qdw { flex: 0 0 auto; }
   .rcol.narrow:not(.expanded) .rtop .amain .when { margin-left: auto; }
   /* Its notes, and who started it, are the third line's (its text or title). */
   .rcol.narrow:not(.expanded) .rtop .anotes, .rcol.narrow:not(.expanded) .rtop .amain .startedby { display: none; }
@@ -854,6 +858,17 @@ button.pname:hover { color: var(--accent); text-decoration: underline; }
 
 .ent { margin: 10px 0; padding-left: 8px; border-left: 2px solid var(--line); min-width: 0; }
 .ent.you { border-left-color: var(--open); }
+/* A message its CLI holds queued, at the end of the room: yours, not read
+   yet -- faint, its bar dashed, under it when it will be read and the key
+   that sends it now.  One that has just left the screen, about to be its
+   conversation's own entry, fainter still. */
+.ent.you.qd { border-left-style: dashed; opacity: 0.6; }
+.ent.you.qd.leaving { opacity: 0.4; }
+.ent.you.qd > .ehead { position: static; background: none; }
+.ent.you.qd .who { font-weight: 500; font-style: italic; }
+.queued .qnote { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin: -6px 0 10px 10px;
+                 font-size: 11.5px; color: var(--muted); font-style: italic; }
+.queued .qnote button { font-style: normal; }
 .ent.small, .ent.tools { border-left-color: transparent; font-size: 11.5px; color: var(--muted); margin: 4px 0; }
 .hnote { font-size: 11.5px; color: var(--muted); margin: 2px 0; }
 .ent.tools .linkish { font-size: 11.5px; text-align: left; }

@@ -609,6 +609,22 @@ def _claude(records, thread: Thread, sub: bool = False) -> None:
         if o.get("type") == "queue-operation":
             if o.get("operation") == "enqueue" and isinstance(o.get("content"), str):
                 thread.queued(o["content"], ts)
+        elif o.get("type") == "attachment":
+            # A message typed while the agent worked, taken at its next step
+            # ("absorbed_mid_turn", or sent now with ctrl+x ctrl+s): claude
+            # writes it as the attachment of the queued command, never as a
+            # user record -- so it is said here, where it reached the agent.
+            # One delivered when the turn ended comes as a user record, after
+            # a dequeue.  A sub-agent's hand-back comes this way too, marked
+            # isMeta: it was read off the queue (Thread.queued).
+            att = o.get("attachment")
+            if (isinstance(att, dict) and att.get("type") == "queued_command"
+                    and att.get("commandMode") == "prompt" and not att.get("isMeta")):
+                prompt = att.get("prompt")
+                said = prompt if isinstance(prompt, str) else "\n".join(
+                    b.get("text", "") for b in prompt or [] if isinstance(b, dict) and b.get("type") == "text")
+                if not thread.delivered(said, ts):
+                    thread.user(said, ts)
         elif o.get("type") == "user":
             if o.get("isCompactSummary"):
                 thread.note("the conversation was compacted", ts)
