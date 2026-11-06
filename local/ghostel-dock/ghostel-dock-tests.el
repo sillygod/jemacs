@@ -27,19 +27,28 @@
 (defvar ghostel-dock-tests--tmp nil
   "The scratch directory of the test that runs.")
 
+;; Never the user's file: in batch `user-emacs-directory' is ~/.emacs.d/,
+;; and `kill-emacs-hook' saves.  Each test binds its own.
+(setq ghostel-dock-save-file
+      (expand-file-name (format "ghostel-dock-tests-%d.eld" (emacs-pid))
+                        temporary-file-directory))
+
 (defun ghostel-dock-tests--find-project (dir)
   "A project for DIR: the nearest directory above it with a .proj file."
   (when-let* ((root (locate-dominating-file dir ".proj")))
     (cons 'transient (file-name-as-directory (expand-file-name root)))))
 
 (defun ghostel-dock-tests--fake-ghostel (&optional _arg)
-  "Stand-in for `ghostel' with a non-numeric ARG: a fresh terminal, no shell."
+  "Stand-in for `ghostel' with a non-numeric ARG: a fresh terminal whose
+\"shell\" is a live pipe process that never answers."
   (let ((buffer (generate-new-buffer ghostel-buffer-name)))
     (push buffer ghostel-dock-tests--made)
     (with-current-buffer buffer
       (ghostel-mode)
       (setq ghostel--managed-buffer-name (buffer-name)
-            ghostel--buffer-identity (buffer-name)))
+            ghostel--buffer-identity (buffer-name)
+            ghostel--process (make-pipe-process :name "ghostel-dock-fake"
+                                                :buffer buffer :noquery t)))
     (pop-to-buffer buffer (append display-buffer--same-window-action
                                   '((category . comint))))
     buffer))
@@ -55,11 +64,18 @@
           (ghostel-dock-refresh-interval nil)
           (ghostel-dock-use-posframe nil)
           (ghostel-dock--caller nil)
+          (ghostel-dock--store 'unread)
+          (ghostel-dock--restored nil)
+          (ghostel-dock--written nil)
+          (ghostel-dock--save-timer nil)
+          (ghostel-dock--waiters nil)
+          (ghostel-dock--wait-timer nil)
           (project-find-functions (list #'ghostel-dock-tests--find-project))
           (project--list nil)
           (ghostel-dock-tests--tmp
            (file-name-as-directory (file-truename (make-temp-file "ghostel-dock-" t))))
           (tmp ghostel-dock-tests--tmp)
+          (ghostel-dock-save-file (expand-file-name "dock.eld" tmp))
           (default-directory tmp))
      (ignore tmp)
      (cl-letf (((symbol-function 'ghostel) #'ghostel-dock-tests--fake-ghostel))
@@ -75,6 +91,8 @@
                (let ((kill-buffer-query-functions nil)
                      (ghostel-query-before-killing nil))
                  (kill-buffer buffer))))
+           (dolist (timer (list ghostel-dock--save-timer ghostel-dock--wait-timer))
+             (when (timerp timer) (cancel-timer timer)))
            (delete-directory tmp t))))))
 
 (defun ghostel-dock-tests--project (name)
@@ -696,6 +714,323 @@ from api's file.  Binds web, api, dev, test, shell, api-file."
               (ghostel-cmd--deliver "ls" nil))
             (should (equal pasted `((,dev . "ls"))))
             (should (eq (window-buffer (ghostel-dock--panel)) dev))))))))
+
+;;; Phase 2: commands bound to a named terminal
+
+(defmacro ghostel-dock-tests--keys (var &rest body)
+  "BODY with what goes to terminals recorded in VAR, newest first:
+(BUFFER . TEXT) for a paste, (BUFFER . KEY) for a key, (BUFFER . C-c)."
+  (declare (indent 1) (debug t))
+  `(cl-letf (((symbol-function 'ghostel-paste-string)
+              (lambda (text) (push (cons (current-buffer) text) ,var)))
+             ((symbol-function 'ghostel-send-key)
+              (lambda (key &rest _) (push (cons (current-buffer) key) ,var)))
+             ((symbol-function 'ghostel-send-C-c)
+              (lambda () (push (cons (current-buffer) 'C-c) ,var))))
+     ,@body))
+
+(defun ghostel-dock-tests--quiet (buffer)
+  "Let terminal BUFFER's shell look done printing: its output a while ago."
+  (with-current-buffer buffer
+    (setq ghostel-dock--output-at (- (float-time) 5)
+          ghostel-dock--born (- (float-time) 10))))
+
+(ert-deftest ghostel-dock-test-run-starts-the-named-terminal ()
+  "A bound command goes to its terminal, started when missing, once its
+shell shows a prompt; the panel shows it, selected."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (file (ghostel-dock-tests--file web))
+           (sent nil))
+      (switch-to-buffer file)
+      (ghostel-dock-tests--keys sent
+        (let ((dev (ghostel-dock-run "npm run dev" "dev" web t)))
+          (should (equal (buffer-name dev) "*web:dev*"))
+          (should (eq (window-buffer (ghostel-dock--panel)) dev))
+          (should (eq (selected-window) (ghostel-dock--panel)))
+          ;; A new shell prints first: nothing goes yet.
+          (should-not sent)
+          (ghostel-dock-tests--quiet dev)
+          (ghostel-dock--poll-waiters)
+          (should (equal (reverse sent) `((,dev . "npm run dev") (,dev . "return"))))
+          (should (equal (buffer-local-value 'ghostel-dock--command dev) "npm run dev"))
+          (should (buffer-local-value 'ghostel-dock--command-live dev)))))))
+
+(ert-deftest ghostel-dock-test-run-restarts-its-own-command ()
+  "Run again while it still runs: interrupt, wait for the prompt, run."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (dev (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web:dev*" web)))
+           (sent nil))
+      (with-current-buffer dev
+        (setq ghostel-dock--name "dev"
+              ghostel-dock--command "npm run dev"
+              ghostel-dock--command-live (float-time)
+              ghostel--command-running t))
+      (ghostel-dock-tests--keys sent
+        (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) (error "Asked"))))
+          (ghostel-dock-run "npm run dev" "dev" web t))
+        (should (equal sent `((,dev . C-c))))
+        ;; The prompt: OSC 133 D.
+        (run-hook-with-args 'ghostel-command-start-functions dev)
+        (with-current-buffer dev (setq ghostel--command-running nil))
+        (run-hook-with-args 'ghostel-command-finish-functions dev 130)
+        (ghostel-dock--poll-waiters)
+        (should (equal (reverse sent)
+                       `((,dev . C-c) (,dev . "npm run dev") (,dev . "return"))))))))
+
+(ert-deftest ghostel-dock-test-run-asks-before-stopping-something-else ()
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (dev (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web:dev*" web)))
+           (asked nil)
+           (sent nil))
+      (with-current-buffer dev
+        (setq ghostel-dock--name "dev"
+              ghostel--command-running t))
+      (ghostel-dock-tests--keys sent
+        (cl-letf (((symbol-function 'y-or-n-p) (lambda (prompt) (push prompt asked) nil)))
+          (ghostel-dock-run "npm test" "dev" web t))
+        (should (equal asked '("*web:dev* is running a command; stop it and run npm test? ")))
+        (should-not sent)
+        (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
+          (ghostel-dock-run "npm test" "dev" web t))
+        (should (equal sent `((,dev . C-c))))
+        (with-current-buffer dev (setq ghostel--command-running nil))
+        (ghostel-dock--poll-waiters)
+        (should (equal (car sent) (cons dev "return")))))))
+
+(ert-deftest ghostel-dock-test-run-gives-up-when-it-never-stops ()
+  "A second interrupt at half the time; past it, the command is not run."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (dev (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web:dev*" web)))
+           (ghostel-dock-stop-timeout 0.2)
+           (sent nil))
+      (with-current-buffer dev
+        (setq ghostel-dock--name "dev"
+              ghostel-dock--command "make watch"
+              ghostel-dock--command-live (float-time)
+              ghostel--command-running t))
+      (ghostel-dock-tests--keys sent
+        (ghostel-dock-run "make watch" "dev" web t)
+        (sleep-for 0.15)
+        (ghostel-dock--poll-waiters)
+        (should (equal sent `((,dev . C-c) (,dev . C-c))))
+        (sleep-for 0.15)
+        (ghostel-dock--poll-waiters)
+        (should (equal sent `((,dev . C-c) (,dev . C-c))))
+        (should-not ghostel-dock--waiters)))))
+
+(ert-deftest ghostel-dock-test-ghostel-cmd-bound-command-goes-to-its-terminal ()
+  "ghostel-cmd's deliver for a bound command runs it through the dock."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (file (ghostel-dock-tests--file web))
+           (runs nil)
+           (sent nil))
+      (switch-to-buffer file)
+      (ghostel-dock-tests--keys sent
+        (cl-letf (((symbol-function 'ghostel-dock-run)
+                   (lambda (&rest args) (push args runs))))
+          (let ((ghostel-cmd--root web))
+            (funcall (ghostel-cmd--deliver-to "dev") "npm run dev" t)
+            (funcall (ghostel-cmd--deliver-to nil) "ls" nil))))
+      (should (equal runs `(("npm run dev" "dev" ,web t))))
+      ;; Unbound: the last-used terminal, as before.
+      (should (equal sent `((,(get-buffer "*web:shell*") . "ls")))))))
+
+
+;;; Phase 2: after a restart
+
+(defun ghostel-dock-tests--read-save ()
+  "The save file's data."
+  (with-temp-buffer
+    (insert-file-contents ghostel-dock-save-file)
+    (read (current-buffer))))
+
+(ert-deftest ghostel-dock-test-save-file-holds-kept-terminals-only ()
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (src (file-name-as-directory (expand-file-name "src" web)))
+           (shell (ghostel-dock--create web "shell"))
+           (dev (ghostel-dock--create web "dev"))
+           (gone (ghostel-dock--create web "scratch")))
+      (ignore shell)
+      (make-directory src)
+      (ghostel-dock-tests--terminal "*web-ghostel*" web)
+      (with-current-buffer dev
+        (setq default-directory src
+              ghostel-dock--command "npm run dev"
+              ghostel-dock--start t))
+      (with-current-buffer gone (setq ghostel-dock--forgotten t))
+      (ghostel-dock--save)
+      (let* ((data (ghostel-dock-tests--read-save))
+             (entries (cdr (assoc web (plist-get data :terminals)))))
+        (should (eql (plist-get data :version) 1))
+        (should (equal (sort (mapcar (lambda (e) (plist-get e :name)) entries) #'string<)
+                       '("dev" "shell")))
+        (should (equal (seq-find (lambda (e) (equal (plist-get e :name) "dev")) entries)
+                       `(:name "dev" :dir ,src :command "npm run dev" :start t)))
+        (should (equal (seq-find (lambda (e) (equal (plist-get e :name) "shell")) entries)
+                       `(:name "shell" :dir ,web))))
+      ;; Killed: gone from the file.
+      (let ((kill-buffer-query-functions nil)) (kill-buffer dev))
+      (ghostel-dock--save)
+      (should (equal (mapcar (lambda (e) (plist-get e :name))
+                             (cdr (assoc web (plist-get (ghostel-dock-tests--read-save)
+                                                        :terminals))))
+                     '("shell"))))))
+
+(defun ghostel-dock-tests--write-save (data)
+  "Write DATA as the save file, as a past session would have."
+  (with-temp-file ghostel-dock-save-file
+    (prin1 (list :version 1 :terminals data) (current-buffer))))
+
+(ert-deftest ghostel-dock-test-restore-brings-them-back-once ()
+  "The first SPC ' in a project starts its saved terminals in their
+directories; only the one marked to start runs its command."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (src (file-name-as-directory (expand-file-name "src" web)))
+           (file (ghostel-dock-tests--file web))
+           (sent nil))
+      (make-directory src)
+      (ghostel-dock-tests--write-save
+       `((,web (:name "dev" :dir ,src :command "npm run dev" :start t)
+               (:name "test" :dir ,web :command "npm test")
+               (:name "shell" :dir "/no/such/dir/"))))
+      (switch-to-buffer file)
+      (ghostel-dock-tests--keys sent
+        (ghostel-dock-toggle)
+        (let ((dev (get-buffer "*web:dev*"))
+              (test (get-buffer "*web:test*"))
+              (shell (get-buffer "*web:shell*")))
+          (should (and dev test shell))
+          ;; The one used last before the restart shows.
+          (should (eq (window-buffer (ghostel-dock--panel)) dev))
+          (should (equal (buffer-local-value 'default-directory dev) src))
+          (should (equal (buffer-local-value 'default-directory shell) web))
+          (should (equal (buffer-local-value 'ghostel-dock--command test) "npm test"))
+          (should-not (buffer-local-value 'ghostel-dock--start test))
+          (should-not sent)
+          (mapc #'ghostel-dock-tests--quiet (list dev test shell))
+          (ghostel-dock--poll-waiters)
+          (should (equal (reverse sent) `((,dev . "npm run dev") (,dev . "return"))))
+          ;; Killed after, they do not come back this session.
+          (let ((kill-buffer-query-functions nil)) (kill-buffer test))
+          (ghostel-dock-toggle)
+          (ghostel-dock-toggle)
+          (should-not (get-buffer "*web:test*")))))))
+
+(ert-deftest ghostel-dock-test-save-keeps-projects-not-back-yet ()
+  "A project whose terminals have not come back this session keeps its
+saved ones: they are not gone, only not started."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (api (ghostel-dock-tests--project "api")))
+      (ghostel-dock-tests--write-save
+       `((,api (:name "server" :dir ,api :command "make run" :start t))))
+      (let ((default-directory web))
+        (ghostel-dock-terminal nil t))
+      (ghostel-dock--save)
+      (let ((data (plist-get (ghostel-dock-tests--read-save) :terminals)))
+        (should (equal (cdr (assoc api data))
+                       `((:name "server" :dir ,api :command "make run" :start t))))
+        (should (equal (mapcar (lambda (e) (plist-get e :name)) (cdr (assoc web data)))
+                       '("shell")))))))
+
+(ert-deftest ghostel-dock-test-broken-save-file-is-left-alone ()
+  (ghostel-dock-tests--with
+    (let ((web (ghostel-dock-tests--project "web")))
+      (with-temp-file ghostel-dock-save-file (insert "(:version 1 :terminals ((\"/x/\" "))
+      (let ((default-directory web))
+        (ghostel-dock-terminal nil t))
+      (ghostel-dock--save)
+      (should (equal (with-temp-buffer (insert-file-contents ghostel-dock-save-file)
+                                       (buffer-string))
+                     "(:version 1 :terminals ((\"/x/\" ")))))
+
+(ert-deftest ghostel-dock-test-manager-start-and-forget ()
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (file (ghostel-dock-tests--file web))
+           (dev (ghostel-dock--create web "dev"))
+           (shell (ghostel-dock--create web "shell")))
+      (with-current-buffer dev (setq ghostel-dock--command "npm run dev"))
+      (switch-to-buffer dev)
+      (switch-to-buffer file)
+      (ghostel-dock-manager)
+      (with-current-buffer ghostel-dock--buffer-name
+        (ghostel-dock--select (cl-position dev ghostel-dock--matched :key #'car))
+        (execute-kbd-macro (kbd "S"))
+        (should (buffer-local-value 'ghostel-dock--start dev))
+        (should (string-match-p "dev ↻" (buffer-substring-no-properties
+                                         (point-min) ghostel-dock--preview-start)))
+        (ghostel-dock--select (cl-position shell ghostel-dock--matched :key #'car))
+        (should-error (ghostel-dock-manager-start) :type 'user-error)
+        (execute-kbd-macro (kbd "F"))
+        (should (buffer-local-value 'ghostel-dock--forgotten shell)))
+      (ghostel-dock--save)
+      (should (equal (cdr (assoc web (plist-get (ghostel-dock-tests--read-save) :terminals)))
+                     `((:name "dev" :dir ,web :command "npm run dev" :start t)))))))
+
+
+;;; Phase 2: the last command line, the kill guard
+
+(ert-deftest ghostel-dock-test-last-command-from-the-screen ()
+  "With OSC 133 the shell marks prompt and input; the last command line is
+the input at the prompt before the last -- or at the last, while it runs."
+  (ghostel-dock-tests--with
+    (let ((buffer (ghostel-dock-tests--terminal "*web:shell*" tmp)))
+      (with-current-buffer buffer
+        (let ((inhibit-read-only t))
+          (insert (propertize "jing:~$ " 'ghostel-prompt t)
+                  (propertize "make test" 'ghostel-input t) "\n"
+                  "ok  12 tests\n"
+                  (propertize "jing:~$ " 'ghostel-prompt t)
+                  (propertize "ls -l" 'ghostel-input t)))
+        (setq ghostel-dock--osc133 t))
+      (should (equal (ghostel-dock--screen-command buffer) "make test"))
+      (with-current-buffer buffer (setq ghostel--command-running t))
+      (should (equal (ghostel-dock--screen-command buffer) "ls -l"))
+      (with-current-buffer buffer (setq ghostel--pending-redraw t))
+      (should-not (ghostel-dock--screen-command buffer)))))
+
+(ert-deftest ghostel-dock-test-last-command-from-the-process ()
+  (ghostel-dock-tests--with
+    (let ((buffer (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web:shell*" tmp)))
+          (table '((100 (tpgid . 200) (comm . "login"))
+                   (200 (comm . "node") (args . "node /x/bin/vite --port 5173")))))
+      (with-current-buffer buffer (setq ghostel--pid 100))
+      (cl-letf (((symbol-function 'process-attributes) (lambda (pid) (cdr (assq pid table)))))
+        (should (equal (plist-get (ghostel-dock--info buffer) :last) "node vite --port 5173"))
+        ;; Ended: it stays the last one seen.
+        (setf (alist-get 100 table) '((tpgid . 100) (comm . "login")))
+        (let ((info (ghostel-dock--info buffer)))
+          (should-not (plist-get info :job))
+          (should (equal (plist-get info :last) "node vite --port 5173")))))))
+
+(ert-deftest ghostel-dock-test-kill-guard-is-ghostel-s-with-osc133 ()
+  "A shell giving OSC 133: ghostel's own query decides.  Without: the dock's."
+  (ghostel-dock-tests--with-manager
+    (let ((asked nil)
+          (ghostel-query-before-killing 'auto))
+      (ghostel-dock--select (cl-position dev ghostel-dock--matched :key #'car))
+      (with-current-buffer dev
+        (setq ghostel-dock--osc133 t
+              ghostel--command-running t)
+        (add-hook 'kill-buffer-query-functions #'ghostel--kill-buffer-query nil t))
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (prompt) (push prompt asked) nil)))
+        (execute-kbd-macro (kbd "x")))
+      (should (buffer-live-p dev))
+      (should (equal asked '("Buffer \"*web:dev*\" has a running process; kill it? ")))
+      ;; Idle with OSC 133: no question from anyone.
+      (with-current-buffer dev (setq ghostel--command-running nil))
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) (error "Asked"))))
+        (ghostel-dock--select (cl-position dev ghostel-dock--matched :key #'car))
+        (execute-kbd-macro (kbd "x")))
+      (should-not (buffer-live-p dev)))))
 
 (provide 'ghostel-dock-tests)
 ;;; ghostel-dock-tests.el ends here

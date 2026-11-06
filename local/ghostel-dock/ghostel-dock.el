@@ -1,8 +1,8 @@
 ;;; ghostel-dock.el --- Project terminals in a bottom panel, and a manager -*- lexical-binding: t; -*-
 
 ;; Author: Jing
-;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1"))
+;; Version: 0.2.0
+;; Package-Requires: ((emacs "29.1") (ghostel "0.32") (ghostel-cmd "0.1.0"))
 ;; Keywords: tools, terminals, convenience
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -117,14 +117,36 @@ window layer first opens it in that layer's panel."
   :type '(choice (const :tag "Stay in this layer" nil) function))
 
 (defcustom ghostel-dock-after-create-functions nil
-  "Functions called with a new terminal and the buffer it was asked from."
+  "Functions called with a new terminal and the buffer it was asked from.
+A terminal brought back after a restart was asked from nowhere: nil."
   :type 'hook)
+
+(defcustom ghostel-dock-stop-timeout 8
+  "Seconds a restart waits for the prompt after interrupting the terminal.
+A second interrupt goes at half of it; past it the command is not run."
+  :type 'number)
+
+(defcustom ghostel-dock-ready-timeout 15
+  "Seconds a new shell has to show its prompt before a command goes to it."
+  :type 'number)
+
+(defcustom ghostel-dock-save-file (locate-user-emacs-file "ghostel-dock.eld")
+  "File that remembers each project's terminals across Emacs restarts.
+Per terminal: its root, name, directory, and the command a ghostel-cmd
+binding ran in it with whether it starts with it.  No output, no history."
+  :type 'file)
 
 
 ;;; A terminal's place
 
 (defvar ghostel-dock--caller nil
   "Where the manager was opened: :root, :buffer, :frame.")
+
+(defvar ghostel-dock--waiters nil
+  "(BUFFER PREDICATE FN DEADLINE) of what waits on a terminal.")
+
+(defvar ghostel-dock--restored nil
+  "Roots whose saved terminals this session brought back, or looked for.")
 
 (defvar-local ghostel-dock--root nil
   "Directory this terminal belongs to: its project's root, or where it began.
@@ -146,6 +168,29 @@ Set when the dock makes it or first sees it; kept across `cd'.")
 
 (defvar-local ghostel-dock--osc133 nil
   "Non-nil once the shell sent an OSC 133 command marker.")
+
+(defvar-local ghostel-dock--command nil
+  "The command a ghostel-cmd binding last ran here, or nil.
+Running the binding again restarts it; after an Emacs restart the
+terminal can start with it.  The only command text the dock keeps.")
+(put 'ghostel-dock--command 'permanent-local t)
+
+(defvar-local ghostel-dock--command-live nil
+  "When the bound command was run, until a prompt says it ended.")
+
+(defvar-local ghostel-dock--start nil
+  "Non-nil: brought back after an Emacs restart, it runs its command.")
+(put 'ghostel-dock--start 'permanent-local t)
+
+(defvar-local ghostel-dock--forgotten nil
+  "Non-nil: not brought back after an Emacs restart.")
+(put 'ghostel-dock--forgotten 'permanent-local t)
+
+(defvar-local ghostel-dock--born nil
+  "`float-time' the dock started this terminal; nil for one it did not.")
+
+(defvar-local ghostel-dock--last-command nil
+  "The command line last seen running here.  Shown, never saved.")
 
 (defconst ghostel-dock--legacy-regexp
   "\\`\\*\\(.+\\)-ghostel\\*\\(?:<[0-9]+>\\)?\\'"
@@ -280,7 +325,9 @@ ROOT defaults to the current buffer's; t means every terminal."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (setq ghostel-dock--in-command t
-            ghostel-dock--osc133 t))))
+            ghostel-dock--osc133 t))
+    ;; What runs, once it has: one that ends sooner is on the screen.
+    (run-with-timer 0.2 nil #'ghostel-dock--sample-command buffer)))
 
 (defun ghostel-dock--on-command-finish (buffer status)
   "Note that BUFFER's command finished with STATUS (OSC 133 D).
@@ -291,7 +338,20 @@ command before: only a D that ends a command is its status."
       (setq ghostel-dock--osc133 t)
       (when ghostel-dock--in-command
         (setq ghostel-dock--status status
-              ghostel-dock--in-command nil)))))
+              ghostel-dock--in-command nil
+              ghostel-dock--command-live nil)))
+    ;; Its OSC 7 comes with the prompt: a cd is saved once it settles.
+    (when (ghostel-dock--kept-p buffer)
+      (ghostel-dock--schedule-save))
+    (when ghostel-dock--waiters
+      (run-at-time 0 nil #'ghostel-dock--poll-waiters))))
+
+(defun ghostel-dock--sample-command (buffer)
+  "Note what runs in BUFFER's foreground, if anything still does."
+  (when-let* (((buffer-live-p buffer))
+              (fg (ghostel-dock--foreground buffer)))
+    (with-current-buffer buffer
+      (setq ghostel-dock--last-command (cdr fg)))))
 
 (defun ghostel-dock--stamp-output (process &rest _)
   "Note when PROCESS's terminal last gave output.
@@ -317,6 +377,7 @@ native PTY's event pipe, which gets an event for every read."
 (defun ghostel-dock-unload-function ()
   "Stop following the terminals when the package is unloaded."
   (ghostel-dock--track nil)
+  (remove-hook 'kill-emacs-hook #'ghostel-dock--save-on-exit)
   nil)
 
 (defun ghostel-dock--shell-p (comm)
@@ -350,12 +411,56 @@ tell: `ghostel--pid' is the shell, or the login(1) that runs it."
               ((not (ghostel-dock--shell-p comm))))
     (cons tpgid (or (ghostel-dock--short-command (alist-get 'args attrs)) comm))))
 
+(defun ghostel-dock--input-between (beg end)
+  "The text the shell marked as input (OSC 133 B) between BEG and END."
+  (let ((pos beg) parts)
+    (while (< pos end)
+      (let ((next (next-single-property-change pos 'ghostel-input nil end)))
+        (when (get-text-property pos 'ghostel-input)
+          (push (buffer-substring-no-properties pos next) parts))
+        (setq pos next)))
+    (let ((text (string-trim (replace-regexp-in-string
+                              "[ \t]*\n[ \t]*" " " (apply #'concat (nreverse parts))))))
+      (unless (string-empty-p text) text))))
+
+(defun ghostel-dock--screen-command (buffer)
+  "The last command line on BUFFER's screen, nil when there is none to read.
+The shell marks prompts and input (OSC 133 A, B); ghostel's renderer
+puts them on the text.  What is typed at the last prompt is no command
+yet, unless it runs.  A screen that waits for its redraw is stale: nil."
+  (with-current-buffer buffer
+    (unless (ghostel-dock--local 'ghostel--pending-redraw buffer)
+      (save-excursion
+        (goto-char (point-max))
+        (let ((running (ghostel-dock--local 'ghostel--command-running buffer))
+              (after (point-max))
+              (first t)
+              (tries 0)
+              found match)
+          (while (and (not found) (< tries 30)
+                      (setq match (text-property-search-backward 'ghostel-prompt t t)))
+            (unless (and first (not running))
+              (setq found (ghostel-dock--input-between (prop-match-end match) after)))
+            (setq first nil
+                  tries (1+ tries)
+                  after (prop-match-beginning match)))
+          found)))))
+
 (defun ghostel-dock--info (buffer)
   "What a row tells of terminal BUFFER, a plist."
   (let* ((process (ghostel-dock--local 'ghostel--process buffer))
          (alive (process-live-p process))
          (fg (and alive (ghostel-dock--foreground buffer)))
-         (running (and alive (ghostel-dock--local 'ghostel--command-running buffer))))
+         (running (and alive (ghostel-dock--local 'ghostel--command-running buffer)))
+         (osc133 (or (buffer-local-value 'ghostel-dock--osc133 buffer)
+                     (and (ghostel-dock--local 'ghostel--prompt-positions buffer) t))))
+    (with-current-buffer buffer
+      (when fg
+        (setq ghostel-dock--last-command (cdr fg)))
+      ;; Idle well after a bound command ran: it ended.
+      (when (and ghostel-dock--command-live (not fg) (not running)
+                 (> (- (float-time) ghostel-dock--command-live) 1.5))
+        (setq ghostel-dock--command-live nil)))
     (list :root (ghostel-dock--root-of buffer)
           :name (ghostel-dock--name-of buffer)
           :job (cond ((not alive) 'exited)
@@ -363,10 +468,15 @@ tell: `ghostel--pid' is the shell, or the login(1) that runs it."
                      (running 'running))
           :pid (car fg)
           :status (buffer-local-value 'ghostel-dock--status buffer)
-          :osc133 (or (buffer-local-value 'ghostel-dock--osc133 buffer)
-                      (and (ghostel-dock--local 'ghostel--prompt-positions buffer) t))
+          :osc133 osc133
           :dir (buffer-local-value 'default-directory buffer)
-          :output (buffer-local-value 'ghostel-dock--output-at buffer))))
+          :output (buffer-local-value 'ghostel-dock--output-at buffer)
+          :last (or (cdr fg)
+                    (and osc133 (ghostel-dock--screen-command buffer))
+                    (buffer-local-value 'ghostel-dock--last-command buffer))
+          :command (buffer-local-value 'ghostel-dock--command buffer)
+          :start (buffer-local-value 'ghostel-dock--start buffer)
+          :kept (ghostel-dock--kept-p buffer))))
 
 (defun ghostel-dock--busy-p (info)
   "Non-nil when the terminal INFO tells of runs something."
@@ -417,6 +527,57 @@ tell: `ghostel--pid' is the shell, or the login(1) that runs it."
             (t (format "%dd" (/ secs 86400)))))))
 
 
+;;; Waiting for a prompt
+
+
+(defvar ghostel-dock--wait-timer nil)
+
+(defun ghostel-dock--prompt-p (buffer)
+  "Non-nil when BUFFER's shell waits at its prompt.
+With OSC 133 that is after the D that ends its command; without, when
+no job holds the foreground."
+  (and (buffer-live-p buffer)
+       (process-live-p (ghostel-dock--local 'ghostel--process buffer))
+       (not (ghostel-dock--local 'ghostel--command-running buffer))
+       (not (ghostel-dock--foreground buffer))))
+
+(defun ghostel-dock--ready-p (buffer)
+  "Non-nil when BUFFER's shell is at its prompt and done printing.
+A new shell prints its rc files' output, then the prompt: 0.4 s of
+quiet after output tells it is through."
+  (and (ghostel-dock--prompt-p buffer)
+       (let ((out (buffer-local-value 'ghostel-dock--output-at buffer))
+             (born (buffer-local-value 'ghostel-dock--born buffer))
+             (now (float-time)))
+         (cond (out (> (- now out) 0.4))
+               (born (> (- now born) 3))
+               (t t)))))
+
+(defun ghostel-dock--when (buffer predicate fn timeout)
+  "Call FN with t once PREDICATE holds of BUFFER, or with nil after TIMEOUT s.
+Never waits in the command loop: a timer looks every 0.1 s, and an
+OSC 133 D looks at once."
+  (push (list buffer predicate fn (+ (float-time) timeout)) ghostel-dock--waiters)
+  (ghostel-dock--poll-waiters))
+
+(defun ghostel-dock--poll-waiters ()
+  "Call each waiter whose terminal is ready, or whose time is up."
+  (let ((now (float-time)) due keep)
+    (dolist (waiter ghostel-dock--waiters)
+      (pcase-let ((`(,buffer ,predicate ,fn ,deadline) waiter))
+        (cond ((and (buffer-live-p buffer) (funcall predicate buffer)) (push (cons fn t) due))
+              ((or (not (buffer-live-p buffer)) (> now deadline)) (push (cons fn nil) due))
+              (t (push waiter keep)))))
+    (setq ghostel-dock--waiters (nreverse keep))
+    (when (timerp ghostel-dock--wait-timer)
+      (cancel-timer ghostel-dock--wait-timer))
+    (setq ghostel-dock--wait-timer
+          (and ghostel-dock--waiters
+               (run-with-timer 0.1 nil #'ghostel-dock--poll-waiters)))
+    (dolist (call (nreverse due))
+      (funcall (car call) (cdr call)))))
+
+
 ;;; Making a terminal
 
 (defun ghostel-dock--alist ()
@@ -427,17 +588,22 @@ tell: `ghostel--pid' is the shell, or the login(1) that runs it."
     (preserve-size . (nil . t))
     (window-parameters . ((ghostel-dock . t)))))
 
-(defun ghostel-dock--create (root name &optional caller)
+(defun ghostel-dock--create (root name &optional caller dir hidden)
   "Start ROOT's terminal NAME in the panel; return it.  The selected
-window stays selected.
+window stays selected.  Its shell starts in DIR, ROOT by default.
+HIDDEN: shown nowhere, sized like the selected window until it shows.
 CALLER, the buffer it was asked from, goes to
 `ghostel-dock-after-create-functions'."
   (let* ((root (ghostel-dock--norm root))
-         (default-directory root)
+         (default-directory (if (and dir (file-directory-p dir))
+                                (ghostel-dock--norm dir)
+                              root))
          (ghostel-buffer-name (ghostel-dock--buffer-name root name))
          ;; Ghostel sizes the terminal by the window it pops into: the panel.
          (display-buffer-overriding-action
-          (cons '(display-buffer-in-side-window) (ghostel-dock--alist)))
+          (if hidden
+              '((display-buffer-no-window) (allow-no-window . t))
+            (cons '(display-buffer-in-side-window) (ghostel-dock--alist))))
          (selected (selected-window))
          ;; It pops to it, selecting it: whoever wants it selected says so.
          (buffer (prog1 (ghostel t)
@@ -446,10 +612,13 @@ CALLER, the buffer it was asked from, goes to
     (with-current-buffer buffer
       (setq ghostel-dock--root root
             ghostel-dock--name name
+            ghostel-dock--born (float-time)
             ;; A name not the buffer's: ghostel takes it for a rename by
             ;; hand, and never renames it after a title again.
-            ghostel--managed-buffer-name 'ghostel-dock))
+            ghostel--managed-buffer-name 'ghostel-dock)
+      (add-hook 'kill-buffer-hook #'ghostel-dock--schedule-save nil t))
     (run-hook-with-args 'ghostel-dock-after-create-functions buffer caller)
+    (ghostel-dock--schedule-save)
     buffer))
 
 (defun ghostel-dock-terminal (&optional root create)
@@ -457,6 +626,8 @@ CALLER, the buffer it was asked from, goes to
 With CREATE, start one named `ghostel-dock-default-name' when ROOT has
 none: it shows in the panel."
   (let ((root (ghostel-dock--norm (or root (ghostel-dock--current-root)))))
+    (when create
+      (ghostel-dock--ensure-restored root))
     (or (car (ghostel-dock-terminals root))
         (and create
              (ghostel-dock--create root (ghostel-dock--free-name
@@ -481,10 +652,91 @@ PROMPT, else \"New terminal in PROJECT\"; INITIAL is in the minibuffer."
 Asks for the name.  A name ROOT already has shows that terminal."
   (interactive)
   (let* ((root (ghostel-dock--norm (or root (ghostel-dock--current-root))))
+         (_ (ghostel-dock--ensure-restored root))
          (name (or name (ghostel-dock--read-name root))))
     (ghostel-dock-show (or (ghostel-dock--named root name)
                            (ghostel-dock--create root name (current-buffer)))
                        t)))
+
+
+;;; Running a bound command
+
+(defun ghostel-dock--put (buffer command submit)
+  "Paste COMMAND, a ghostel-cmd binding's, into BUFFER; SUBMIT runs it."
+  (with-current-buffer buffer
+    (ghostel-paste-string command)
+    (when submit
+      (ghostel-send-key "return"))
+    (setq ghostel-dock--command command
+          ghostel-dock--command-live (and submit (float-time))))
+  (ghostel-dock--schedule-save)
+  buffer)
+
+(defun ghostel-dock--stop-then (buffer fn)
+  "Interrupt BUFFER's job; call FN with t at its prompt, nil if none came.
+A second interrupt goes at half of `ghostel-dock-stop-timeout'."
+  (let ((half (/ ghostel-dock-stop-timeout 2.0)))
+    (with-current-buffer buffer
+      (ghostel-send-C-c))
+    (ghostel-dock--when
+     buffer #'ghostel-dock--prompt-p
+     (lambda (ok)
+       (if (or ok (not (buffer-live-p buffer)))
+           (funcall fn ok)
+         (with-current-buffer buffer
+           (ghostel-send-C-c))
+         (ghostel-dock--when buffer #'ghostel-dock--prompt-p fn half)))
+     half)))
+
+(defun ghostel-dock--running-p (buffer command)
+  "Non-nil when BUFFER still runs COMMAND, which a binding ran there.
+With OSC 133 a prompt since says it ended; without, an idle look."
+  (and (equal command (buffer-local-value 'ghostel-dock--command buffer))
+       (buffer-local-value 'ghostel-dock--command-live buffer)
+       t))
+
+;;;###autoload
+(defun ghostel-dock-run (command name &optional root submit)
+  "Put COMMAND in ROOT's terminal NAME, shown in the panel; SUBMIT runs it.
+ROOT is the current buffer's by default.  The terminal starts when it
+is missing, and gets COMMAND once its shell shows its prompt.  Still
+running COMMAND from before, it is restarted: interrupted, then COMMAND
+goes at its prompt.  Running something else, it is asked about first.
+Return the terminal."
+  (let* ((root (ghostel-dock--norm (or root (ghostel-dock--current-root))))
+         (_ (ghostel-dock--ensure-restored root))
+         (existing (ghostel-dock--named root name))
+         (buffer (or existing (ghostel-dock--create root name (current-buffer))))
+         (info (ghostel-dock--info buffer))
+         (go (lambda (ok)
+               (if ok
+                   (ghostel-dock--put buffer command submit)
+                 (message "%s showed no prompt: %s not run"
+                          (if (buffer-live-p buffer) (buffer-name buffer) name)
+                          command)))))
+    (when (eq (plist-get info :job) 'exited)
+      (user-error "%s has exited" (buffer-name buffer)))
+    (ghostel-dock-show buffer t)
+    (cond
+     ((not (ghostel-dock--busy-p info))
+      (ghostel-dock--when buffer #'ghostel-dock--ready-p go ghostel-dock-ready-timeout))
+     ((ghostel-dock--running-p buffer command)
+      (message "Restarting %s in %s" command (buffer-name buffer))
+      (ghostel-dock--stop-then buffer go))
+     ((y-or-n-p (format "%s is running %s; stop it and run %s? "
+                        (buffer-name buffer) (ghostel-dock--job-words info) command))
+      (ghostel-dock--stop-then buffer go))
+     (t (message "Left %s running %s" (buffer-name buffer) (ghostel-dock--job-words info))))
+    buffer))
+
+(defun ghostel-dock-terminal-names (&optional root)
+  "Names of ROOT's terminals: those open, then those saved to come back."
+  (let ((root (ghostel-dock--norm (or root (ghostel-dock--current-root)))))
+    (delete-dups
+     (append (mapcar #'ghostel-dock--name-of (ghostel-dock-terminals root))
+             (unless (member root ghostel-dock--restored)
+               (mapcar (lambda (entry) (plist-get entry :name))
+                       (cdr (assoc root (ghostel-dock--stored)))))))))
 
 
 ;;; The panel
@@ -576,6 +828,178 @@ selected.  A terminal running something is left alone."
   buffer)
 
 
+;;; After an Emacs restart
+
+(defvar ghostel-dock--store 'unread
+  "The save file's terminals: alist (ROOT . ENTRIES), most recent first.
+An entry is a plist :name :dir, and from a ghostel-cmd binding :command
+and :start.  `unread' before the first read; `broken' when the file
+does not read, and it is then never written over.")
+
+
+(defvar ghostel-dock--save-timer nil)
+
+(defvar ghostel-dock--written nil
+  "The save file's text as last read or written.")
+
+(defconst ghostel-dock--save-header
+  ";; -*- mode: lisp-data -*-
+;; ghostel-dock's terminals by project root, brought back after a restart.
+;; Written by ghostel-dock.  No output, no history: a :command is the one
+;; a ghostel-cmd binding ran there, and :start t runs it again.
+")
+
+(defun ghostel-dock--valid-entry-p (entry)
+  "Non-nil when ENTRY is a terminal entry this version reads."
+  (and (consp entry)
+       (stringp (plist-get entry :name))
+       (not (string-empty-p (plist-get entry :name)))))
+
+(defun ghostel-dock--read-store ()
+  "Read `ghostel-dock-save-file' into `ghostel-dock--store'."
+  (setq ghostel-dock--store
+        (condition-case err
+            (when (file-exists-p ghostel-dock-save-file)
+              (with-temp-buffer
+                (insert-file-contents ghostel-dock-save-file)
+                (setq ghostel-dock--written (buffer-string))
+                (goto-char (point-min))
+                ;; Nothing but comments is empty; a form cut short is broken.
+                (forward-comment (buffer-size))
+                (let ((data (unless (eobp) (read (current-buffer)))))
+                  (unless (or (null data) (eql (plist-get data :version) 1))
+                    (error "Not a version 1 file"))
+                  (cl-loop for cell in (plist-get data :terminals)
+                           when (and (consp cell) (stringp (car cell)))
+                           collect (cons (ghostel-dock--norm (car cell))
+                                         (seq-filter #'ghostel-dock--valid-entry-p
+                                                     (cdr cell)))))))
+          (error
+           (message "ghostel-dock: %s does not read (%s); left as it is"
+                    ghostel-dock-save-file (error-message-string err))
+           'broken))))
+
+(defun ghostel-dock--stored ()
+  "The save file's terminals, read the first time; nil when it is broken."
+  (when (eq ghostel-dock--store 'unread)
+    (ghostel-dock--read-store))
+  (and (listp ghostel-dock--store) ghostel-dock--store))
+
+(defun ghostel-dock--kept-p (buffer)
+  "Non-nil when terminal BUFFER comes back after a restart: the dock named
+it, it was not forgotten, and its project is local."
+  (and (ghostel-dock--terminal-p buffer)
+       (buffer-local-value 'ghostel-dock--name buffer)
+       (not (buffer-local-value 'ghostel-dock--forgotten buffer))
+       (not (file-remote-p (ghostel-dock--root-of buffer)))))
+
+(defun ghostel-dock--entry-of (buffer)
+  "The save file's entry for terminal BUFFER.  A shell that went remote
+(OSC 7 from an ssh) comes back in its root."
+  (with-current-buffer buffer
+    (append (list :name ghostel-dock--name
+                  :dir (if (file-remote-p default-directory)
+                           ghostel-dock--root
+                         (ghostel-dock--norm default-directory)))
+            (when ghostel-dock--command
+              (list :command ghostel-dock--command))
+            (when (and ghostel-dock--command ghostel-dock--start)
+              (list :start t)))))
+
+(defun ghostel-dock--live-store ()
+  "Alist (ROOT . ENTRIES) of the kept terminals open now, the most recent first."
+  (let (alist)
+    (dolist (buffer (buffer-list))
+      (when (ghostel-dock--kept-p buffer)
+        (push (ghostel-dock--entry-of buffer)
+              (alist-get (ghostel-dock--root-of buffer) alist nil nil #'equal))))
+    (mapcar (lambda (cell) (cons (car cell) (nreverse (cdr cell))))
+            (nreverse alist))))
+
+(defun ghostel-dock--merged ()
+  "What the save file is to hold: the kept terminals open now, by root.
+A root whose terminals this session has not brought back yet keeps what
+was saved of it: they are not gone, only not started."
+  (let ((live (ghostel-dock--live-store))
+        (stored (ghostel-dock--stored))
+        out)
+    (dolist (cell live)
+      (let* ((root (car cell))
+             (names (mapcar (lambda (entry) (plist-get entry :name)) (cdr cell)))
+             (old (unless (member root ghostel-dock--restored)
+                    (seq-remove (lambda (entry) (member (plist-get entry :name) names))
+                                (cdr (assoc root stored))))))
+        (push (cons root (append (cdr cell) old)) out)))
+    (dolist (cell stored)
+      (unless (or (assoc (car cell) live) (member (car cell) ghostel-dock--restored))
+        (push cell out)))
+    (seq-filter #'cdr (nreverse out))))
+
+(defun ghostel-dock--save ()
+  "Write the save file, when what it is to hold changed."
+  (when (timerp ghostel-dock--save-timer)
+    (cancel-timer ghostel-dock--save-timer))
+  (setq ghostel-dock--save-timer nil)
+  (ghostel-dock--stored)
+  (unless (eq ghostel-dock--store 'broken)
+    (let* ((data (ghostel-dock--merged))
+           (text (concat ghostel-dock--save-header
+                         (let ((print-length nil) (print-level nil))
+                           (pp-to-string (list :version 1 :terminals data))))))
+      (unless (or (equal text ghostel-dock--written)
+                  (and (null data) (not (file-exists-p ghostel-dock-save-file))))
+        (make-directory (file-name-directory (expand-file-name ghostel-dock-save-file)) t)
+        (let ((coding-system-for-write 'utf-8-unix))
+          (write-region text nil ghostel-dock-save-file nil 'silent))
+        (setq ghostel-dock--written text)))))
+
+(defun ghostel-dock--schedule-save ()
+  "Save once Emacs has been idle a second: a crash loses little."
+  (unless (timerp ghostel-dock--save-timer)
+    (setq ghostel-dock--save-timer (run-with-idle-timer 1 nil #'ghostel-dock--save))))
+
+(defun ghostel-dock--save-on-exit ()
+  "Save at `kill-emacs'; never in the way of exiting."
+  (with-demoted-errors "ghostel-dock: not saved: %S"
+    (ghostel-dock--save)))
+
+(add-hook 'kill-emacs-hook #'ghostel-dock--save-on-exit)
+
+(defun ghostel-dock--restore-entry (root entry)
+  "Start ROOT's saved terminal ENTRY, shown nowhere.
+Its command runs only when it is marked to start with it."
+  (let ((name (plist-get entry :name))
+        (command (plist-get entry :command))
+        (dir (plist-get entry :dir)))
+    (unless (ghostel-dock--named root name)
+      (let ((buffer (ghostel-dock--create
+                     root name nil (and (stringp dir) (not (file-remote-p dir)) dir) t)))
+        (with-current-buffer buffer
+          (setq ghostel-dock--command (and (stringp command) command)
+                ghostel-dock--start (and (stringp command) (plist-get entry :start) t)))
+        (when (buffer-local-value 'ghostel-dock--start buffer)
+          (ghostel-dock--when
+           buffer #'ghostel-dock--ready-p
+           (lambda (ok)
+             (if ok
+                 (ghostel-dock--put buffer command t)
+               (message "%s showed no prompt: %s not run" name command)))
+           ghostel-dock-ready-timeout))
+        buffer))))
+
+(defun ghostel-dock--ensure-restored (root)
+  "Bring back ROOT's saved terminals, the first time this session asks.
+Each shell starts in its directory, in saved order, so the one used
+last before the restart is the last used again."
+  (let ((root (ghostel-dock--norm root)))
+    (unless (member root ghostel-dock--restored)
+      (let ((entries (cdr (assoc root (ghostel-dock--stored)))))
+        (push root ghostel-dock--restored)
+        (when (and entries (not (file-remote-p root)) (file-directory-p root))
+          (dolist (entry entries)
+            (ghostel-dock--restore-entry root entry)))))))
+
+
 ;;; Layers
 
 (defvar ghostel-dock--layers nil
@@ -647,7 +1071,7 @@ snapshot named; a maximize asking `one-window-p' would count it."
 (defvar ghostel-dock--refresh-timer nil)
 (defvar ghostel-dock--goto nil "Buffer the next rebuild selects.")
 
-(defconst ghostel-dock--preview-lines 2
+(defconst ghostel-dock--preview-lines 3
   "Lines under the list's rule: the selected terminal told in full.")
 
 (defconst ghostel-dock-help
@@ -660,6 +1084,8 @@ snapshot named; a maximize asking `one-window-p' would count it."
     ("x"           "Kill; asks when it runs something")
     ("K"           "Kill the selected project's idle ones (lists, asks)")
     ("R"           "Rerun its last command (Up, Return) when idle")
+    ("S"           "After a restart, start with its bound command, or not")
+    ("F"           "Forget it: not back after a restart (again: keep it)")
     ("/"           "Filter: name, project, command, directory")
     ("g"           "Look again")
     ("q, Esc"      "Close; the panel goes back as it was"))
@@ -753,7 +1179,12 @@ printed.  NOW is the time the ages count from."
                           (propertize (ghostel-dock--root-name root)
                                       'face (if here 'bold 'font-lock-type-face))
                         "")
-                      (propertize (plist-get info :name) 'face 'font-lock-keyword-face)
+                      (concat (propertize (plist-get info :name)
+                                          'face (if (buffer-local-value 'ghostel-dock--forgotten
+                                                                        (car row))
+                                                    'shadow
+                                                  'font-lock-keyword-face))
+                              (if (plist-get info :start) (propertize " ↻" 'face 'success) ""))
                       (ghostel-dock--job-text info)
                       (ghostel-dock--status-text info)
                       (propertize (ghostel-cmd--tail (ghostel-dock--dir-text info)
@@ -830,7 +1261,27 @@ printed.  NOW is the time the ages count from."
                                  (t (format "output %s ago" age))))))))
       (concat (ghostel-cmd--truncate head width) "\n"
               (propertize (ghostel-cmd--truncate (string-join parts " · ") width)
+                          'face 'shadow)
+              "\n"
+              (propertize (ghostel-cmd--truncate (ghostel-dock--detail-more buffer info) width)
                           'face 'shadow)))))
+
+(defun ghostel-dock--detail-more (buffer info)
+  "The third line about BUFFER: its last command line, its binding, and
+whether it comes back after a restart."
+  (string-join
+   (delq nil
+         (list (when-let* ((last (plist-get info :last)))
+                 (concat "last: " last))
+               (when-let* ((command (plist-get info :command)))
+                 (format "bound: %s%s" command
+                         (if (plist-get info :start) ", starts with it" "")))
+               (cond ((plist-get info :kept) "back after a restart")
+                     ((buffer-local-value 'ghostel-dock--forgotten buffer)
+                      "forgotten: not back after a restart")
+                     ((file-remote-p (plist-get info :root)) "remote: not kept")
+                     (t "made before the dock: r names it, then it is kept"))))
+   " · "))
 
 (defun ghostel-dock--draw-preview ()
   "Draw the rule and, under it, the selected terminal told in full, or the help."
@@ -900,7 +1351,7 @@ terminal does first."
     (cond
      (ghostel-dock--filtering "   RET done  C-n/C-p move  Esc clear")
      (ghostel-dock--help-visible "   ? close help")
-     (t "   RET panel  o here  n new  r rename  x kill  K idle  R rerun  / filter  ? keys")))))
+     (t "   RET panel  o here  n new  r rename  x kill  K idle  R rerun  S start  F forget  / filter  ? keys")))))
 
 
 ;;; The manager: moving
@@ -1147,7 +1598,11 @@ It stays clear of the panel under it, where the selected terminal shows."
     (ghostel-dock--refresh t))))
 
 (defun ghostel-dock--show ()
-  "Show the manager as the state has it."
+  "Show the manager as the state has it, from the frame it belongs to.
+Selected, a posframe's own frame would answer `posframe-workable-p' no
+-- it has no minibuffer -- and get a side window inside itself."
+  (when (frame-parent)
+    (select-frame (ghostel-dock--root-frame)))
   (let* ((buffer (get-buffer-create ghostel-dock--buffer-name)))
     (with-current-buffer buffer
       (unless (derived-mode-p 'ghostel-dock-manager-mode)
@@ -1194,6 +1649,7 @@ previews the terminal in the panel; RET opens it there."
           ghostel-dock--top 0
           ghostel-dock--matched nil
           ghostel-dock--preview-id nil))
+  (ghostel-dock--ensure-restored (plist-get ghostel-dock--caller :root))
   (ghostel-dock--collect)
   (setq ghostel-dock--goto (ghostel-dock--first-pick))
   (prog1 (ghostel-dock--show)
@@ -1296,7 +1752,9 @@ first, so it opens in that project's layer."
       (rename-buffer (ghostel-dock--buffer-name root name) t)
       (setq ghostel-dock--name name
             ghostel--buffer-identity (buffer-name)
-            ghostel--managed-buffer-name 'ghostel-dock))
+            ghostel--managed-buffer-name 'ghostel-dock)
+      (add-hook 'kill-buffer-hook #'ghostel-dock--schedule-save nil t))
+    (ghostel-dock--schedule-save)
     buffer))
 
 (defun ghostel-dock-manager-rename ()
@@ -1314,29 +1772,40 @@ first, so it opens in that project's layer."
     (ghostel-dock--refresh t)))
 
 (defun ghostel-dock--kill (buffer)
-  "Kill terminal BUFFER, asked about already.
-Ghostel asks in the buffer itself, through a buffer-local
-`kill-buffer-query-functions' entry: it is told not to."
-  (let ((ghostel-query-before-killing nil)
-        (kill-buffer-query-functions nil))
-    (kill-buffer buffer)))
+  "Kill terminal BUFFER.
+A shell that gives OSC 133 is left to ghostel's own query, which knows
+when a command runs (`ghostel-query-before-killing').  One that does not
+was asked about by the dock already: ghostel, which would never know, is
+told not to."
+  (if (plist-get (ghostel-dock--info buffer) :osc133)
+      (kill-buffer buffer)
+    (let ((ghostel-query-before-killing nil)
+          (kill-buffer-query-functions nil))
+      (kill-buffer buffer))))
 
 (defun ghostel-dock-manager-kill ()
-  "Kill the selected terminal; ask first when it runs something."
+  "Kill the selected terminal; asked first when it runs something.
+With OSC 133 ghostel asks; without, the dock does, from its processes."
   (interactive)
   (let* ((buffer (ghostel-dock--selected))
          (info (ghostel-dock--info buffer))
          (ok t))
-    (when (ghostel-dock--busy-p info)
-      (ghostel-dock--ask
-       (lambda ()
-         (setq ok (yes-or-no-p (format "%s is running %s; kill it? "
-                                       (buffer-name buffer)
-                                       (ghostel-dock--job-words info)))))))
-    (when ok
-      (ghostel-dock--kill buffer)
-      (ghostel-dock--collect)
-      (ghostel-dock--refresh))))
+    (cond
+     ((plist-get info :osc133)
+      (if (ghostel-dock--local 'ghostel--command-running buffer)
+          (ghostel-dock--ask (lambda () (ghostel-dock--kill buffer)))
+        (ghostel-dock--kill buffer)))
+     (t
+      (when (ghostel-dock--busy-p info)
+        (ghostel-dock--ask
+         (lambda ()
+           (setq ok (yes-or-no-p (format "%s is running %s; kill it? "
+                                         (buffer-name buffer)
+                                         (ghostel-dock--job-words info)))))))
+      (when ok
+        (ghostel-dock--kill buffer))))
+    (ghostel-dock--collect)
+    (ghostel-dock--refresh)))
 
 (defun ghostel-dock-manager-kill-idle ()
   "Kill the selected row's project's idle terminals, once asked."
@@ -1367,6 +1836,40 @@ Ghostel asks in the buffer itself, through a buffer-local
     (ghostel-dock--send-rerun buffer)
     (run-with-timer 0.5 nil (lambda () (when (ghostel-dock--showing-p)
                                          (ghostel-dock--refresh t))))))
+
+(defun ghostel-dock-manager-start ()
+  "Start the selected terminal with its command after a restart, or no more.
+Its command is the one a ghostel-cmd binding last ran there."
+  (interactive)
+  (let ((buffer (ghostel-dock--selected)))
+    (with-current-buffer buffer
+      (unless ghostel-dock--command
+        (user-error "%s ran no command from a ghostel-cmd binding" (buffer-name)))
+      (unless (ghostel-dock--kept-p buffer)
+        (user-error "%s does not come back after a restart: F keeps it" (buffer-name)))
+      (setq ghostel-dock--start (not ghostel-dock--start))
+      (message (if ghostel-dock--start
+                   "After a restart %s starts with: %s"
+                 "After a restart %s starts with no command (%s)")
+               (buffer-name) ghostel-dock--command))
+    (ghostel-dock--schedule-save)
+    (ghostel-dock--refresh t)))
+
+(defun ghostel-dock-manager-forget ()
+  "Forget the selected terminal for good: it does not come back after a
+restart.  Again on a forgotten one, keep it after all."
+  (interactive)
+  (let ((buffer (ghostel-dock--selected)))
+    (with-current-buffer buffer
+      (unless ghostel-dock--name
+        (user-error "%s was made before the dock and is not kept: r names it" (buffer-name)))
+      (setq ghostel-dock--forgotten (not ghostel-dock--forgotten))
+      (message (if ghostel-dock--forgotten
+                   "%s is forgotten: it does not come back after a restart"
+                 "%s comes back after a restart")
+               (buffer-name)))
+    (ghostel-dock--schedule-save)
+    (ghostel-dock--refresh t)))
 
 (defun ghostel-dock-manager-refresh ()
   "Look again at every terminal."
@@ -1498,6 +2001,8 @@ Ghostel asks in the buffer itself, through a buffer-local
   "x"          #'ghostel-dock-manager-kill
   "K"          #'ghostel-dock-manager-kill-idle
   "R"          #'ghostel-dock-manager-rerun
+  "S"          #'ghostel-dock-manager-start
+  "F"          #'ghostel-dock-manager-forget
   "/"          #'ghostel-dock-filter
   "g"          #'ghostel-dock-manager-refresh
   "?"          #'ghostel-dock-manager-help
@@ -1539,6 +2044,8 @@ Ghostel asks in the buffer itself, through a buffer-local
     (kbd "x") #'ghostel-dock-manager-kill
     (kbd "K") #'ghostel-dock-manager-kill-idle
     (kbd "R") #'ghostel-dock-manager-rerun
+    (kbd "S") #'ghostel-dock-manager-start
+    (kbd "F") #'ghostel-dock-manager-forget
     (kbd "/") #'ghostel-dock-filter
     (kbd "gr") #'ghostel-dock-manager-refresh
     (kbd "?") #'ghostel-dock-manager-help
