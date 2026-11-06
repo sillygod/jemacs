@@ -27,6 +27,7 @@ minibuffer does not count.  The list keeps the order you give it with
 | =RET=       | Paste (fill ={{vars}}= first); a URL opens in the |
 |             | system browser                                    |
 | =C-RET=     | Paste and press Enter; a URL opens in an xwidget  |
+| =T=         | Run in a terminal of the project picked now       |
 | =u=         | Open the project's frontend in the browser        |
 | =/=         | Live-narrow (flex, whitespace is AND); every      |
 |             | printable key types, =C-n= / =C-p= move           |
@@ -195,6 +196,18 @@ A command pastes into the project's terminal: with ghostel-dock
 loaded (=local/ghostel-dock/=), the one last used in the project,
 shown in the dock's panel, a new =shell= when there is none.  Without
 it, the project's =ghostel-project= buffer in a split, as before.
+
+A command can name its terminal: =:terminal "dev"= in its record.  The
+=a= and =e= flows ask for it (empty: none) when ghostel-dock is there;
+=e= on a discovered task asks only that, kept in the save file under
+=(:task-terminal . ROOT)= -- no path, so no project takes it, as
+=(:url-pick . ROOT)=.  Its row shows =name →dev=.  RET / C-RET of a
+bound command goes through =ghostel-dock-run=: that terminal of the
+project, started when missing, restarted when it still runs the
+command, asked about when it runs something else.  =T= runs any command
+in a terminal picked on the spot (offering its own, else its name),
+once.  A file written before has no =:terminal= and reads as before;
+keys an edit does not ask about stay in the record.
 
 #+begin_src sh
   emacs --batch --init-directory=~/.emacs.d/emacs-home/ \

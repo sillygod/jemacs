@@ -28,6 +28,12 @@
 ;; Filling happens on a footer line in the overlay, not a chain of
 ;; minibuffers.  Paste does not press Enter unless C-RET.
 ;;
+;; A command can name its terminal, :terminal "dev" in its record: with
+;; ghostel-dock it runs in that terminal of the project, started when
+;; missing, restarted when it still runs it.  A discovered task's
+;; terminal is kept under (:task-terminal . ROOT).  T runs any command
+;; in a terminal picked on the spot.
+;;
 ;; `ghostel-project-cmd-run' is an alias for the overlay so existing
 ;; keybindings keep working.
 
@@ -49,6 +55,8 @@
 (declare-function new-terminal "jemacs-project")
 (declare-function ghostel-dock-terminal "ghostel-dock")
 (declare-function ghostel-dock-show "ghostel-dock")
+(declare-function ghostel-dock-run "ghostel-dock")
+(declare-function ghostel-dock-terminal-names "ghostel-dock")
 (declare-function ghostel-paste-string "ghostel")
 (declare-function ghostel-send-key "ghostel")
 (declare-function magit-get-current-branch "magit-git")
@@ -231,12 +239,90 @@ edit of the save file is never written over."
 
 (defun ghostel-cmd--rows (root)
   "Every command listed for ROOT, as rows ((SCOPE . NAME) . RECORD):
-the project's own, then the global ones, then the tasks found in ROOT."
+the project's own, then the global ones, then the tasks found in ROOT,
+each with the terminal kept for it."
   (append (ghostel-cmd--scope-rows 'project (ghostel-cmd--get-commands root))
           (ghostel-cmd--scope-rows
            'global (ghostel-cmd--get-commands ghostel-cmd--global-key))
-          (ghostel-cmd--tasks root)
+          (ghostel-cmd--with-task-terminals root (ghostel-cmd--tasks root))
           (ghostel-cmd--url-entries root)))
+
+
+;;; Terminals a command runs in
+
+(defun ghostel-cmd--terminal-of (record)
+  "The terminal RECORD names, or nil: then it goes to the last used."
+  (let ((name (plist-get record :terminal)))
+    (and (stringp name) (not (string-empty-p name)) name)))
+
+(defun ghostel-cmd--with-terminal (record name)
+  "A copy of RECORD running in terminal NAME; nil or \"\" for none."
+  (let ((copy (copy-sequence record)))
+    (cl-remf copy :terminal)
+    (if (and (stringp name) (not (string-empty-p name)))
+        (append copy (list :terminal name))
+      copy)))
+
+(defun ghostel-cmd--task-terminal-key (root)
+  "Save-file key of the terminals kept for ROOT's discovered tasks.
+Not a path, so no project root can take it; readers of the commands
+ignore it, as they do (:url-pick . ROOT)."
+  (cons :task-terminal root))
+
+(defun ghostel-cmd--task-id (scope name)
+  "How a task of SCOPE called NAME is known in the task-terminal list."
+  (format "%s:%s" scope name))
+
+(defun ghostel-cmd--task-terminals (root)
+  "Alist (TASK-ID . TERMINAL) kept for ROOT's tasks."
+  (ghostel-cmd--ensure-cache)
+  (alist-get (ghostel-cmd--task-terminal-key root) ghostel-cmd--cache nil nil #'equal))
+
+(defun ghostel-cmd--with-task-terminals (root rows)
+  "ROWS of ROOT's tasks, each with the terminal kept for it.
+The task rows are cached: those with a terminal are copies."
+  (let ((kept (ghostel-cmd--task-terminals root)))
+    (if (null kept)
+        rows
+      (mapcar (lambda (row)
+                (if-let* ((name (cdr (assoc (ghostel-cmd--task-id (caar row) (cdar row))
+                                            kept))))
+                    (cons (car row) (ghostel-cmd--with-terminal (cdr row) name))
+                  row))
+              rows))))
+
+(defun ghostel-cmd--set-task-terminal (root scope name terminal)
+  "Keep TERMINAL as the one ROOT's task NAME of SCOPE runs in; nil, none."
+  (let ((id (ghostel-cmd--task-id scope name)))
+    (ghostel-cmd--update-commands
+     (lambda (kept)
+       (let ((rest (cl-remove id kept :key #'car :test #'equal)))
+         (if (and terminal (not (string-empty-p terminal)))
+             (append rest (list (cons id terminal)))
+           rest)))
+     (ghostel-cmd--task-terminal-key root))))
+
+(defun ghostel-cmd--read-terminal (root prompt &optional initial)
+  "Read a terminal name of ROOT with PROMPT; nil for none.
+Completes on the terminals ghostel-dock knows for ROOT, open or saved;
+any other name starts a new one when the command runs."
+  (let ((name (string-trim
+               (completing-read prompt
+                                (and (fboundp 'ghostel-dock-terminal-names)
+                                     (ghostel-dock-terminal-names root))
+                                nil nil initial))))
+    (unless (string-empty-p name) name)))
+
+(defun ghostel-cmd--deliver-to (terminal)
+  "A deliver function for a command bound to TERMINAL, or to none.
+Bound, it runs through ghostel-dock in that terminal of the project;
+without ghostel-dock, or unbound, as `ghostel-cmd--deliver'."
+  (lambda (cmd submit)
+    (if (and terminal (fboundp 'ghostel-dock-run))
+        (let ((root (ghostel-cmd--dock-root)))
+          (ghostel-cmd--hide-overlay)
+          (ghostel-dock-run cmd terminal root submit))
+      (ghostel-cmd--deliver cmd submit))))
 
 (defun ghostel-cmd--task-p (scope)
   "Non-nil when SCOPE is a discovered task's, not a bookmark's."
@@ -1155,12 +1241,13 @@ column titles) and the mode line (the footer) each take one of them.")
 (defconst ghostel-cmd-sidebar-help-commands
   '(("RET"      "Paste into Ghostel (fill {{vars}}); a URL opens in the browser")
     ("C-RET"    "Paste and press Enter; a URL opens in an Emacs xwidget")
+    ("T"        "Run in a terminal of the project picked now (→dev: its own)")
     ("u"        "Open the project's frontend in the browser")
     ("j, k"     "Move; past the rows shown the list scrolls")
     ("gg, G"    "First / last row (C-d, C-u: half a page)")
     ("a"        "Add template to the project")
     ("A"        "Add global template, shared by every project")
-    ("e"        "Edit at point")
+    ("e"        "Edit at point, its terminal too; a task: its terminal")
     ("d"        "Delete at point")
     ("m"        "Move to the global list / back; a task: copy to the project")
     ("M-j, M-k" "Move command down / up (saved)")
@@ -1238,13 +1325,23 @@ its sections never mix."
   (concat (or (plist-get record :source) "url")
           (unless (plist-get record :web) "  not web")))
 
-(defun ghostel-cmd--name-cell (record)
-  "The Name-column string for RECORD: a URL gets its up/down glyph."
+(defun ghostel-cmd--name-cell (record &optional width)
+  "The Name-column string for RECORD: a URL gets its up/down glyph, a
+command bound to a terminal its name after an arrow.  WIDTH cuts the
+name so the arrow and the terminal still show."
   (if (plist-get record :url)
       (concat (ghostel-cmd--url-glyph record) " "
               (propertize (plist-get record :name)
                           'face 'font-lock-function-name-face))
-    (propertize (plist-get record :name) 'face 'font-lock-keyword-face)))
+    (let* ((terminal (ghostel-cmd--terminal-of record))
+           (mark (if terminal (propertize (concat " →" terminal) 'face 'shadow) ""))
+           (name (plist-get record :name)))
+      (concat (propertize (if (and width terminal)
+                              (ghostel-cmd--truncate
+                               name (max 4 (- width (string-width mark))))
+                            name)
+                          'face 'font-lock-keyword-face)
+              mark))))
 
 (defun ghostel-cmd--truncate (s width)
   (truncate-string-to-width (or s "") (max 1 width) nil nil t))
@@ -1339,7 +1436,7 @@ one at point, else the one selected before."
           (vconcat
            (when tagwidth (list (ghostel-cmd--tag (caar row))))
            (vector
-            (ghostel-cmd--truncate (ghostel-cmd--name-cell c) nw)
+            (ghostel-cmd--truncate (ghostel-cmd--name-cell c nw) nw)
             (ghostel-cmd--truncate (plist-get c :cmd) cw)
             (propertize (ghostel-cmd--truncate desc dw)
                         'face 'font-lock-comment-face))))))
@@ -1618,7 +1715,7 @@ ROOT is where TMPL runs."
        (ghostel-cmd--help-visible
         "   ? close help  Esc close")
        (t
-        "   RET paste  C-RET send  a add  / filter  ? keys  Esc close"))))))
+        "   RET paste  C-RET send  T in terminal  a add  / filter  ? keys  Esc close"))))))
 
 (defun ghostel-cmd--fill-footer (fill)
   "The footer's part while FILL asks for a variable: its name, its
@@ -2122,26 +2219,61 @@ is the one last used there, shown in its panel."
     (browse-url url))
   (message "Opening %s%s" url (if in-emacs " (xwidget)" "")))
 
-(defun ghostel-cmd-paste (&optional submit)
+(defun ghostel-cmd-paste (&optional submit terminal)
   "Act on the entry at point: open a service URL, else paste a command.
 A URL entry opens in the system browser, or an Emacs xwidget with a
-prefix (C-RET).  A command fills its {{vars}} in the overlay first."
+prefix (C-RET).  A command fills its {{vars}} in the overlay first.
+It goes to TERMINAL, else the terminal it names, else the project's
+last used; SUBMIT presses Enter."
   (interactive)
   (when ghostel-cmd--filtering
     (ghostel-cmd--set-filtering nil))
   (let* ((row (ghostel-cmd--row-at-point))
          (record (cdr row))
-         (root (or ghostel-cmd--root (ghostel-cmd--current-project-root))))
+         (root (or ghostel-cmd--root (ghostel-cmd--current-project-root)))
+         (deliver (ghostel-cmd--deliver-to
+                   (or terminal (ghostel-cmd--terminal-of record)))))
     (unless record
       (user-error "No command at point"))
     (cond
      ((plist-get record :url)
       (ghostel-cmd--open-url (plist-get record :url) submit))
-     ((ghostel-cmd--start-fill record root (car row) submit)
+     ((ghostel-cmd--start-fill record root (car row) submit :deliver deliver)
       (ghostel-cmd--draw-preview)
       (force-mode-line-update t))
      (t
-      (ghostel-cmd--deliver (plist-get record :cmd) submit)))))
+      (funcall deliver (plist-get record :cmd) submit)))))
+
+(defun ghostel-cmd-paste-in-terminal ()
+  "Run the command at point in a terminal of the project picked now.
+It offers the terminal the command names, else its name; a name the
+project has no terminal for starts one.  Its {{vars}} fill first."
+  (interactive)
+  (when ghostel-cmd--filtering
+    (ghostel-cmd--set-filtering nil))
+  (let* ((row (or (ghostel-cmd--row-at-point) (user-error "No command at point")))
+         (record (cdr row))
+         (root (or ghostel-cmd--root (ghostel-cmd--current-project-root)))
+         (terminal nil)
+         (ask (lambda ()
+                (setq terminal (ghostel-cmd--read-terminal
+                                root "Run in terminal: "
+                                (or (ghostel-cmd--terminal-of record)
+                                    (plist-get record :name))))
+                ;; The overlay reopens on this row, to fill it there.
+                (setq ghostel-cmd--goto-id (cons (car row) (plist-get record :name))))))
+    (when (plist-get record :url)
+      (user-error "'%s' is a URL: RET opens it" (plist-get record :name)))
+    (if (ghostel-cmd--posframe-showing-p)
+        (ghostel-cmd--with-parent-input ask)
+      (funcall ask))
+    (when terminal
+      (with-current-buffer (get-buffer-create ghostel-cmd--buffer-name)
+        (if (ghostel-cmd--start-fill record root (car row) t
+                                     :deliver (ghostel-cmd--deliver-to terminal))
+            (progn (ghostel-cmd--draw-preview)
+                   (force-mode-line-update t))
+          (funcall (ghostel-cmd--deliver-to terminal) (plist-get record :cmd) t))))))
 
 (defun ghostel-cmd-paste-send ()
   (interactive)
@@ -2277,7 +2409,11 @@ in an Emacs xwidget instead of the system browser."
                      (match-string 1 cmd)))
                   (name (read-string "Name / alias: " nil nil suggested))
                   (desc (read-string "Description (optional): "))
-                  (record (list :name name :cmd cmd :desc desc)))
+                  (terminal (and (fboundp 'ghostel-dock-run)
+                                 (ghostel-cmd--read-terminal
+                                  root "Terminal (empty: the one last used): ")))
+                  (record (ghostel-cmd--with-terminal
+                           (list :name name :cmd cmd :desc desc) terminal)))
              (when (string-empty-p name)
                (user-error "Command name cannot be empty"))
              (when (string-empty-p cmd)
@@ -2311,8 +2447,40 @@ Region text is the default command."
   (ghostel-cmd--add initial-cmd 'global))
 
 (defun ghostel-cmd-edit ()
-  "Edit the command at point, in its own list."
+  "Edit the command at point, in its own list, and the terminal it runs in.
+A discovered task is read-only: only its terminal is asked."
   (interactive)
+  (if (when-let* ((row (ghostel-cmd--row-at-point)))
+        (and (ghostel-cmd--task-p (car row))
+             (not (plist-get (cdr row) :url))))
+      (ghostel-cmd--edit-task-terminal)
+    (ghostel-cmd--edit-bookmark)))
+
+(defun ghostel-cmd--edit-task-terminal ()
+  "Ask which terminal the task at point runs in, and keep it."
+  (pcase-let* ((`(,scope . ,record) (ghostel-cmd--row-at-point))
+               (root (or ghostel-cmd--root (ghostel-cmd--current-project-root)))
+               (name (plist-get record :name))
+               (run (lambda ()
+                      (let ((terminal (ghostel-cmd--read-terminal
+                                       root
+                                       (format "Terminal for %s task %s (empty: the one last used): "
+                                               scope name)
+                                       (ghostel-cmd--terminal-of record))))
+                        (ghostel-cmd--set-task-terminal root scope name terminal)
+                        (setq ghostel-cmd--goto-id (cons scope name))
+                        (message (if terminal "%s task %s runs in %s"
+                                   "%s task %s runs in the terminal last used")
+                                 scope name terminal)))))
+    (unless (fboundp 'ghostel-dock-run)
+      (user-error "'%s' is a %s task, read-only: m copies it to the project" name scope))
+    (if (ghostel-cmd--posframe-showing-p)
+        (ghostel-cmd--with-parent-input run)
+      (funcall run)
+      (ghostel-cmd--refresh-overlay))))
+
+(defun ghostel-cmd--edit-bookmark ()
+  "Edit the project or global command at point, in its own list."
   (pcase-let ((`(,scope . ,record) (ghostel-cmd--bookmark-at-point)))
     (let ((run
            (lambda ()
@@ -2325,7 +2493,18 @@ Region text is the default command."
                                           (plist-get record :cmd)))
                     (new-desc (read-string "Description (optional): "
                                            (or (plist-get record :desc) "")))
-                    (new (list :name new-name :cmd new-cmd :desc new-desc)))
+                    (terminal (if (fboundp 'ghostel-dock-run)
+                                  (ghostel-cmd--read-terminal
+                                   root "Terminal (empty: the one last used): "
+                                   (ghostel-cmd--terminal-of record))
+                                (ghostel-cmd--terminal-of record)))
+                    ;; Keys this version does not know stay as they were.
+                    (new (ghostel-cmd--with-terminal
+                          (plist-put (plist-put (plist-put (copy-sequence record)
+                                                           :name new-name)
+                                                :cmd new-cmd)
+                                     :desc new-desc)
+                          terminal)))
                (when (string-empty-p new-name)
                  (user-error "Command name cannot be empty"))
                (when (string-empty-p new-cmd)
@@ -2736,6 +2915,7 @@ presses Enter."
   "<return>"   #'ghostel-cmd-paste
   "C-RET"      #'ghostel-cmd-paste-send
   "C-<return>" #'ghostel-cmd-paste-send
+  "T"          #'ghostel-cmd-paste-in-terminal
   "u"          #'ghostel-cmd-open-url
   "a"          #'ghostel-cmd-add
   "A"          #'ghostel-cmd-add-global
@@ -2805,6 +2985,7 @@ presses Enter."
       (kbd "<return>") #'ghostel-cmd-paste
       (kbd "C-RET") #'ghostel-cmd-paste-send
       (kbd "C-<return>") #'ghostel-cmd-paste-send
+      (kbd "T") #'ghostel-cmd-paste-in-terminal
       (kbd "u") #'ghostel-cmd-open-url
       (kbd "a") #'ghostel-cmd-add
       (kbd "A") #'ghostel-cmd-add-global
