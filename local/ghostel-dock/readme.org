@@ -170,12 +170,49 @@ on the spot.  Through =ghostel-dock-run=:
 - Running something else: asked first ("*web:dev* is running X; stop it
   and run Y?").
 - RET pastes, C-RET runs, as for any command.  A command naming no
-  terminal goes to the project's last-used one, as before.
+  terminal goes to the project's last-used one: see below.
 
 "Still running the same": with OSC 133, from the binding's run until a
 D ends it; without, until a look finds the terminal idle 1.5 s after
 the run.  Without OSC 133 a command the user started by hand after
 ours ended, before any look, would count as ours.
+
+* Commands bound to no terminal (with ghostel-cmd)
+
+Through =ghostel-dock-paste=, a command naming no terminal goes into
+the project's last-used terminal, shown in the panel and selected (a
+new =shell= when there is none, the saved ones back first) -- unless
+that one runs something in the foreground, by the rows' own test: OSC
+133 says a command runs, or the foreground job is not a shell.  Then it
+is not typed in.  One prompt asks where, with completion:
+
+#+begin_example
+  shell is running docker-compose up; paste it in (default logs):
+    logs    new terminal
+    dev     idle  *jrevba:dev*
+    shell   ▶ docker-compose up · paste here anyway  *jrevba-ghostel*
+#+end_example
+
+- Default: a new terminal named after the ghostel-cmd row (=logs=),
+  made unique against the project's names, row labels and saved
+  terminals (=logs-2=).  It starts in the project's root, shows in the
+  panel, and gets the command at its prompt (as a bound command's
+  does: no job, 0.4 s quiet, at most =ghostel-dock-ready-timeout=).
+- Then the project's other terminals, the last used first: pasted at
+  once.  Last the busy one: pasted there anyway.
+- Any other name: that terminal, started (a saved one comes back).
+- An old =*PROJECT-ghostel*= is a choice like any other, =shell= as its
+  row shows it, its full name beside it; by its full name when a
+  terminal is named =shell= too.
+- A paste, not a binding: nothing is kept of the command (the new
+  terminal is saved as any named one, its command not).
+- Idle, or exited: pasted as before, no question.
+
+=ghostel-dock-target= tells ghostel-cmd's footer, before the press,
+where =RET= goes: the terminal by its row's label (or =new=), what it
+runs, and whether =RET= asks (unbound and busy; bound, running another
+command) or restarts (bound, still running its command).  One look:
+two =process-attributes= calls.
 
 * When a command finishes out of sight
 
@@ -333,12 +370,18 @@ as =switch-terminal= did.
   ROOT's terminal NAME, as above.
 - =(ghostel-dock-terminal-names &optional ROOT)= -- ROOT's terminal
   names, open and saved.
+- =(ghostel-dock-paste COMMAND &optional ROOT SUBMIT NAME)= -- COMMAND
+  into ROOT's last-used terminal; busy, it asks, a new terminal NAME
+  first.
+- =(ghostel-dock-target &optional ROOT NAME COMMAND)= -- where a command
+  goes, as a plist (=:label :buffer :new :job :then=), for a footer.
 - =ghostel-dock-after-create-functions= -- called with a new terminal
   and the buffer it was asked from (the config sends the python setup).
 
-ghostel-cmd pastes into =ghostel-dock-terminal= of its overlay's root
-when ghostel-dock is there (it asks =fboundp=), and shows it in the
-panel; without it, as before.
+ghostel-cmd pastes through =ghostel-dock-paste= into its overlay's
+root when ghostel-dock is there (it asks =fboundp=), and shows it in
+the panel; its footer asks =ghostel-dock-target=.  Without it, as
+before.
 
 * Later (not built)
 

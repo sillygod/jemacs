@@ -504,7 +504,7 @@ without a | stays a plain default."
   `(let ((sent nil)
          (ghostel-cmd--last-values (make-hash-table :test #'equal)))
      (cl-letf (((symbol-function 'ghostel-cmd--deliver)
-                (lambda (cmd submit) (push (cons cmd submit) sent))))
+                (lambda (cmd submit &rest _) (push (cons cmd submit) sent))))
        ,@body)))
 
 (defun ghostel-cmd-tests--input ()
@@ -1560,14 +1560,30 @@ neither pastes into Ghostel."
 
 (defmacro ghostel-cmd-tests--with-dock (&rest body)
   "BODY with ghostel-dock stood in for: `runs' collects its runs, newest
-first, as (CMD TERMINAL ROOT SUBMIT); `terminals' are the names it knows."
+first, as (CMD TERMINAL ROOT SUBMIT); `pastes' its unbound pastes, as
+\(CMD ROOT SUBMIT NAME); `looks' what the footer asked, as (TERMINAL
+COMMAND); `terminals' are the names it knows; `targets' says where a
+command goes, (TERMINAL . PLIST), the last used under nil."
   (declare (indent 0))
   `(let ((runs nil)
+         (pastes nil)
+         (looks nil)
          (terminals '("dev" "shell"))
+         (targets '((nil :label "shell")))
+         (ghostel-cmd--targets nil)
          (ghostel-cmd--last-values (make-hash-table :test #'equal)))
+     (ignore pastes looks targets)
      (cl-letf (((symbol-function 'ghostel-dock-run)
                 (lambda (cmd terminal root submit)
                   (push (list cmd terminal root submit) runs)))
+               ((symbol-function 'ghostel-dock-paste)
+                (lambda (cmd root submit name)
+                  (push (list cmd root submit name) pastes)))
+               ((symbol-function 'ghostel-dock-target)
+                (lambda (_root terminal command)
+                  (push (list terminal command) looks)
+                  (or (cdr (assoc terminal targets))
+                      (list :label terminal :new t))))
                ((symbol-function 'ghostel-dock-terminal-names)
                 (lambda (&rest _) terminals)))
        ,@body)))
@@ -1695,6 +1711,137 @@ task then runs there."
       (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "")))
         (ghostel-cmd-edit))
       (should-not (ghostel-cmd--task-terminals ghostel-cmd--root)))))
+
+;;; Where RET goes, told on the footer; an unbound command through the dock
+
+(defun ghostel-cmd-tests--keys-line ()
+  "The footer's keys: the mode line, past the project's name."
+  (substring-no-properties (string-trim (ghostel-cmd--footer))))
+
+(ert-deftest ghostel-cmd-test-footer-says-where-ret-goes ()
+  "The footer names the terminal RET sends the selected row to, new or
+busy, and follows the selection.  Rows that go to the same terminal
+share one look."
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "a" :cmd "echo a")
+            (list :name "serve" :cmd "npm run dev" :terminal "dev")
+            (list :name "port" :cmd "vite --port {{port:5173}}" :terminal "dev")
+            (list :name "b" :cmd "echo b")
+            (list :name "logs" :cmd "tail -f log" :terminal "logs"))
+    (ghostel-cmd-tests--with-dock
+      (setq targets '((nil :label "shell" :buffer x :job "docker-compose up" :then ask)
+                      ("dev" :label "dev" :buffer y :job "npm run dev" :then restart)))
+      (ghostel-cmd-revert)
+      (ghostel-cmd-tests--goto '(project . "a"))
+      (ghostel-cmd--preview-on-command)
+      (should (string-search "RET → shell ▶ docker-compose up: asks  C-RET send  T pick  a add"
+                             (ghostel-cmd-tests--keys-line)))
+      ;; The mode line is redrawn when it says something new.
+      (let ((redrawn nil))
+        (cl-letf (((symbol-function 'force-mode-line-update)
+                   (lambda (&rest _) (push (current-buffer) redrawn))))
+          (execute-kbd-macro (kbd "n")))
+        (should (memq (current-buffer) redrawn)))
+      (should (string-search "RET → dev ▶ npm run dev: restarts  C-RET send"
+                             (ghostel-cmd-tests--keys-line)))
+      ;; Its {{vars}} unfilled, the command is not told.
+      (execute-kbd-macro (kbd "n"))
+      (should (equal (car looks) '("dev" nil)))
+      (execute-kbd-macro (kbd "n"))
+      (should (string-search "RET → shell ▶ docker-compose up: asks"
+                             (ghostel-cmd-tests--keys-line)))
+      (execute-kbd-macro (kbd "n"))
+      (should (string-search "RET → logs (new)  C-RET send" (ghostel-cmd-tests--keys-line)))
+      ;; a and b went to the last used: looked at once.
+      (should (= (cl-count '(nil nil) looks :test #'equal) 1))
+      (should (equal (reverse looks)
+                     '((nil nil) ("dev" "npm run dev") ("dev" nil) ("logs" "tail -f log"))))
+      ;; Back up the list: no look again.
+      (setq looks nil)
+      (execute-kbd-macro (kbd "p p p p"))
+      (should-not looks)
+      (should (string-search "RET → shell ▶ docker-compose up" (ghostel-cmd-tests--keys-line)))
+      ;; g looks again; so does a look older than its time.
+      (ghostel-cmd-revert)
+      (should (equal looks '((nil nil))))
+      (setf (cadr (assoc '(nil) ghostel-cmd--targets)) (- (float-time) 60))
+      (execute-kbd-macro (kbd "n p"))
+      (should (equal (car looks) '(nil nil)))
+      (should (= (length looks) 3)))))
+
+(ert-deftest ghostel-cmd-test-footer-without-the-dock-and-for-urls ()
+  "Without ghostel-dock the footer is as it was; a URL row opens in a
+browser, and says so."
+  (ghostel-cmd-tests--with-overlay (ghostel-cmd-tests--abc)
+    (should-not (fboundp 'ghostel-dock-target))
+    (ghostel-cmd-revert)
+    (should (string-search "RET paste  C-RET send  T in terminal  a add"
+                           (ghostel-cmd-tests--keys-line)))
+    (should (equal (ghostel-cmd--target-for '(:name "web" :url "http://localhost:3000")
+                                            ghostel-cmd--root)
+                   "RET browser  C-RET xwidget"))))
+
+(ert-deftest ghostel-cmd-test-footer-target-texts ()
+  (should (equal (ghostel-cmd--target-words '(:label "shell" :buffer x :job nil))
+                 "RET → shell"))
+  (should (equal (ghostel-cmd--target-words '(:label "logs" :new t)) "RET → logs (new)"))
+  (should (equal (ghostel-cmd--target-words '(:label "shell" :buffer x :job running :then ask))
+                 "RET → shell ▶ running: asks"))
+  (should (equal (ghostel-cmd--target-words '(:label "x" :buffer x :job exited))
+                 "RET → x (exited)"))
+  (should (equal (ghostel-cmd--target-words
+                  '(:label "dev" :buffer x :job "node server.js --port 3000 --watch src" :then ask))
+                 "RET → dev ▶ node server.js --port 3…: asks")))
+
+(ert-deftest ghostel-cmd-test-unbound-command-goes-to-the-dock-paste ()
+  "With ghostel-dock, RET and C-RET of a command bound to no terminal go
+to `ghostel-dock-paste' with the row's name, its {{vars}} filled first;
+a bound one to `ghostel-dock-run' as before."
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "a" :cmd "echo a")
+            (list :name "logs" :cmd "docker compose logs -f {{service:backend|frontend}}")
+            (list :name "serve" :cmd "npm run dev" :terminal "dev"))
+    (ghostel-cmd-tests--with-dock
+      (cl-letf (((symbol-function 'ghostel-cmd--hide-overlay) #'ignore))
+        (ghostel-cmd-tests--goto '(project . "a"))
+        (execute-kbd-macro (kbd "RET"))
+        (should (equal pastes `(("echo a" ,ghostel-cmd--root nil "a"))))
+        (execute-kbd-macro (kbd "C-<return>"))
+        (should (equal (car pastes) `("echo a" ,ghostel-cmd--root t "a")))
+        (ghostel-cmd-tests--goto '(project . "logs"))
+        (execute-kbd-macro (kbd "RET"))
+        (should ghostel-cmd--fill)
+        (execute-kbd-macro (kbd "C-n RET"))
+        (should (equal (car pastes)
+                       `("docker compose logs -f frontend" ,ghostel-cmd--root nil "logs")))
+        (ghostel-cmd-tests--goto '(project . "serve"))
+        (execute-kbd-macro (kbd "RET"))
+        (should (equal runs `(("npm run dev" "dev" ,ghostel-cmd--root nil))))
+        (should (= (length pastes) 3))))))
+
+(ert-deftest ghostel-cmd-test-without-the-dock-pastes-as-before ()
+  "Without ghostel-dock, a command goes into the project's terminal as
+it always did: found, shown, pasted; C-RET presses Enter."
+  (ghostel-cmd-tests--with-store
+    (let ((term (get-buffer-create " *ghostel-cmd-term3*"))
+          (shown nil)
+          (sent nil))
+      (unwind-protect
+          (cl-letf (((symbol-function 'ghostel-cmd--existing-terminal) (lambda () term))
+                    ((symbol-function 'ghostel-cmd--display-terminal)
+                     (lambda (buf) (push buf shown)))
+                    ((symbol-function 'ghostel-paste-string)
+                     (lambda (text) (push (cons (current-buffer) text) sent)))
+                    ((symbol-function 'ghostel-send-key)
+                     (lambda (key &rest _) (push (cons (current-buffer) key) sent)))
+                    ((symbol-function 'require)
+                     (lambda (feature &rest args)
+                       (unless (eq feature 'ghostel) (apply #'require feature args)))))
+            (should-not (fboundp 'ghostel-dock-paste))
+            (funcall (ghostel-cmd--deliver-to nil "a") "echo a" t)
+            (should (equal shown (list term)))
+            (should (equal (reverse sent) `((,term . "echo a") (,term . "return")))))
+        (kill-buffer term)))))
 
 (provide 'ghostel-cmd-tests)
 ;;; ghostel-cmd-tests.el ends here
