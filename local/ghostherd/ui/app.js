@@ -2189,6 +2189,15 @@
     return "";
   }
 
+  // What the card's Esc does, by its CLI.  grok's turn does not stop on
+  // Esc: Emacs sends it Ctrl+C while it works, Esc to a menu it shows, and
+  // nothing at rest, where Ctrl+C would clear its box (ghostherd-interrupt).
+  function escTitle(a) {
+    return a && a.kind === "grok"
+      ? "Stop its turn: Ctrl+C while it works (grok does not stop on Esc), Esc to a menu it shows; nothing at rest"
+      : "Send Escape";
+  }
+
   // A message the herd pasted that its CLI never took: Return was pressed
   // again and it is still in the input box.  The card says so, with the one
   // key that sends it -- pressed only while it is verifiably still there.
@@ -2490,7 +2499,7 @@
       acts.push('<button type="button" class="primary small" data-act="a:relay" title="' + esc(a.usedUp) + '">Relay to ' + esc(a.relayTo) + "</button>");
     }
     acts.push('<button type="button" class="ghost small" data-act="a:compose">Prompt</button>');
-    acts.push('<button type="button" class="ghost small" data-act="a:agent-interrupt" title="Send Escape">Esc</button>');
+    acts.push('<button type="button" class="ghost small" data-act="a:agent-interrupt" title="' + esc(escTitle(a)) + '">Esc</button>');
     acts.push('<button type="button" class="ghost small" data-act="a:screen">' + (herdNow.open.has(name) ? "Hide screen" : "Screen") + "</button>");
     acts.push('<button type="button" class="ghost small" data-act="a:capture" title="Save this screen to the log, pinned">Capture</button>');
     acts.push('<button type="button" class="linkish" data-act="a:more" title="More">' + (herdNow.more.has(name) ? "less" : "more") + "</button>");
@@ -2995,7 +3004,7 @@
     // Only Esc and Screen: a narrow column draws them as icons on its
     // first line, and the row they leave takes no room.
     const onlySec = !acts.length;
-    acts.push('<button type="button" class="ghost small sec" data-act="a:agent-interrupt" title="Send Escape">Esc</button>');
+    acts.push('<button type="button" class="ghost small sec" data-act="a:agent-interrupt" title="' + esc(escTitle(a)) + '">Esc</button>');
     const conv = herdNow.convs[name];
     if (!(conv && conv.none)) {
       const scr = herdNow.roomScreen.has(name);
