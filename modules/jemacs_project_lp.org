@@ -226,6 +226,13 @@ value is the terminal lagging behind the window while you drag.")
 
         (use-package ghostel
           :ensure t
+          :init
+          ;; The native module lives outside straight's tree.  ghostel
+          ;; downloads it into its own package directory by default, and a
+          ;; rebuild of ghostel -- or a recursive one of a package that
+          ;; needs it, like ghostherd -- deletes that directory, module and
+          ;; all: the next start has none.  emacs-home/ is git-ignored.
+          (setq ghostel-module-directory (locate-user-emacs-file "ghostel-module/"))
           :config
           (advice-add 'ghostel--adjust-size :around #'jemacs-ghostel-debounce-resize)
           (advice-add 'ghostel-copy-mode :after #'jemacs-ghostel-sync-evil-copy-mode)
