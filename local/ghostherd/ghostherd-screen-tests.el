@@ -139,10 +139,47 @@ Enumerating the glyphs is a losing game; requiring words is not."
 (ert-deftest ghostherd-test-reason-falls-back-for-bare-prompts ()
   "An anchored prompt cleans away to nothing.  Dressing it with whatever
 happened to precede it would attribute an unrelated line to the reason,
-so it keeps the pattern instead."
+and the pattern is no reason either: its state, in words."
   (should (equal (ghostherd--rule-reason "some earlier output\n> \n"
                                          '(idle . "^> "))
-                 "^> ")))
+                 "waiting at its prompt"))
+  (should (equal (ghostherd--rule-reason "a\n   \n" '(working . "^[[:blank:]]+$")) "at work"))
+  (should (equal (ghostherd--rule-reason "❯\n" '(blocked . "^❯$")) "waiting for an answer on its screen")))
+
+;; agy 1.4.12 idle in the herd's tmux, its turn just ended (the scratch run,
+;; 2026-11-06): a bare `>' in its box.  Its card said "^>[[:blank:]]*$".
+(defconst ghostherd-tests--agy-idle-screen
+  (string-join
+   (list "> from the page box to agy: what is 6+6?"
+         "▸ Thought for 7s, 123 tokens"
+         "  • 2 + 2 = 4"
+         "  • 6 + 6 = 12"
+         (make-string 120 ?─)
+         ">"
+         (make-string 120 ?─)
+         "? for shortcuts                                                               Gemini 4 Argon · high"
+         "")
+   "\n"))
+
+(ert-deftest ghostherd-test-no-reason-is-a-pattern ()
+  "An idle agy's card said \"^>[[:blank:]]*$\": its idle rule matched a bare
+`>', which cleans to nothing, and the reason fell back to the pattern.
+Through the poll it now says so in words.  And no kind's rule, of any
+state, comes back as a reason from a line that says nothing."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake))
+          (ghostherd-tests--fake-screen ghostherd-tests--agy-idle-screen))
+      (pcase-let ((`(,state . ,reason) (ghostherd--detect-state s)))
+        (should (eq state 'idle))
+        (should (equal reason "waiting at its prompt")))))
+  (dolist (kind '(claude grok agy))
+    (let ((spec (ghostherd--spec kind)))
+      (pcase-dolist (`(,state . ,patterns) (plist-get spec :screen-rules))
+        (dolist (pat (cons (plist-get spec :spinner) patterns))
+          (when pat
+            (let ((reason (ghostherd--rule-reason "\n\n" (cons state pat))))
+              (should-not (equal reason pat))
+              (should (equal reason (ghostherd--state-words state))))))))))
 
 (ert-deftest ghostherd-test-detect-state-reason-comes-from-the-screen ()
   "Pins the call site, not just the helper.  A mutation that rewires

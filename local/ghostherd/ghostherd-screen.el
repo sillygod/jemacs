@@ -516,10 +516,21 @@ is decided by the pattern alone."
                 (ghostherd--clean-screen-line (concat subject " — " matched))
               matched)))))))
 
+(defun ghostherd--state-words (state)
+  "STATE, a rule's, as the words a reason says when the line the rule
+matched says nothing: an empty prompt, a spinner's glyph alone."
+  (pcase state
+    ('idle "waiting at its prompt")
+    ('working "at work")
+    ('blocked "waiting for an answer on its screen")
+    (_ (format "%s" state))))
+
 (defun ghostherd--rule-reason (text hit)
   "Return the human-readable reason for rule HIT against TEXT.
-Falls back to the pattern when the matched line cleans up to nothing --
-an anchored prompt like \"^> \" is all furniture.
+The line the rule matched, cleaned; when that cleans up to nothing --
+an anchored prompt like \"^> \" is all furniture -- what its state is,
+in words (`ghostherd--state-words').  Never the pattern: agy's idle card
+said \"^>[[:blank:]]*$\" (2026-11-06).
 
 Reads the same region the rule was matched against, so the reason
 quotes the line that decided the state rather than an earlier
@@ -532,7 +543,7 @@ coincidence further up the scrollback."
         (and (eq (car-safe hit) 'working)
              (when-let* ((line (ghostherd--spinner-line text (cdr hit))))
                (ghostherd--matched-line line (cdr hit))))
-        (cdr hit))))
+        (ghostherd--state-words (car-safe hit)))))
 
 ;;; What a CLI holds queued
 ;;
