@@ -47,6 +47,8 @@
 (declare-function project-root "project")
 (declare-function project-run-ghostel "jemacs-project")
 (declare-function new-terminal "jemacs-project")
+(declare-function ghostel-dock-terminal "ghostel-dock")
+(declare-function ghostel-dock-show "ghostel-dock")
 (declare-function ghostel-paste-string "ghostel")
 (declare-function ghostel-send-key "ghostel")
 (declare-function magit-get-current-branch "magit-git")
@@ -2034,39 +2036,57 @@ Any other command with RECORD's name is dropped, so names stay unique."
              (not (yes-or-no-p (format "Replace the existing '%s'? " name))))
     (user-error "Kept the existing '%s'" name)))
 
+(defun ghostel-cmd--dock-root ()
+  "The root whose terminal takes a command: the overlay's, else this buffer's."
+  (or ghostel-cmd--root (ghostel-cmd--current-project-root)))
+
 (defun ghostel-cmd--existing-terminal ()
-  "Return the project Ghostel buffer if it already exists, else any Ghostel.
+  "Return the project's Ghostel terminal if there is one.
+With ghostel-dock, the terminal last used in the project, or nil.
+Without, the project's `ghostel-project' buffer, else any Ghostel.
 Does not display the buffer."
   (require 'ghostel)
-  (or (when (and (fboundp 'ghostel--find-buffer-by-identity)
-                 (fboundp 'ghostel--project-buffer-name)
-                 (project-current nil))
-        (ghostel--find-buffer-by-identity
-         (ghostel--project-buffer-name
-          (project-root (project-current t)))))
-      (when (fboundp 'ghostel--all-buffers)
-        (car (ghostel--all-buffers)))))
+  (if (fboundp 'ghostel-dock-terminal)
+      (ghostel-dock-terminal (ghostel-cmd--dock-root))
+    (or (when (and (fboundp 'ghostel--find-buffer-by-identity)
+                   (fboundp 'ghostel--project-buffer-name)
+                   (project-current nil))
+          (ghostel--find-buffer-by-identity
+           (ghostel--project-buffer-name
+            (project-root (project-current t)))))
+        (when (fboundp 'ghostel--all-buffers)
+          (car (ghostel--all-buffers))))))
 
 (defun ghostel-cmd--create-terminal ()
-  "Create a Ghostel buffer without replacing the selected window."
-  (let ((display-buffer-overriding-action
-         '((display-buffer-reuse-window
-            display-buffer-pop-up-window)
-           (inhibit-same-window . t)
-           (reusable-frames . visible))))
-    (cond
-     ((and (fboundp 'project-run-ghostel) (project-current nil))
-      (project-run-ghostel))
-     ((fboundp 'new-terminal)
-      (new-terminal))
-     ((fboundp 'ghostel)
-      (funcall 'ghostel))
-     (t
-      (user-error "No Ghostel terminal helper loaded")))))
+  "Create a Ghostel buffer without replacing the selected window.
+With ghostel-dock, the project's first terminal, in its panel."
+  (if (fboundp 'ghostel-dock-terminal)
+      (ghostel-dock-terminal (ghostel-cmd--dock-root) t)
+    (let ((display-buffer-overriding-action
+           '((display-buffer-reuse-window
+              display-buffer-pop-up-window)
+             (inhibit-same-window . t)
+             (reusable-frames . visible))))
+      (cond
+       ((and (fboundp 'project-run-ghostel) (project-current nil))
+        (project-run-ghostel))
+       ((fboundp 'new-terminal)
+        (new-terminal))
+       ((fboundp 'ghostel)
+        (funcall 'ghostel))
+       (t
+        (user-error "No Ghostel terminal helper loaded"))))))
 
 (defun ghostel-cmd--display-terminal (buf)
   "Show BUF in a window that already has it, or in a new split.
-Never replaces the selected window."
+Never replaces the selected window.  With ghostel-dock, show it in the
+panel, selected."
+  (if (fboundp 'ghostel-dock-show)
+      (ghostel-dock-show buf t)
+    (ghostel-cmd--pop-to-terminal buf)))
+
+(defun ghostel-cmd--pop-to-terminal (buf)
+  "Show BUF in a window that already has it, or in a new split."
   (pop-to-buffer
    buf
    '((display-buffer-reuse-window
@@ -2078,7 +2098,8 @@ Never replaces the selected window."
   "Paste CMD-STRING into Ghostel.  SUBMIT non-nil presses Enter.
 TERMINAL, a live Ghostel buffer, takes it; else the project's.
 Keeps the current file window: reuse a visible terminal window, or
-split if none is showing."
+split if none is showing.  With ghostel-dock, the project's terminal
+is the one last used there, shown in its panel."
   (ghostel-cmd--hide-overlay)
   (require 'ghostel)
   (let ((term-buf (or (and (buffer-live-p terminal) terminal)

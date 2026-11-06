@@ -872,13 +872,15 @@
 
    #+begin_src emacs-lisp
      (defun send-text-and-move-to-project-terminal ()
-       "Send the region to the project ghostel terminal and focus it."
+       "Paste the region into the project's terminal and focus it.
+     The terminal is the one last used in the project, in its panel
+     (`ghostel-dock'); one is started when there is none."
        (interactive)
        (when (region-active-p)
          (let ((content (buffer-substring (region-beginning) (region-end))))
-           (new-terminal)
            (deactivate-mark)
-           (ghostel-paste-string content))))
+           (with-current-buffer (window-buffer (ghostel-dock-show nil t))
+             (ghostel-paste-string content)))))
 
    #+end_src
 
@@ -886,13 +888,11 @@
 
    #+begin_src emacs-lisp
      (defun terminal-perform-last-command ()
-       "Replay the previous shell command in the project ghostel terminal."
+       "Replay the previous shell command in the project's terminal.
+     The panel shows it; the focus stays here.  A terminal that runs
+     something is left alone: Up and Return would go to that program."
        (interactive)
-       (let ((bname (buffer-name)))
-         (new-terminal)
-         (ghostel-send-key "up")
-         (ghostel-send-key "return")
-         (pop-to-buffer bname t)))
+       (ghostel-dock-rerun))
    #+end_src
 
 ** yaml indent function

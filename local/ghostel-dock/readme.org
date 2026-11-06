@@ -1,0 +1,220 @@
+#+TITLE: ghostel-dock
+
+A project's Ghostel terminals, named, in one place: a bottom panel that
+=SPC '= shows and hides, and a manager overlay on =SPC b t= that lists
+every project's terminals with what each one is doing.
+
+* Status
+
+| Item     | Value                                                            |
+|----------+------------------------------------------------------------------|
+| Package  | =local/ghostel-dock/= (straight =:local-repo=)                   |
+| Files    | =ghostel-dock.el= · =ghostel-dock-tests.el=                      |
+| Needs    | =ghostel=, =ghostel-cmd= (the overlay's pieces); posframe if any |
+| Wired in | =jemacs-project= (layers, setup) · =jemacs-unarrange= (keys) ·   |
+|          | =jemacs-core= (send region, rerun) · =ghostel-cmd= (paste target) |
+
+* The panel
+
+| Key        | Action                                                          |
+|------------+-----------------------------------------------------------------|
+| =SPC '=    | Show the panel with this project's last-used terminal, selected |
+|            | (a new =shell= when there is none); shown, hide it.  From a     |
+|            | terminal the leader is =M-m=: =M-m '=.                          |
+| =C-u SPC '= | Start another terminal in the project; asks its name           |
+
+- A bottom side window, =ghostel-dock-height= high (0.3 of the frame, or
+  a number of lines), marked with the window parameter =ghostel-dock=.
+  Hiding it deletes the side window: the other windows get their room
+  back and keep their buffers; no split is left.
+- "Last used" is =buffer-list= order: the terminal of the project most
+  recently selected.  Showing one in the panel without selecting it (a
+  preview) does not change it.
+- A terminal shows in one window: showing it in the panel takes it out
+  of a main window that showed it, which goes back to its previous
+  buffer.  Ghostel would otherwise size it for two windows.
+- Starting a terminal never moves the focus by itself (ghostel pops to
+  what it starts; the dock gives the focus back): =SPC TAB= started a
+  terminal and the file stays selected.
+
+* Names and what belongs to a project
+
+- A terminal is =*PROJECT:NAME*= (=*web:dev*=); a remote project's is
+  =*PROJECT@HOST:NAME*=.  The name of the directory is the project's.
+- It belongs to its /root/: the project's root when it was made, or the
+  directory it started in outside a project.  Kept in the buffer-local
+  =ghostel-dock--root=, so a =cd= does not move it.
+- Terminals made before the dock are found too and keep their names:
+  ghostel's =*PROJECT-ghostel*= and its =C-u= siblings
+  =*PROJECT-ghostel*<2>= belong to the project their name says, even
+  after a =cd= away (by name against =project-known-project-roots=);
+  anything else to the project of its directory.  Recorded at the first
+  look.  =r= in the manager gives one a dock name if wanted.
+- Not terminals: a ghostherd agent's buffer -- ghostherd sets
+  =ghostherd-session-id= in every buffer it shows an agent in, on both
+  backends; the =*ghostherd:= name is only the fallback -- and a buffer
+  =ghostel-exec= runs a program in (eshell's visual commands): =ghostel=
+  gives what it makes a =ghostel--buffer-identity=, =ghostel-exec= does
+  not.
+- A title never renames a dock terminal: its =ghostel--managed-buffer-name=
+  is set to a non-name, which ghostel reads as "renamed by hand".
+
+* The manager
+
+=SPC b t= (and =t= in the =SPC b .= transient).  Posframe at the top of
+the frame, clear of the panel, else a top side window.  This project's
+terminals first, then each other project's, grouped (the project shows
+on its first row), each group most recently used first.
+
+| Key            | Action                                                       |
+|----------------+--------------------------------------------------------------|
+| =j= =k=        | Move (=C-n= =C-p=, =gg= =G=); the panel previews the row     |
+| =RET=          | Open in the panel, selected; another project's terminal      |
+|                | switches to its jworkspace layer first                       |
+| =o=            | Open in the window the manager was opened from               |
+| =n=            | New terminal in the selected row's project; asks its name    |
+| =r=            | Rename (=*PROJECT:NAME*=)                                    |
+| =x=            | Kill; asks only when it runs something                       |
+| =K=            | Kill the selected row's project's idle ones; lists, asks     |
+| =R=            | Rerun its last command (Up, Return) when idle; list stays    |
+| =/=            | Filter: words matched in name, project, command, directory   |
+| =g= (=gr=)     | Look again                                                   |
+| =?=            | Key legend                                                   |
+| =q= / Esc      | Close the help, clear the filter, else close; the panel goes |
+|                | back as it was before the previews                           |
+
+=x= is kill, not =k=: =k= moves, as in ghostherd's sidebar.
+
+Columns: project, name, what it runs now (=▶ npm run dev=, =idle=,
+=exited=), the last command's exit status (=✓=, =✗ 2=, blank when the
+shell never said), its directory (=./sub= under its root), how long
+since its last output.  Under the list, the selected one in full.  The
+rows are looked at again every =ghostel-dock-refresh-interval= seconds
+while it shows.
+
+The preview waits =ghostel-dock-preview-delay= (0.15 s) on a row: a
+terminal shown resizes, and a full-screen program redraws.  A terminal
+already in a window is not previewed.  Opening the manager selects the
+project's most recent terminal that is not on screen, so =RET= goes
+back to the one before.
+
+* What a row knows, and how
+
+- *What it runs*: the terminal's foreground process group, from
+  =process-attributes= of =ghostel--pid= (the shell, or the =login(1)=
+  that runs it on macOS: any process on the terminal reports the same
+  =tpgid=).  When that group's leader is a shell (=ghostel-dock-shells=)
+  it is idle; else its command line, the program's directory cut
+  (=node /x/bin/npm run dev= shows =npm run dev=).  Two calls, about
+  0.5 ms each on this machine.  Without a process: =OSC 133= running
+  (=ghostel--command-running=) still shows =▶ running=.
+- *Last exit status*: =ghostel-command-finish-functions= (OSC 133 D),
+  counted only after a =ghostel-command-start-functions= (C): a prompt
+  redrawn sends a D with the status of before.
+- *Last output*: an =:after= advice on =ghostel--filter= and
+  =ghostel--events-filter= -- the Emacs PTY's filter and the native
+  PTY's event pipe, which gets an event (at least =()=) for every read.
+- *Directory*: =default-directory=, which follows OSC 7.
+
+* Shell integration (OSC 133 / OSC 7)
+
+Measured 2026-11-06 in a scratch Emacs with the real ghostel: the
+login shell here is =/bin/bash= (macOS's 3.2.57), and ghostel runs it
+as =login -flp USER /bin/bash ... exec -l /bin/bash --posix= with
+=ENV= pointing at its =inject.bash=.  bash 3.2 reads =ENV= only when it
+runs as =sh=: with =--posix= it does not, login or not.  So nothing is
+injected: no OSC 133, no OSC 7 (=default-directory= does not follow
+=cd=), and the shell stays in POSIX mode, where bash 3.2 rejects
+process substitution -- the fzf errors at each terminal's start.
+
+The rows still work without it (what runs comes from the process
+group); the exit status stays blank and the directory stays where the
+terminal started.  What makes it work, in =~/.bashrc=, first:
+
+#+begin_src sh
+  if [[ "${INSIDE_EMACS%%,*}" = 'ghostel' && -n "$EMACS_GHOSTEL_PATH" ]]; then
+      builtin unset ENV GHOSTEL_BASH_INJECT
+      builtin source "$EMACS_GHOSTEL_PATH/etc/shell/ghostel.bash"
+  fi
+#+end_src
+
+=ghostel.bash= leaves POSIX mode first thing and guards against a
+second load.  Checked with that =.bashrc= under the same bash, the same
+injection and a login shell: OSC 133 status and running, OSC 7 =cd=,
+POSIX mode off.  (A newer bash, or zsh, as =ghostel-shell= would also
+do: ghostel's zsh injection uses =ZDOTDIR=.)
+
+* Layers
+
+The panel is kept per window layer.  =ghostel-dock-without-panel= is an
+=:around= advice for whatever snapshots a layer's windows or puts one
+back; the config puts it on jworkspace's switch, maximize, delete and
+save.  It hides the panel, remembering which terminal the layer showed
+(per =ghostel-dock-layer-function=), runs the call, then shows the
+panel the layer now current left -- selected again when the layer did
+not change.  So a layer's saved layout never holds the panel.  Held, it
+would come back as a side window without the =ghostel-dock= mark (Emacs
+persists =window-side=, not the dock's parameter), showing whatever
+buffer the snapshot named.  And jworkspace's maximize asks
+=one-window-p=: with the panel up over a maximized window, the toggle
+back would count the panel, maximize again and lose the layout it
+saved.  (Unwrapped, maximizing also deletes the panel with the other
+windows.)
+
+=ghostel-dock-switch-layer-function= is called with a terminal's root
+before the manager opens another project's terminal; the config's
+switches to that project's jworkspace layer (asking before making one),
+as =switch-terminal= did.
+
+* For other code
+
+- =(ghostel-dock-terminal &optional ROOT CREATE)= -- ROOT's last-used
+  terminal (the current buffer's root by default); with CREATE, start
+  one when there is none.
+- =(ghostel-dock-show &optional BUFFER SELECT)= -- show it in the panel.
+- =(ghostel-dock-rerun &optional BUFFER)= -- Up, Return, focus kept.
+- =(ghostel-dock-terminals &optional ROOT)= -- ROOT's terminals, last
+  used first; =t= for all.
+- =ghostel-dock-after-create-functions= -- called with a new terminal
+  and the buffer it was asked from (the config sends the python setup).
+
+ghostel-cmd pastes into =ghostel-dock-terminal= of its overlay's root
+when ghostel-dock is there (it asks =fboundp=), and shows it in the
+panel; without it, as before.
+
+* Later (not built)
+
+- ghostel-cmd commands bound to a named terminal: =ghostel-dock-terminal=
+  plus a name (=ghostel-dock--named=) is the lookup; the command record
+  would carry =:terminal "test"=.
+- Restoring a project's terminals after a restart: each terminal holds
+  its root, name and directory; saving =(ROOT NAME DIR)= per project and
+  starting them again is what is left.
+
+* Customization
+
+| Variable                              | Default         |
+|---------------------------------------+-----------------|
+| =ghostel-dock-height=                 | 0.3             |
+| =ghostel-dock-default-name=           | ="shell"=       |
+| =ghostel-dock-preview-delay=          | 0.15            |
+| =ghostel-dock-refresh-interval=       | 2               |
+| =ghostel-dock-use-posframe=           | t               |
+| =ghostel-dock-shells=                 | bash zsh sh ... |
+| =ghostel-dock-layer-function=         | nil (per frame) |
+| =ghostel-dock-switch-layer-function=  | nil             |
+| =ghostel-dock-after-create-functions= | nil             |
+
+* Tests
+
+ERT, with the real ghostel loaded and =ghostel= itself stood in for
+(its native module starts the shell); projects are directories with a
+=.proj=.  Window behaviour is real: batch Emacs has an 80x25 frame and
+side windows.  The jworkspace test runs when jworkspace is on the path.
+
+#+begin_src sh
+  B=~/.emacs.d/emacs-home/straight/build
+  emacs --batch -L $B/ghostel -L ~/.emacs.d/local/ghostel-cmd \
+        -L ~/.emacs.d/local/jworkspace -L ~/.emacs.d/local/ghostel-dock \
+        -l ghostel-dock-tests.el -f ert-run-tests-batch-and-exit
+#+end_src
