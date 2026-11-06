@@ -288,6 +288,18 @@ A terminal made before the dock goes by its buffer's name."
              (substring name (length prefix) -1)))
       (buffer-name buffer)))
 
+(defun ghostel-dock--label-of (buffer)
+  "How BUFFER's row in the manager names it.
+A terminal `ghostel-project' made, *PROJECT-ghostel* (or <N> after),
+shows as shell (shell<N>): its project is on the row already, and the
+long names all ended alike, cut to the same tail.  Display only: it
+is still found by, and its details show, its buffer's own name."
+  (let ((name (ghostel-dock--name-of buffer)))
+    (if (and (not (buffer-local-value 'ghostel-dock--name buffer))
+             (string-match "\\`\\*.+-ghostel\\*\\(<[0-9]+>\\)?\\'" name))
+        (concat "shell" (or (match-string 1 name) ""))
+      name)))
+
 (defun ghostel-dock--current-root ()
   "The root the current buffer's terminals belong to.
 A terminal's own; else the project's root; else `default-directory'."
@@ -481,6 +493,7 @@ yet, unless it runs.  A screen that waits for its redraw is stale: nil."
         (setq ghostel-dock--command-live nil)))
     (list :root (ghostel-dock--root-of buffer)
           :name (ghostel-dock--name-of buffer)
+          :label (ghostel-dock--label-of buffer)
           :job (cond ((not alive) 'exited)
                      (fg (cdr fg))
                      (running 'running))
@@ -1275,6 +1288,7 @@ saved terminals that are not open: of a project not all back yet."
   (let ((text (downcase
                (string-join
                 (list (plist-get info :name)
+                      (or (plist-get info :label) "")
                       (ghostel-dock--root-name (plist-get info :root))
                       (pcase (plist-get info :job)
                         ((and (pred stringp) job) job)
@@ -1339,7 +1353,7 @@ printed.  NOW is the time the ages count from."
                           (propertize (ghostel-dock--root-name root)
                                       'face (if here 'bold 'font-lock-type-face))
                         "")
-                      (concat (propertize (plist-get info :name)
+                      (concat (propertize (or (plist-get info :label) (plist-get info :name))
                                           'face (if (or (plist-get info :saved)
                                                         (plist-get info :forgotten))
                                                     'shadow

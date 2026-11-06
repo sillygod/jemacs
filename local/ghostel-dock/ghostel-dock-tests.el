@@ -186,6 +186,13 @@ names stay; a plain *ghostel* goes by its directory."
       (should (equal (sort (mapcar #'buffer-name (ghostel-dock-terminals jrevba)) #'string<)
                      '("*jrevba-ghostel*" "*jrevba-ghostel*<2>")))
       (should (equal (ghostel-dock--name-of away) "*jrevba-ghostel*<2>"))
+      ;; Its row says shell: the project is on the row already.  Found
+      ;; by, and detailed as, its own name still.
+      (should (equal (ghostel-dock--label-of home) "shell"))
+      (should (equal (ghostel-dock--label-of away) "shell<2>"))
+      (should (equal (ghostel-dock--label-of plain) "*ghostel*"))
+      (should (equal (plist-get (ghostel-dock--info away) :label) "shell<2>"))
+      (should (equal (plist-get (ghostel-dock--info away) :name) "*jrevba-ghostel*<2>"))
       ;; Recorded at the first look: a later cd does not move it.
       (with-current-buffer home (setq default-directory other))
       (should (equal (ghostel-dock--root-of home) jrevba)))))
