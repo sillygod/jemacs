@@ -22,6 +22,11 @@
 (declare-function ghostherd--sidebar-refresh "ghostherd-sidebar" ())
 (declare-function ghostherd-send "ghostherd-comm" (session text &optional submit))
 (declare-function ghostherd-session-transcript "ghostherd-hooks" (session))
+(declare-function ghostherd--ask-on-state "ghostherd-mail" (session old new))
+(declare-function ghostherd--submit-of "ghostherd-comm" (session))
+(declare-function ghostherd--unsent-p "ghostherd-comm" (screen text))
+(declare-function ghostherd-memory-rpc-url "ghostherd-memory" ())
+(declare-function ghostherd-memory-request-async "ghostherd-memory" (method callback &optional params error-callback))
 
 ;;; State detection
 
@@ -1210,8 +1215,10 @@ that left an old conversation for a new one without any agent being removed.")
 
 (defun ghostherd--claude-entry-verdict (line)
   "What claude transcript LINE says about the turn: (:error TEXT) for
-claude's own error, :clean for any other entry of the conversation, nil
-for one to read past -- bookkeeping, a sub-agent's, a local command."
+claude's own error, :interrupted for its record of an interrupt
+\(\"[Request interrupted by user]\", \"... for tool use]\"), :clean for any
+other entry of the conversation, nil for one to read past --
+bookkeeping, a sub-agent's, a local command."
   ;; Cheap first: a conversation entry names its type at the top level.
   (when (string-match-p "\"type\":\"\\(?:user\\|assistant\\)\"" line)
     (when-let* ((entry (ignore-errors
@@ -1231,7 +1238,11 @@ for one to read past -- bookkeeping, a sub-agent's, a local command."
                         (and (stringp content)
                              (string-match-p "\\`<\\(?:command-\\|local-command-\\|bash-\\)"
                                              content)))
-              :clean))))))))
+              ;; Esc (or Esc on a permission prompt or a question): its
+              ;; turn ended there, and no Stop hook said so.
+              (if (string-prefix-p "[Request interrupted" (ghostherd--claude-entry-text message))
+                  :interrupted
+                :clean)))))))))
 
 (defun ghostherd--claude-login-ok-p (line)
   "Non-nil when claude transcript LINE is a /login that went through: its
@@ -1283,7 +1294,8 @@ entry can be large; up to `ghostherd--transcript-tail-max'."
   "What the last turn in claude transcript PATH ended on: (:error TEXT)
 when the conversation's last entry is claude's own error (an assistant
 entry marked `isApiErrorMessage') -- (:error TEXT :signed-in t) when a
-/login went through after it (`ghostherd--claude-login-ok-p') -- :clean
+/login went through after it (`ghostherd--claude-login-ok-p') --
+:interrupted when it is claude's record of an interrupt, :clean
 when it is any other, nil when none can be read.  Read once per change
 of the file."
   (when-let* ((attrs (file-attributes path)))
@@ -1364,7 +1376,7 @@ only the last message above the input box counts."
                (list :reason "signed in again: its turn stopped at the expired login"
                      :action 'carry-on :cause 'expired)
              m)))
-        (:clean nil)
+        ((or :clean :interrupted) nil)
         (_ (when-let* ((screen (or screen (gethash (ghostherd-session-id session)
                                                    ghostherd--screens)))
                        (text (ghostherd--last-message screen)))
@@ -1386,6 +1398,185 @@ on a `continue' error."
     (and (eq (plist-get m :action) 'continue)
          (or (plist-get m :cause) 'slept))))
 
+
+;;; A turn its CLI says was interrupted
+;;
+;; Esc in claude or agy, Ctrl+C in grok, ends the turn -- and no hook says
+;; so: claude fires no Stop hook on an interrupt, so the `working' its
+;; prompt-submit hook reported stays trusted for `ghostherd-report-ttl',
+;; and the card said "working" two minutes after the turn had ended
+;; (a lead, 2026-11-06).  The CLI says it, on its screen right over
+;; its input box, and claude in its transcript too.  Measured in a scratch
+;; tmux, 2026-11-06 (claude 2.1.319, grok 1.0.70, agy 1.4.12):
+;;
+;;   claude  Esc mid-turn, or on a permission prompt:
+;;             "  ⎿  Interrupted · What should Claude do instead?"
+;;           and "[Request interrupted by user]" ("... for tool use]")
+;;           written as the conversation's last entry.  Esc on a question
+;;           (AskUserQuestion) draws "User declined to answer questions"
+;;           instead, but writes the same record.  Esc before any output
+;;           puts the prompt back in the box and writes nothing.
+;;   agy     Esc: "  ⎿  Interrupted · What should Antigravity CLI do instead?";
+;;           its transcript keeps no mark of it.
+;;   grok    Esc does not interrupt ("Press Ctrl+c to cancel the turn");
+;;           Ctrl+C: "     Turn cancelled by user in 18s."
+;;
+;; Each draws its next prompt and a spinner within 0.15 s of a submit, so
+;; the line is the last thing over the box only while the turn is over.
+;;
+;; Pressed before the reply begins, claude's Esc and grok's Ctrl+C take
+;; the turn back instead: its prompt goes back into the input box, and
+;; there is no line, no record (claude's transcript keeps the prompt as
+;; its last entry), no hook.  That prompt back in the box is the word.
+
+(defconst ghostherd--interrupt-re
+  (concat "\\`[[:blank:]]*\\(?:"
+          "⎿[[:blank:]]+Interrupted\\(?: · What should .+ do instead\\?\\| by user\\_>.*\\)"
+          "\\|Turn cancelled by user\\_>.*"
+          "\\)[[:blank:]]*\\'")
+  "The line a CLI draws over its input box when its turn was interrupted:
+claude's and agy's after Esc, grok's after Ctrl+C.")
+
+(defconst ghostherd--interrupt-furniture-re
+  (concat "\\`\\(?:"
+          ;; Right-aligned: claude's update banner, its effort, tmux's hint.
+          "[[:blank:]]\\{10,\\}[^[:blank:]].*"
+          ;; claude's turn, in the past tense: "✻ Churned for 2s · done 3:23 PM".
+          "\\|[·✢✳✶✻✽*][[:blank:]]+[[:alpha:]]+ for [0-9].*"
+          ;; grok's.
+          "\\|[[:blank:]]*\\[Click here to Upgrade\\].*"
+          "\\)\\'")
+  "What may sit between an interrupt's line and the input box.")
+
+(defun ghostherd--interrupted-screen-p (screen)
+  "Non-nil when the last thing SCREEN shows over its input box is its CLI
+saying the turn was interrupted (`ghostherd--interrupt-re'): blank rows
+-- however many: in a tall pane claude draws its conversation from the
+top, 24 blank rows over its box in the herd's tmux -- and a few lines of
+`ghostherd--interrupt-furniture-re' between them, nothing else."
+  (let* ((lines (vconcat (split-string (or screen "") "\n")))
+         (top (ghostherd--box-top lines))
+         (furniture 0))
+    (and top
+         (cl-loop for i downfrom (1- top) to 0
+                  for line = (aref lines i)
+                  unless (or (string-blank-p line)
+                             (and (< furniture 4)
+                                  (string-match-p ghostherd--interrupt-furniture-re line)
+                                  (cl-incf furniture)))
+                  return (and (string-match-p ghostherd--interrupt-re line) t)))))
+
+(defvar ghostherd--last-prompts (make-hash-table :test 'equal)
+  "claude transcript path -> (SIZE MTIME . TEXT): the user's prompt that
+is its conversation's last entry, as `ghostherd--claude-last-prompt' read
+it while the file had that size and mtime.")
+
+(defun ghostherd--claude-last-prompt (path)
+  "The words of the prompt that is claude transcript PATH's last entry of
+the conversation, or nil when its last entry is anything else -- a reply,
+a tool's result, an interrupt's record.  Read once per change of the file."
+  (when-let* ((attrs (file-attributes path)))
+    (let* ((size (file-attribute-size attrs))
+           (mtime (file-attribute-modification-time attrs))
+           (seen (gethash path ghostherd--last-prompts)))
+      (if (and seen (eql (car seen) size) (equal (cadr seen) mtime))
+          (cddr seen)
+        (let ((text
+               (ignore-errors
+                 (let ((lines (with-temp-buffer
+                                (let ((coding-system-for-read 'utf-8))
+                                  (insert-file-contents path nil (max 0 (- size 262144)) size))
+                                (nreverse (split-string (buffer-string) "\n" t)))))
+                   (catch 'done
+                     (dolist (line lines)
+                       (when-let* ((verdict (ghostherd--claude-entry-verdict line)))
+                         (throw 'done
+                                (when (and (eq verdict :clean)
+                                           (string-match-p "\\`{[^\n]*\"type\":\"user\"" line))
+                                  (let* ((entry (json-parse-string line :object-type 'plist
+                                                                   :null-object nil :false-object nil))
+                                         (message (plist-get entry :message))
+                                         (content (plist-get message :content)))
+                                    (unless (and (vectorp content)
+                                                 (seq-some (lambda (b) (equal (plist-get b :type) "tool_result"))
+                                                           content))
+                                      (ghostherd--claude-entry-text message))))))))))))
+          (when (> (hash-table-count ghostherd--last-prompts) 200)
+            (clrhash ghostherd--last-prompts))
+          (puthash path (cons size (cons mtime text)) ghostherd--last-prompts)
+          text)))))
+
+(defun ghostherd--taken-back-p (session screen)
+  "Non-nil when the prompt that began SESSION's turn is back in its input
+box on SCREEN: its CLI took the turn back (Esc, Ctrl+C before the reply
+began).  The prompt as the herd submitted it, or, for claude, its
+transcript's last entry."
+  (when-let* ((words (ghostherd--box-words screen)))
+    (or (when-let* ((sub (ghostherd--submit-of session))
+                    ((eq (plist-get sub :state) 'confirmed))
+                    (text (plist-get sub :text)))
+          (ghostherd--unsent-p screen text))
+        (when-let* (((eq (ghostherd-session-kind session) 'claude))
+                    (path (ghostherd-session-transcript session))
+                    (prompt (ghostherd--claude-last-prompt path)))
+          (let ((head (lambda (s) (let ((w (replace-regexp-in-string "[[:space:]]+" " " (string-trim s))))
+                                    (substring w 0 (min 40 (length w)))))))
+            (string-prefix-p (funcall head words) (funcall head prompt)))))))
+
+(defun ghostherd--interrupted (session screen)
+  "How SESSION's CLI says its turn was interrupted since its own last
+report, or nil: `screen' when SCREEN shows it over the input box,
+`transcript' when claude's transcript ends on its record of one,
+written after that report, `taken-back' when the turn's own prompt is
+back in its input box (`ghostherd--taken-back-p')."
+  (cond
+   ((or (ghostherd--screen-read screen 'interrupted #'ghostherd--interrupted-screen-p)
+        ;; Over a blank gap taller than the poll's tail: the whole pane
+        ;; -- on tmux, in hand already.  Asked only of a busy report and a
+        ;; screen at rest, which seldom meet.
+        (let ((pane (and (stringp screen) (ghostherd--pane session screen))))
+          (and pane (not (equal pane screen))
+               (ghostherd--screen-read pane 'interrupted #'ghostherd--interrupted-screen-p))))
+    'screen)
+   ((and (eq (ghostherd-session-kind session) 'claude)
+         (eq (ghostherd--transcript-turn-end session) :interrupted)
+         (when-let* ((at (nth 2 (gethash (ghostherd-session-id session) ghostherd--reports)))
+                     (path (ghostherd-session-transcript session))
+                     (mtime (file-attribute-modification-time (file-attributes path))))
+           (time-less-p at mtime)))
+    'transcript)
+   ((ghostherd--taken-back-p session screen) 'taken-back)))
+
+(defun ghostherd--interrupt-heard (session how)
+  "SESSION's turn was interrupted, as HOW (`ghostherd--interrupted') says:
+its own report of being at work is out of date.  It stands as if it had
+reported its turn done -- what a Stop hook would have said -- so the
+poll, the room and the Inbox treat it as any turn that finished.  The
+sidecar is told the same, with no last words (an interrupted reply
+answers nothing): the turn's end it waits on to settle an ask and to
+hand over the next -- grok's and agy's transcripts mark none -- and
+work still out makes it `waiting'.  Returns the state and reason."
+  (let ((id (ghostherd-session-id session))
+        (name (ghostherd-session-name session)))
+    (puthash id (list 'done "interrupted" (current-time)) ghostherd--reports)
+    (ghostherd--log-add session 'report
+                        (format "interrupted: %s; its hooks said nothing"
+                                (pcase how
+                                  ('transcript "its transcript says so")
+                                  ('taken-back "its prompt is back in its input box")
+                                  (_ "its screen says so"))))
+    (when (and (fboundp 'ghostherd-memory-rpc-url) (ghostherd-memory-rpc-url))
+      (ignore-errors
+        (ghostherd-memory-request-async
+         "herd_report"
+         (lambda (_)
+           ;; An ask Emacs settled before the sidecar heard the turn end
+           ;; was left open (`turn_on'): settled again, now it has.
+           (when-let* ((s (gethash id ghostherd--sessions))
+                       ((memq (ghostherd-session-state s) '(idle done))))
+             (ghostherd--ask-on-state s nil (ghostherd-session-state s))))
+         (list :session name :state "done" :reason "interrupted"))))
+    (cons 'done "interrupted")))
 
 ;;; Carry a turn on after the Mac slept, or the connection dropped
 ;;
@@ -1798,6 +1989,20 @@ does."
            ;; paste the code into.  Blocked on the user, with the URL carried
            ;; to the card so it can be opened or copied from there.
            (login-url (cons 'blocked "sign in: open the link, then paste the code"))
+           ;; Its turn interrupted -- Esc, Ctrl+C -- which no hook reports:
+           ;; the `working' or `blocked' it reported last is out of date
+           ;; once its CLI says so and its screen is at rest.  A screen at
+           ;; rest with no such word -- compaction, a first frame with no
+           ;; timer, a menu Esc closed with the turn going on -- leaves the
+           ;; report to win, as below.
+           ((and report (memq (car report) '(working blocked))
+                 (not (memq (car-safe hit) '(working blocked)))
+                 (not scrolled)
+                 ;; Prompted a moment ago, its screen may not have drawn
+                 ;; the new turn over the old one's word yet.
+                 (not (ghostherd--waking-up-p session))
+                 (let ((how (ghostherd--interrupted session tail)))
+                   (and how (ghostherd--interrupt-heard session how)))))
            ;; What the agent says about itself beats reading its screen,
            ;; which is a rendering of a drawing of the same fact -- with
            ;; one exception.  A claimed `blocked' loses to a screen that

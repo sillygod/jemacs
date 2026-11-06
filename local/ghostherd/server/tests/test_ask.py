@@ -611,6 +611,31 @@ def test_a_hooked_taker_that_began_no_turn_is_not_answered_by_its_screen(tmp_pat
     assert h.get_ask(again["id"])["auto_source"] == "screen"
 
 
+def test_an_interrupted_turn_reported_by_emacs_ends_it(tmp_path):
+    """An interrupt fires no hook (claude, grok, agy: measured 2026-11-06),
+    and grok's and agy's transcripts mark no turn's end: an ask its taker
+    was working on stayed open, `turn_on', when Emacs saw it stop.  Emacs,
+    reading the interrupt off its screen, reports for it what a Stop hook
+    would -- done, interrupted, no last words -- and the ask settles as for
+    any turn that ended: by its screen, not by a reply cut short."""
+    snap = SNAP + [{"name": "grok-review", "kind": "grok", "state": "idle", "project": "/src/a/"}]
+    h = _store(tmp_path)
+    h.tick(sessions=snap)
+    h.report("grok-review", cli="grok", conversation="01a16ca9")
+    ask = h.ask("grok-review", "review it", from_name="claude-main", wait=True)
+    _deliver(h, snap)
+    h.report("grok-review", state="working")
+    # Ctrl+C: no hook.  Emacs settles on its screen at rest -- too soon.
+    assert h.settle(ask["id"], screen="Turn cancelled by user in 18s.").get("turn_on")
+    # Emacs reports the interrupt, as a Stop hook would have.
+    r = h.report("grok-review", state="done", reason="interrupted")
+    assert r["state"] == "done" and not r.get("closed_ask")
+    assert h.get_ask(ask["id"])["status"] == "delivered"   # no last words: no answer taken
+    got = h.settle(ask["id"], screen="Turn cancelled by user in 18s.")
+    assert got["status"] == "answered"
+    assert h.get_ask(ask["id"])["auto_source"] == "screen"
+
+
 def test_a_done_with_no_turn_hook_closes_after_the_grace(tmp_path, monkeypatch):
     "The same fallback on the message path: a hookless `done' with last."
     h = _store(tmp_path)
