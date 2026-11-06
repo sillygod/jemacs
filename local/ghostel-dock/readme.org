@@ -107,11 +107,13 @@ that does not, by the dock, from its foreground process.
 Columns: project, name, what it runs now (=▶ npm run dev=, =idle=,
 =exited=), the last command's exit status (=✓=, =✗ 2=, blank when the
 shell never said), its directory (=./sub= under its root), how long
-since its last output; =↻= after the name: it starts with its command
+since its last output; =●= before the name: a long command finished
+there out of sight and it has not shown since (see "When a command
+finishes out of sight"), =↻= after it: it starts with its command
 after a restart, a dim name: forgotten.  Under the list, the selected
-one in full: its buffer and directory; what it runs, its last exit,
-its last output; its last command line, its bound command, and whether
-it comes back after a restart.  The rows are looked at again every
+one in full: its buffer and directory; what it runs, its last exit (or
+the finish not looked at), its last output; its last command line, its
+bound command, and whether it comes back after a restart.  The rows are looked at again every
 =ghostel-dock-refresh-interval= seconds while it shows.
 
 The preview waits =ghostel-dock-preview-delay= (0.15 s) on a row: a
@@ -174,6 +176,47 @@ on the spot.  Through =ghostel-dock-run=:
 D ends it; without, until a look finds the terminal idle 1.5 s after
 the run.  Without OSC 133 a command the user started by hand after
 ours ended, before any look, would count as ours.
+
+* When a command finishes out of sight
+
+A command that ran at least =ghostel-dock-notify-after= seconds (10)
+and finishes in a terminal no window shows says so in the echo area:
+
+#+begin_example
+  *web:test* finished ✗ 1 · 3m 12s
+  *web:dev* finished ✓ · 45s
+#+end_example
+
+- The time runs from the shell's OSC 133 C (the command starts; the
+  first C of a line, as bash sends one per simple command) to its D.  A
+  shell that gives no OSC 133 -- a terminal opened before =~/.bashrc=
+  sourced ghostel.bash -- is never told of, and says nothing.
+- On screen when it finishes, in any window or the panel: nothing.  It
+  was seen.
+- Until the terminal shows again, its row in the manager has a dot
+  before its name (green ✓, red ✗, yellow when the shell gave no
+  status), and the details line says =● not looked at: finished ✗ 1 ·
+  3m 12s, 2m ago=.  A newer finish there takes its place.
+- Seen: shown in the panel (=SPC '=, a bound command, =RET= in the
+  manager, a layer that had it in its panel), or in any window
+  (=C-x b=, =o= in the manager).  The manager's previews do not count
+  -- they pass over rows as you move, and would take the dot off the
+  row it opens on before you read it; =q= puts the panel back and the
+  dot stays.
+- Not news: the end of a command the dock interrupted, in a bound
+  command's restart or after "stop it and run Y?".  The dock's Ctrl-C
+  hushes the next D, whatever it says.  The command run after it is
+  told of as any other.  An agent's buffer (ghostherd) is no terminal
+  here, and never told of.
+- Outside Emacs too, with =ghostel-dock-notify-system= (nil by
+  default), and only while no Emacs frame has the focus: =osascript=
+  makes a macOS notification with the osascript macOS ships (nothing to
+  install; macOS shows it as Script Editor's and may ask once to allow
+  it), title the buffer, body =finished ✗ 1 · 3m 12s=; or a function of
+  title and body.  A tty that reports no focus counts as focused.
+- Kept for the session only, never in the save file.  A command already
+  running when the dock was loaded is not told of: its start was not
+  seen.
 
 * After an Emacs restart
 
@@ -317,6 +360,8 @@ panel; without it, as before.
 | =ghostel-dock-after-create-functions= | nil             |
 | =ghostel-dock-stop-timeout=           | 8               |
 | =ghostel-dock-ready-timeout=          | 15              |
+| =ghostel-dock-notify-after=           | 10 (nil: never) |
+| =ghostel-dock-notify-system=          | nil             |
 | =ghostel-dock-save-file=              | =ghostel-dock.eld= under =user-emacs-directory= |
 
 * Tests

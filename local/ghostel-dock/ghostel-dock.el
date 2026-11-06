@@ -21,6 +21,10 @@
 ;;                           long since its last output.  Moving
 ;;                           through it previews a terminal in the panel.
 ;;
+;; A command that ran long (`ghostel-dock-notify-after') and finishes in
+;; a terminal no window shows says so in the echo area, and its row in
+;; the manager keeps a dot until the terminal shows again.
+;;
 ;; A terminal is a buffer *PROJECT:NAME*.  It belongs to the directory
 ;; it was made for -- its project's root, or the directory it started
 ;; in outside a project -- and keeps belonging to it across `cd'.
@@ -136,6 +140,27 @@ Per terminal: its root, name, directory, and the command a ghostel-cmd
 binding ran in it with whether it starts with it.  No output, no history."
   :type 'file)
 
+(defcustom ghostel-dock-notify-after 10
+  "Seconds a command must run for its finish to be told; nil: never told.
+A command that ran this long and finishes in a terminal no window
+shows says so in the echo area -- \"*web:test* finished ✗ 1 · 3m 12s\"
+-- and its row in the manager keeps a dot until the terminal shows
+again.  Quicker ones stay quiet.  The time runs from the shell's
+OSC 133 C (command start) to its D (finish): a shell that sends
+neither is never told of."
+  :type '(choice (const :tag "Never" nil) number))
+
+(defcustom ghostel-dock-notify-system nil
+  "How to tell a finish outside Emacs too, when no Emacs frame has the focus.
+nil: the echo area only.  `osascript': a macOS notification, through
+the osascript that comes with macOS -- nothing to install; macOS shows
+it as Script Editor's, and may ask once to allow that.  A function:
+called with a title (the terminal's buffer name) and a body (\"finished
+✗ 1 · 3m 12s\")."
+  :type '(choice (const :tag "Echo area only" nil)
+                 (const :tag "macOS notification (osascript)" osascript)
+                 (function :tag "Function of TITLE and BODY")))
+
 
 ;;; A terminal's place
 
@@ -173,6 +198,21 @@ Set when the dock makes it or first sees it; kept across `cd'.")
 
 (defvar-local ghostel-dock--osc133 nil
   "Non-nil once the shell sent an OSC 133 command marker.")
+
+(defvar-local ghostel-dock--command-at nil
+  "`float-time' of the OSC 133 C that began the command running now.
+The first C of a command line: bash sends one per simple command.")
+
+(defvar-local ghostel-dock--hush nil
+  "Non-nil: the dock interrupted this terminal, so its next D is the
+dock's doing, not news.")
+
+(defvar-local ghostel-dock--finished nil
+  "(:status S :secs N :at TIME): a command that ran long finished here
+while no window showed it, and none has shown it since.")
+
+(defvar ghostel-dock--unseen nil
+  "Terminals whose `ghostel-dock--finished' is set: a finish not seen.")
 
 (defvar-local ghostel-dock--command nil
   "The command a ghostel-cmd binding last ran here, or nil.
@@ -341,6 +381,9 @@ ROOT defaults to the current buffer's; t means every terminal."
   "Note that BUFFER's shell started a command (OSC 133 C)."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
+      ;; `a && b' sends a C for each: the command line began at the first.
+      (unless ghostel-dock--in-command
+        (setq ghostel-dock--command-at (float-time)))
       (setq ghostel-dock--in-command t
             ghostel-dock--osc133 t))
     ;; What runs, once it has: one that ends sooner is on the screen.
@@ -349,14 +392,27 @@ ROOT defaults to the current buffer's; t means every terminal."
 (defun ghostel-dock--on-command-finish (buffer status)
   "Note that BUFFER's command finished with STATUS (OSC 133 D).
 A prompt redrawn sends D with no C before it, and the status of the
-command before: only a D that ends a command is its status."
+command before: only a D that ends a command is its status.
+A command that ran `ghostel-dock-notify-after' seconds is told of,
+unless the dock interrupted it."
   (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (setq ghostel-dock--osc133 t)
-      (when ghostel-dock--in-command
-        (setq ghostel-dock--status status
-              ghostel-dock--in-command nil
-              ghostel-dock--command-live nil)))
+    (let (secs)
+      (with-current-buffer buffer
+        (setq ghostel-dock--osc133 t)
+        (when ghostel-dock--in-command
+          (setq secs (and ghostel-dock--command-at
+                          (- (float-time) ghostel-dock--command-at))
+                ghostel-dock--status status
+                ghostel-dock--in-command nil
+                ghostel-dock--command-at nil
+                ghostel-dock--command-live nil))
+        ;; Any D: after the dock's Ctrl-C the next prompt is its doing,
+        ;; whether the job ended or it was idle and the prompt redrew.
+        (when ghostel-dock--hush
+          (setq ghostel-dock--hush nil
+                secs nil)))
+      (when secs
+        (ghostel-dock--notice buffer status secs)))
     ;; Its OSC 7 comes with the prompt: a cd is saved once it settles.
     (when (ghostel-dock--kept-p buffer)
       (ghostel-dock--schedule-save))
@@ -379,10 +435,99 @@ native PTY's event pipe, which gets an event for every read."
     (with-current-buffer buffer
       (setq ghostel-dock--output-at (float-time)))))
 
+
+;;; A command finished out of sight
+
+(defun ghostel-dock--duration (secs)
+  "SECS as how long a command ran: 45s, 3m 12s, 1h 5m."
+  (let ((s (floor secs)))
+    (cond ((< s 60) (format "%ds" s))
+          ((< s 3600) (format "%dm %ds" (/ s 60) (% s 60)))
+          (t (format "%dh %dm" (/ s 3600) (/ (% s 3600) 60))))))
+
+(defun ghostel-dock--finish-words (status secs)
+  "A finish with STATUS after SECS: \"finished ✗ 1 · 3m 12s\"."
+  (let ((mark (ghostel-dock--status-text (list :status status))))
+    (concat "finished" (if (string-empty-p mark) "" (concat " " mark))
+            " · " (ghostel-dock--duration secs))))
+
+(defun ghostel-dock--emacs-focused-p ()
+  "Non-nil unless Emacs is known to be out of focus: no frame of it has
+the focus, and none is in doubt.  A tty that does not report focus is
+in doubt, which counts as focused here."
+  (seq-some (lambda (frame) (memq (frame-focus-state frame) '(t unknown)))
+            (frame-list)))
+
+(defun ghostel-dock--notify-system (title body)
+  "Tell TITLE and BODY outside Emacs, as `ghostel-dock-notify-system' says.
+osascript runs on its own, Emacs never waits for it; its arguments go
+as argv, so no quoting can break the script."
+  (pcase ghostel-dock-notify-system
+    ('nil nil)
+    ('osascript
+     (when (executable-find "osascript")
+       ;; A terminal's directory may be gone, or remote.
+       (let ((default-directory temporary-file-directory))
+         (make-process
+          :name "ghostel-dock-notify" :buffer nil :noquery t
+          :connection-type 'pipe :sentinel #'ignore
+          :command (list "osascript"
+                         "-e" "on run argv"
+                         "-e" "display notification (item 2 of argv) with title (item 1 of argv)"
+                         "-e" "end run"
+                         title body)))))
+    ((and (pred functionp) fn) (funcall fn title body))))
+
+(defun ghostel-dock--notice (buffer status secs)
+  "Tell that terminal BUFFER's command finished with STATUS after SECS.
+Only for a dock terminal -- not an agent's buffer -- that no window
+shows (one on screen was seen finishing), and only when it ran
+`ghostel-dock-notify-after' seconds.  It says so in the echo area,
+marks the terminal until it shows again, and with
+`ghostel-dock-notify-system' tells outside Emacs too when Emacs does
+not have the focus."
+  (when (and (numberp ghostel-dock-notify-after)
+             (>= secs ghostel-dock-notify-after)
+             (ghostel-dock--terminal-p buffer)
+             (not (get-buffer-window buffer 'visible)))
+    (with-current-buffer buffer
+      (setq ghostel-dock--finished (list :status status :secs secs :at (float-time))))
+    (cl-pushnew buffer ghostel-dock--unseen)
+    (let ((words (ghostel-dock--finish-words status secs)))
+      (message "%s %s" (buffer-name buffer) words)
+      (when (and ghostel-dock-notify-system (not (ghostel-dock--emacs-focused-p)))
+        (with-demoted-errors "ghostel-dock: no system notification: %S"
+          (ghostel-dock--notify-system (buffer-name buffer)
+                                       (substring-no-properties words)))))
+    ;; The manager's row gets its dot now, not at its next look.
+    (when (ghostel-dock--showing-p)
+      (run-at-time 0 nil #'ghostel-dock--refresh t))))
+
+(defun ghostel-dock--seen (buffer)
+  "Clear terminal BUFFER's finish mark: it shows."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq ghostel-dock--finished nil)))
+  (setq ghostel-dock--unseen (delq buffer ghostel-dock--unseen)))
+
+(defun ghostel-dock--note-seen (&optional _frame)
+  "Clear the mark of each marked terminal a window shows now.
+On `window-buffer-change-functions' and `window-selection-change-functions':
+the panel showing it, \\[switch-to-buffer] to it, the manager closing on
+it.  Not while the manager shows: a preview in the panel as it moves is
+a passing look, and the row's dot would go before it is read."
+  (when (and ghostel-dock--unseen (not (ghostel-dock--showing-p)))
+    (dolist (buffer ghostel-dock--unseen)
+      (when (or (not (buffer-live-p buffer))
+                (get-buffer-window buffer 'visible))
+        (ghostel-dock--seen buffer)))))
+
 (defun ghostel-dock--track (on)
   "Follow the terminals' commands and output when ON, else stop."
   (dolist (hook '((ghostel-command-start-functions . ghostel-dock--on-command-start)
-                  (ghostel-command-finish-functions . ghostel-dock--on-command-finish)))
+                  (ghostel-command-finish-functions . ghostel-dock--on-command-finish)
+                  (window-buffer-change-functions . ghostel-dock--note-seen)
+                  (window-selection-change-functions . ghostel-dock--note-seen)))
     (if on (add-hook (car hook) (cdr hook)) (remove-hook (car hook) (cdr hook))))
   (dolist (filter '(ghostel--filter ghostel--events-filter))
     (if on
@@ -499,6 +644,7 @@ yet, unless it runs.  A screen that waits for its redraw is stale: nil."
                      (running 'running))
           :pid (car fg)
           :status (buffer-local-value 'ghostel-dock--status buffer)
+          :finished (buffer-local-value 'ghostel-dock--finished buffer)
           :osc133 osc133
           :dir (buffer-local-value 'default-directory buffer)
           :output (buffer-local-value 'ghostel-dock--output-at buffer)
@@ -541,6 +687,29 @@ yet, unless it runs.  A screen that waits for its redraw is stale: nil."
     ('nil "")
     (0 (propertize "✓" 'face 'success))
     (status (propertize (format "✗ %s" status) 'face 'error))))
+
+(defun ghostel-dock--finished-face (finished)
+  "The face of a FINISHED mark: as its exit status."
+  (pcase (plist-get finished :status)
+    ('nil 'warning)
+    (0 'success)
+    (_ 'error)))
+
+(defun ghostel-dock--finished-dot (info)
+  "\"● \" before the name of INFO's terminal while a finish there is not
+seen; else nothing.  Put first, so a long name never cuts it off."
+  (if-let* ((finished (plist-get info :finished)))
+      (propertize "● " 'face (ghostel-dock--finished-face finished))
+    ""))
+
+(defun ghostel-dock--finished-text (finished &optional now)
+  "FINISHED told for the details line: \"● not looked at: finished ✗ 1
+· 3m 12s, 2m ago\".  NOW is the time the age counts from."
+  (let ((age (ghostel-dock--age (plist-get finished :at) now)))
+    (concat (propertize "● not looked at: " 'face (ghostel-dock--finished-face finished))
+            (ghostel-dock--finish-words (plist-get finished :status)
+                                        (plist-get finished :secs))
+            (if (equal age "now") ", just now" (format ", %s ago" age)))))
 
 (defun ghostel-dock--dir-text (info)
   "INFO's directory: under its root as ./SUB, else abbreviated."
@@ -712,7 +881,9 @@ Asks for the name.  A name ROOT already has shows that terminal."
   "Interrupt BUFFER's job; call FN with t at its prompt, nil if none came.
 A second interrupt goes at half of `ghostel-dock-stop-timeout'."
   (let ((half (/ ghostel-dock-stop-timeout 2.0)))
+    ;; The D after it is the dock's doing: no finish is told of.
     (with-current-buffer buffer
+      (setq ghostel-dock--hush t)
       (ghostel-send-C-c))
     (ghostel-dock--when
      buffer #'ghostel-dock--prompt-p
@@ -720,6 +891,7 @@ A second interrupt goes at half of `ghostel-dock-stop-timeout'."
        (if (or ok (not (buffer-live-p buffer)))
            (funcall fn ok)
          (with-current-buffer buffer
+           (setq ghostel-dock--hush t)
            (ghostel-send-C-c))
          (ghostel-dock--when buffer #'ghostel-dock--prompt-p fn half)))
      half)))
@@ -806,7 +978,9 @@ two ways."
         (switch-to-prev-buffer window)))))
 
 (defun ghostel-dock--display (buffer)
-  "Show BUFFER in the panel, made when there is none; return its window."
+  "Show BUFFER in the panel, made when there is none; return its window.
+A finish it was marked with is seen now."
+  (ghostel-dock--seen buffer)
   (ghostel-dock--vacate buffer)
   (with-selected-frame (ghostel-dock--root-frame)
     (display-buffer-in-side-window buffer (ghostel-dock--alist))))
@@ -1353,7 +1527,8 @@ printed.  NOW is the time the ages count from."
                           (propertize (ghostel-dock--root-name root)
                                       'face (if here 'bold 'font-lock-type-face))
                         "")
-                      (concat (propertize (or (plist-get info :label) (plist-get info :name))
+                      (concat (ghostel-dock--finished-dot info)
+                              (propertize (or (plist-get info :label) (plist-get info :name))
                                           'face (if (or (plist-get info :saved)
                                                         (plist-get info :forgotten))
                                                     'shadow
@@ -1432,6 +1607,8 @@ BUFFER is a saved terminal's row id for one not open."
                            (_ (format "running %s (pgid %s)" job (plist-get info :pid))))
                          (cond ((not (plist-get info :osc133))
                                 "no OSC 133 from its shell: exit status unknown")
+                               ((plist-get info :finished)
+                                (ghostel-dock--finished-text (plist-get info :finished)))
                                ((plist-get info :status)
                                 (format "last exit %s" (plist-get info :status)))
                                (t "no command finished yet"))
@@ -1440,8 +1617,10 @@ BUFFER is a saved terminal's row id for one not open."
                                  ((equal age "now") "output just now")
                                  (t (format "output %s ago" age))))))))
       (concat (ghostel-cmd--truncate head width) "\n"
-              (propertize (ghostel-cmd--truncate (string-join parts " · ") width)
-                          'face 'shadow)
+              ;; Shadow under its own faces: a finish's mark keeps its colour.
+              (let ((line (ghostel-cmd--truncate (string-join parts " · ") width)))
+                (add-face-text-property 0 (length line) 'shadow t line)
+                line)
               "\n"
               (propertize (ghostel-cmd--truncate (ghostel-dock--detail-more buffer info) width)
                           'face 'shadow))))))
