@@ -2,7 +2,9 @@
 
 A project's Ghostel terminals, named, in one place: a bottom panel that
 =SPC '= shows and hides, and a manager overlay on =SPC b t= that lists
-every project's terminals with what each one is doing.
+every project's terminals with what each one is doing.  A ghostel-cmd
+command can name its terminal (=npm run dev= → =dev=), and a project's
+terminals come back after an Emacs restart.
 
 * Status
 
@@ -10,7 +12,9 @@ every project's terminals with what each one is doing.
 |----------+------------------------------------------------------------------|
 | Package  | =local/ghostel-dock/= (straight =:local-repo=)                   |
 | Files    | =ghostel-dock.el= · =ghostel-dock-tests.el=                      |
-| Needs    | =ghostel=, =ghostel-cmd= (the overlay's pieces); posframe if any |
+| Needs    | =ghostel=, =ghostel-cmd= (declared, so straight compiles it);    |
+|          | posframe if any                                                  |
+| Keeps    | =~/.emacs.d/emacs-home/ghostel-dock.eld= (git-ignored)           |
 | Wired in | =jemacs-project= (layers, setup) · =jemacs-unarrange= (keys) ·   |
 |          | =jemacs-core= (send region, rerun) · =ghostel-cmd= (paste target) |
 
@@ -77,20 +81,28 @@ on its first row), each group most recently used first.
 | =x=            | Kill; asks only when it runs something                       |
 | =K=            | Kill the selected row's project's idle ones; lists, asks     |
 | =R=            | Rerun its last command (Up, Return) when idle; list stays    |
+| =S=            | After a restart, start with its bound command, or no more    |
+| =F=            | Forget it: not back after a restart (again: keep it)         |
 | =/=            | Filter: words matched in name, project, command, directory   |
 | =g= (=gr=)     | Look again                                                   |
 | =?=            | Key legend                                                   |
 | =q= / Esc      | Close the help, clear the filter, else close; the panel goes |
 |                | back as it was before the previews                           |
 
-=x= is kill, not =k=: =k= moves, as in ghostherd's sidebar.
+=x= is kill, not =k=: =k= moves, as in ghostherd's sidebar.  A shell
+that gives OSC 133 is asked about by ghostel's own query
+(=ghostel-query-before-killing=, which knows when a command runs); one
+that does not, by the dock, from its foreground process.
 
 Columns: project, name, what it runs now (=▶ npm run dev=, =idle=,
 =exited=), the last command's exit status (=✓=, =✗ 2=, blank when the
 shell never said), its directory (=./sub= under its root), how long
-since its last output.  Under the list, the selected one in full.  The
-rows are looked at again every =ghostel-dock-refresh-interval= seconds
-while it shows.
+since its last output; =↻= after the name: it starts with its command
+after a restart, a dim name: forgotten.  Under the list, the selected
+one in full: its buffer and directory; what it runs, its last exit,
+its last output; its last command line, its bound command, and whether
+it comes back after a restart.  The rows are looked at again every
+=ghostel-dock-refresh-interval= seconds while it shows.
 
 The preview waits =ghostel-dock-preview-delay= (0.15 s) on a row: a
 terminal shown resizes, and a full-screen program redraws.  A terminal
@@ -115,6 +127,78 @@ back to the one before.
   =ghostel--events-filter= -- the Emacs PTY's filter and the native
   PTY's event pipe, which gets an event (at least =()=) for every read.
 - *Directory*: =default-directory=, which follows OSC 7.
+- *Last command line*: while one runs, its foreground process's.  Else,
+  from a shell giving OSC 133, the screen: ghostel's renderer marks the
+  input at each prompt (=ghostel-input=), and the last command is the
+  input at the prompt before the current one -- read only while the
+  buffer is not waiting for a redraw.  Else the last one seen running
+  (sampled 0.2 s after each OSC 133 C, and at every look).  Shown, never
+  saved.
+
+* Commands bound to a terminal (with ghostel-cmd)
+
+A ghostel-cmd command can name its terminal: =:terminal "dev"= in its
+record, set in the overlay's =a= / =e= flow; a discovered task's with
+=e= on it, kept per project.  =T= runs any command in a terminal picked
+on the spot.  Through =ghostel-dock-run=:
+
+- The project's terminal of that name, started when missing (shown
+  nowhere until then, so the shell is sized by the panel when it shows),
+  shown in the panel and selected.
+- A new shell gets the command once it shows its prompt: no job in the
+  foreground and 0.4 s with no output (a login shell prints its rc
+  files' output first), at most =ghostel-dock-ready-timeout= (15 s).
+- Idle: it gets the command at once.
+- Still running the same command a binding ran there: it is restarted.
+  Ctrl-C (raw, so the tty raises SIGINT), then the command at the
+  prompt: OSC 133 D when the shell gives it, else the foreground job
+  gone.  A second Ctrl-C at half of =ghostel-dock-stop-timeout= (8 s);
+  past it the command is not run and the echo area says so.  Nothing
+  waits in the command loop: a 0.1 s timer looks, and a D looks at once.
+- Running something else: asked first ("*web:dev* is running X; stop it
+  and run Y?").
+- RET pastes, C-RET runs, as for any command.  A command naming no
+  terminal goes to the project's last-used one, as before.
+
+"Still running the same": with OSC 133, from the binding's run until a
+D ends it; without, until a look finds the terminal idle 1.5 s after
+the run.  Without OSC 133 a command the user started by hand after
+ours ended, before any look, would count as ours.
+
+* After an Emacs restart
+
+=ghostel-dock-save-file= (=emacs-home/ghostel-dock.eld=, git-ignored)
+holds, per project root, its terminals the dock named, most recently
+used first:
+
+#+begin_src emacs-lisp
+  ;; -*- mode: lisp-data -*-
+  (:version 1 :terminals
+   (("/Users/me/src/web/"
+     (:name "shell" :dir "/Users/me/src/web/src/")
+     (:name "dev" :dir "/Users/me/src/web/"
+      :command "npm run dev" :start t))))
+#+end_src
+
+- Only name, directory, and the command a ghostel-cmd binding ran there
+  with whether it starts with it.  No output, no history; the last
+  command line of a row is never saved.
+- Kept: terminals the dock named, not forgotten (=F=), in a local
+  project.  One made before the dock is kept once =r= names it.  A
+  shell that went remote (OSC 7 from an ssh) comes back in its root.
+- Saved after a change -- made, renamed, killed, a bound command run, a
+  flag set, a =cd= (seen at the next OSC 133 D) -- once Emacs has been
+  idle a second, and at =kill-emacs=; written only when it changed.  A
+  file that does not read is left alone and never written over.
+- Back on the first =SPC '=, manager, =C-u SPC '= or bound command in a
+  project after a restart: each shell started in its directory (its
+  root when that is gone), shown nowhere, in saved order, so the one
+  used last before is the last used again.  Only a terminal marked with
+  =S= runs its command, once its prompt shows.
+- A project not back yet keeps its saved terminals through every save
+  this session: they are not gone, only not started.
+- =x= kills it and it is gone from the file; =F= keeps it open but
+  never brings it back.
 
 * Shell integration (OSC 133 / OSC 7)
 
@@ -175,6 +259,10 @@ as =switch-terminal= did.
 - =(ghostel-dock-rerun &optional BUFFER)= -- Up, Return, focus kept.
 - =(ghostel-dock-terminals &optional ROOT)= -- ROOT's terminals, last
   used first; =t= for all.
+- =(ghostel-dock-run COMMAND NAME &optional ROOT SUBMIT)= -- COMMAND in
+  ROOT's terminal NAME, as above.
+- =(ghostel-dock-terminal-names &optional ROOT)= -- ROOT's terminal
+  names, open and saved.
 - =ghostel-dock-after-create-functions= -- called with a new terminal
   and the buffer it was asked from (the config sends the python setup).
 
@@ -184,12 +272,9 @@ panel; without it, as before.
 
 * Later (not built)
 
-- ghostel-cmd commands bound to a named terminal: =ghostel-dock-terminal=
-  plus a name (=ghostel-dock--named=) is the lookup; the command record
-  would carry =:terminal "test"=.
-- Restoring a project's terminals after a restart: each terminal holds
-  its root, name and directory; saving =(ROOT NAME DIR)= per project and
-  starting them again is what is left.
+- The manager lists only open terminals: another project's saved ones
+  come back when that project asks.  Rows for them, dimmed, =RET= to
+  start, would show them first.
 
 * Customization
 
@@ -204,6 +289,9 @@ panel; without it, as before.
 | =ghostel-dock-layer-function=         | nil (per frame) |
 | =ghostel-dock-switch-layer-function=  | nil             |
 | =ghostel-dock-after-create-functions= | nil             |
+| =ghostel-dock-stop-timeout=           | 8               |
+| =ghostel-dock-ready-timeout=          | 15              |
+| =ghostel-dock-save-file=              | =ghostel-dock.eld= under =user-emacs-directory= |
 
 * Tests
 

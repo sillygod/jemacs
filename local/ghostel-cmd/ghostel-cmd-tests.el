@@ -1556,5 +1556,145 @@ neither pastes into Ghostel."
       (delete-process server))))
 
 
+;;; Commands bound to a named terminal (ghostel-dock)
+
+(defmacro ghostel-cmd-tests--with-dock (&rest body)
+  "BODY with ghostel-dock stood in for: `runs' collects its runs, newest
+first, as (CMD TERMINAL ROOT SUBMIT); `terminals' are the names it knows."
+  (declare (indent 0))
+  `(let ((runs nil)
+         (terminals '("dev" "shell"))
+         (ghostel-cmd--last-values (make-hash-table :test #'equal)))
+     (cl-letf (((symbol-function 'ghostel-dock-run)
+                (lambda (cmd terminal root submit)
+                  (push (list cmd terminal root submit) runs)))
+               ((symbol-function 'ghostel-dock-terminal-names)
+                (lambda (&rest _) terminals)))
+       ,@body)))
+
+(defun ghostel-cmd-tests--reshow ()
+  "Show the overlay again in the selected window, as after a reopen: a
+run through ghostel-dock hides it, like a real paste."
+  (set-window-buffer (selected-window) (get-buffer ghostel-cmd--buffer-name))
+  (set-buffer ghostel-cmd--buffer-name))
+
+(ert-deftest ghostel-cmd-test-terminal-field-is-backward-compatible ()
+  "A file without :terminal reads as before; one with it, and keys this
+version does not know, keeps them through an edit; the task terminals
+sit under a key no path takes."
+  (ghostel-cmd-tests--with-store
+    (let ((root ghostel-cmd--root))
+      (ghostel-cmd-tests--write-outside
+       `((,root (:name "a" :cmd "echo a")
+                (:name "dev" :cmd "npm run dev" :terminal "dev" :later 1))
+         ((:task-terminal . ,root) ("npm:test" . "test")))
+       10)
+      (should (equal (ghostel-cmd-tests--names root) '("a" "dev")))
+      (should-not (ghostel-cmd--terminal-of (car (ghostel-cmd--get-commands root))))
+      (should (equal (ghostel-cmd--terminal-of (cadr (ghostel-cmd--get-commands root))) "dev"))
+      (should (equal (ghostel-cmd--task-terminals root) '(("npm:test" . "test")))))))
+
+(ert-deftest ghostel-cmd-test-add-and-edit-ask-the-terminal ()
+  (ghostel-cmd-tests--with-overlay (ghostel-cmd-tests--abc)
+    (ghostel-cmd-tests--with-dock
+      (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "dev")))
+        (ghostel-cmd-tests--answering '("npm run dev" "serve" "") t
+          (ghostel-cmd-add)))
+      (should (equal (car (last (ghostel-cmd--get-commands ghostel-cmd--root)))
+                     '(:name "serve" :cmd "npm run dev" :desc "" :terminal "dev")))
+      (ghostel-cmd-tests--goto '(project . "serve"))
+      (should (string-match-p "\\`serve →dev" (ghostel-cmd-tests--line)))
+      ;; Edit keeps what it does not ask about, and empty unbinds.
+      (ghostel-cmd--update-commands
+       (lambda (cmds) (mapcar (lambda (c) (if (equal (plist-get c :name) "serve")
+                                              (append c (list :later 1))
+                                            c))
+                              cmds))
+       ghostel-cmd--root)
+      (ghostel-cmd--refresh-overlay)
+      (ghostel-cmd-tests--goto '(project . "serve"))
+      (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "")))
+        (ghostel-cmd-tests--answering '("serve" "npm run dev -- --host" "web") t
+          (ghostel-cmd-edit)))
+      (should (equal (car (last (ghostel-cmd--get-commands ghostel-cmd--root)))
+                     '(:name "serve" :cmd "npm run dev -- --host" :desc "web" :later 1))))))
+
+(ert-deftest ghostel-cmd-test-bound-command-runs-in-its-terminal ()
+  "RET and C-RET of a bound command go to ghostel-dock with its terminal;
+an unbound one to the last-used terminal as before."
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "serve" :cmd "npm run dev" :terminal "dev")
+            (list :name "a" :cmd "echo a")
+            (list :name "port" :cmd "vite --port {{port:5173}}" :terminal "dev"))
+    (ghostel-cmd-tests--with-dock
+      (ghostel-cmd-tests--delivering
+        (ghostel-cmd-tests--goto '(project . "serve"))
+        (execute-kbd-macro (kbd "C-<return>"))
+        (should (equal runs `(("npm run dev" "dev" ,ghostel-cmd--root t))))
+        (ghostel-cmd-tests--reshow)
+        (ghostel-cmd-tests--goto '(project . "a"))
+        (execute-kbd-macro (kbd "RET"))
+        (should (equal sent '(("echo a"))))
+        (ghostel-cmd-tests--goto '(project . "port"))
+        (execute-kbd-macro (kbd "RET"))
+        (should ghostel-cmd--fill)
+        (execute-kbd-macro (kbd "RET"))
+        (should (equal (car runs) `("vite --port 5173" "dev" ,ghostel-cmd--root nil)))))))
+
+(ert-deftest ghostel-cmd-test-T-runs-in-a-terminal-picked-now ()
+  (ghostel-cmd-tests--with-overlay (ghostel-cmd-tests--abc)
+    (ghostel-cmd-tests--with-dock
+      (let ((offered nil))
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_prompt candidates &rest args)
+                     (push (list candidates (nth 2 args)) offered)
+                     "scratch")))
+          (ghostel-cmd-tests--goto '(project . "b"))
+          (execute-kbd-macro (kbd "T")))
+        ;; Offered the project's terminals, the command's name first.
+        (should (equal offered '((("dev" "shell") "b"))))
+        (should (equal runs `(("echo b" "scratch" ,ghostel-cmd--root t))))
+        ;; Picked once: the command stays unbound.
+        (should-not (ghostel-cmd--terminal-of (nth 1 (ghostel-cmd--get-commands ghostel-cmd--root))))))))
+
+(ert-deftest ghostel-cmd-test-T-from-a-posframe-reopens-on-its-row ()
+  "Asked in the parent frame, the overlay reopens on the command's row --
+its id (SCOPE . NAME), not the scope -- so the fill shows that command."
+  (ghostel-cmd-tests--with-overlay (ghostel-cmd-tests--abc)
+    (ghostel-cmd-tests--with-dock
+      (let ((goto nil))
+        (cl-letf (((symbol-function 'ghostel-cmd--posframe-showing-p) (lambda () t))
+                  ((symbol-function 'ghostel-cmd--with-parent-input)
+                   (lambda (fn) (funcall fn) (setq goto ghostel-cmd--goto-id)))
+                  ((symbol-function 'completing-read) (lambda (&rest _) "dev")))
+          (ghostel-cmd-tests--goto '(project . "c"))
+          (ghostel-cmd-paste-in-terminal))
+        (should (equal goto '(project . "c")))
+        (should (equal runs `(("echo c" "dev" ,ghostel-cmd--root t))))))))
+
+(ert-deftest ghostel-cmd-test-task-terminal-is-kept-for-the-task ()
+  "e on a discovered task asks only its terminal, kept per project; the
+task then runs there."
+  (ghostel-cmd-tests--with-overlay nil
+    (ghostel-cmd-tests--with-dock
+      (ghostel-cmd-tests--write "Makefile" "watch:\n\ttail -f log\n")
+      (ghostel-cmd--refresh-overlay)
+      (ghostel-cmd-tests--goto '(make . "watch"))
+      (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "logs")))
+        (ghostel-cmd-edit))
+      (should (equal (ghostel-cmd--task-terminals ghostel-cmd--root) '(("make:watch" . "logs"))))
+      (ghostel-cmd-tests--goto '(make . "watch"))
+      (should (string-match-p "watch →logs" (ghostel-cmd-tests--line)))
+      (execute-kbd-macro (kbd "C-<return>"))
+      (should (equal runs `(("make watch" "logs" ,ghostel-cmd--root t))))
+      (ghostel-cmd-tests--reshow)
+      (ghostel-cmd-tests--goto '(make . "watch"))
+      ;; Its file is only parsed: the cached task is not changed.
+      (should-not (plist-get (cdr (assoc '(make . "watch") (ghostel-cmd--tasks ghostel-cmd--root)))
+                             :terminal))
+      (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "")))
+        (ghostel-cmd-edit))
+      (should-not (ghostel-cmd--task-terminals ghostel-cmd--root)))))
+
 (provide 'ghostel-cmd-tests)
 ;;; ghostel-cmd-tests.el ends here

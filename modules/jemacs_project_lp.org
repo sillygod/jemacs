@@ -226,6 +226,13 @@ value is the terminal lagging behind the window while you drag.")
 
         (use-package ghostel
           :ensure t
+          :init
+          ;; The native module lives outside straight's tree.  ghostel
+          ;; downloads it into its own package directory by default, and a
+          ;; rebuild of ghostel -- or a recursive one of a package that
+          ;; needs it, like ghostherd -- deletes that directory, module and
+          ;; all: the next start has none.  emacs-home/ is git-ignored.
+          (setq ghostel-module-directory (locate-user-emacs-file "ghostel-module/"))
           :config
           (advice-add 'ghostel--adjust-size :around #'jemacs-ghostel-debounce-resize)
           (advice-add 'ghostel-copy-mode :after #'jemacs-ghostel-sync-evil-copy-mode)
@@ -356,9 +363,12 @@ value is the terminal lagging behind the window while you drag.")
                         ghostel-dock-show
                         ghostel-dock-rerun)
              :init
-             ;; ghostel-cmd pastes into the dock's terminal when it can
-             ;; call this; it asks with `fboundp'.
+             ;; ghostel-cmd pastes into the dock's terminal, and runs a
+             ;; command bound to a named terminal there, when it can call
+             ;; these; it asks with `fboundp'.
              (autoload 'ghostel-dock-terminal "ghostel-dock")
+             (autoload 'ghostel-dock-run "ghostel-dock")
+             (autoload 'ghostel-dock-terminal-names "ghostel-dock")
              :config
              (setq ghostel-dock-layer-function #'jemacs-ghostel-dock-layer
                    ghostel-dock-switch-layer-function #'jemacs-ghostel-dock-switch-layer)
