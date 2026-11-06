@@ -223,6 +223,42 @@ def test_a_notice_taken_mid_turn_is_a_note_once(home):
     assert [e.get("text") for e in r["entries"] if e.get("kind") != "turn"] == ["Roll it out"]
 
 
+# grok 1.0.70's first record of a conversation, shaped as on this machine
+# (2026-11-06) -- its context, the user's rules -- with made-up contents.
+GROK_OPENING = {"type": "user", "content": [{"type": "text", "text": (
+    "<user_info>\nOS Version: macos\nShell: /bin/bash\nWorkspace Path: /x/proj\nToday's date: 2026-11-06\n"
+    "</user_info>\n\n<rules>\nThe rules section has a number of possible rules/memories/context.\n\n"
+    "<user_rules description=\"These are rules set by the user.\">\n<user_rule>\nBe brief.\n</user_rule>\n"
+    "</user_rules>\n</rules>")}]}
+
+
+def test_grok_opens_with_its_own_context_not_a_prompt(home):
+    """grok writes the context it opens a conversation with -- the machine,
+    the workspace, the user's rules -- as its first user record: no one said
+    it.  Out of the room, so out of its "You:" list and its chat too.  A
+    prompt is kept, with or without the prompt_index older groks left out,
+    and a prompt that comes with that context in one record keeps its words."""
+    path = _write(home / ".grok" / "sessions" / "%2Fx%2Fproj" / "s1" / "chat_history.jsonl", [
+        {"type": "system", "content": "you are grok"},
+        GROK_OPENING,
+        {"type": "user", "content": [{"type": "text", "text": "<system-reminder>\nskills\n</system-reminder>"}],
+         "synthetic_reason": "system_reminder"},
+        {"type": "user", "content": [{"type": "text", "text": "<user_query>\nrun the tests\n</user_query>"}], "prompt_index": 0},
+        {"type": "assistant", "content": "All green."},
+        {"type": "user", "content": [{"type": "text", "text": "<user_query>and lint</user_query>"}]},
+        {"type": "user", "content": [{"type": "text", "text": "<user_info>\nOS Version: macos\n</user_info>\n"
+                                                              "<user_query>and the docs</user_query>"}]},
+    ])
+    e = conv.read(path)["entries"]
+    assert [(x["role"], x.get("kind"), x.get("text")) for x in e] == [
+        ("user", "prompt", "run the tests"), ("assistant", None, "All green."),
+        ("user", "prompt", "and lint"), ("user", "prompt", "and the docs")]
+    r = conv.chat([("gk", path)])
+    assert [x.get("text") for x in r["entries"] if x["who"] == "user"] == ["run the tests", "and lint", "and the docs"]
+    # The Threads tab's opening prompt for a task: the user's words.
+    assert conv.turn(path, "gk", "run the tests")["prompt"]["text"] == "run the tests"
+
+
 def test_what_the_herd_said_is_attributed(home):
     path = _claude_file(home, [u(ASK_TEXT), u(ANSWER_TEXT), u(AUTO_TEXT), u(FAILED_TEXT),
                                u("[ghostherd message from user → qa]\nplease hurry\n")])

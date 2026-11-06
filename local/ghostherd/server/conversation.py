@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import images
-from importers.textutil import content_to_text, grok_user_text
+from importers.textutil import USER_QUERY, content_to_text, grok_user_text
 
 TAIL_BYTES = 768 * 1024
 # A turn of tool calls can write megabytes of output: read further back,
@@ -134,6 +134,10 @@ SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 PASTED = re.compile(r'<pasted_content((?:\s+[\w-]+="[^"]*")*)>\n?(.*?)\n?</pasted_content(?:\1)?>', re.S)
 TAG = re.compile(r"<([a-z][a-z-]*)>(.*?)</\1>", re.S)
 USER_REQUEST = re.compile(r"<USER_REQUEST>(.*?)</USER_REQUEST>", re.S)
+# grok's first record of a conversation: its own context (machine, workspace,
+# the user's rules), written as a user record.  Seen opening 28 of the 54 grok
+# conversations here (2026-11-06); a prompt comes in <user_query>.
+GROK_OPENING = re.compile(r"\A\s*<user_info>")
 
 _cache: dict[str, tuple[int, int, dict[str, Any]]] = {}
 
@@ -683,7 +687,12 @@ def _grok(records, thread: Thread) -> None:
                 thread.note("the conversation was compacted")
             if o.get("synthetic_reason"):
                 continue
-            thread.user(grok_user_text(content_to_text(o.get("content"))))
+            text = content_to_text(o.get("content"))
+            # The CLI's own context it opens a conversation with -- the
+            # machine, the workspace, the user's rules -- not said by anyone.
+            if GROK_OPENING.match(text) and not USER_QUERY.search(text):
+                continue
+            thread.user(grok_user_text(text))
         elif kind == "assistant":
             content = o.get("content")
             thread.say(content if isinstance(content, str) else content_to_text(content))
