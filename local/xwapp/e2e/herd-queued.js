@@ -172,6 +172,19 @@ const CHAT = (extra) => ({ project: DP, earlier: false, missing: [], absent: [],
       check(W("then the transcript: said once, as the conversation's"),
         q.said.filter((t) => t === Q2).length === 1 && q.items.length === 0, q);
 
+      // ---- Cut, then whole: one message, not two ----
+      await show({ rd: { queued: ["typed at agy's terminal: what is 2+2, and keep this one lo..."], queuedNow: true } });
+      await sleep(80);
+      await show({ rd: { queued: ["typed at agy's terminal: what is 2+2, and keep this one long enough to wrap", "page: 6+6?"], queuedNow: true } });
+      await sleep(80);
+      q = await colQueue();
+      check(W("drawn cut, then whole: still one, not leaving"),
+        q.items.length === 2 && q.items[0].text === "typed at agy's terminal: what is 2+2, and keep this one long enough to wrap" &&
+        !q.items[0].leaving && q.items[1].text === "page: 6+6?", q);
+      await show({ rd: { queued: [], queuedNow: false } });
+      await ctx.clock.fastForward(11000);
+      await sleep(150);
+
       // ---- Taken back by hand: leaves after a moment ----
       await show({ rd: { queued: [Q3], queuedNow: true } });
       await sleep(80);

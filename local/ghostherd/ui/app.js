@@ -133,8 +133,14 @@
     (agents || []).forEach((a) => {
       const left = (herdNow.queued[a.name] || []).slice(), cur = [];
       (a.queued || []).forEach((text) => {
-        const k = left.findIndex((q) => !q.gone && q.text === text);
-        cur.push(k >= 0 ? left.splice(k, 1)[0] : { text, seen: now, gone: 0 });
+        // The same one, though drawn cut before and whole now (agy cuts
+        // the last to fit its alt+m), or the other way.
+        let k = left.findIndex((q) => !q.gone && q.text === text);
+        if (k < 0) k = left.findIndex((q) => sameQueued(q.text, text));
+        if (k >= 0) {
+          const q = left.splice(k, 1)[0];
+          cur.push(Object.assign(q, { text, gone: 0 }));
+        } else cur.push({ text, seen: now, gone: 0 });
       });
       const gone = left.filter((q) => (q.gone = q.gone || now) > now - QUEUE_LINGER);
       if (gone.length) lingering = true;
@@ -148,13 +154,21 @@
   // A message's words, to tell two reads of it alike: no spaces, and a
   // CLI's cut ("…", "...") off its end.
   function qwords(t) { return String(t || "").replace(/\s+/g, "").replace(/(?:…|\.\.\.)$/, ""); }
+  const qcut = (t) => /(?:…|\.\.\.)$/.test(String(t || "").trim());
+
+  // Whether A and B are one message read twice: alike, or one cut short
+  // of the other.
+  function sameQueued(a, b) {
+    const A = qwords(a), B = qwords(b);
+    return !!A && !!B && (A === B || (qcut(a) && B.startsWith(A)) || (qcut(b) && A.startsWith(B)));
+  }
 
   // Whether ENTRIES, a conversation's, already say Q was said to the agent
   // (SAID picks what was said to it): delivered, its own entry there.
   // Among the newest only, and not long before the queue showed it.  A
   // herd message the conversation says by its body; the queue, whole.
   function queuedSaid(q, entries, said) {
-    const a = qwords(q.text), cut = /(?:…|\.\.\.)$/.test(String(q.text).trim());
+    const a = qwords(q.text), cut = qcut(q.text);
     if (!a) return false;
     return (entries || []).slice(-12).some((e) => {
       if (!said(e) || Date.parse(e.ts) < q.seen - 60000) return false;
