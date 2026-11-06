@@ -2072,6 +2072,56 @@ says so; a hint naming another key, or a click, gives no key to press."
                                                  "✻ Baked for 2s"))
                #'ghostherd--claude-queue)))
 
+;; claude 2.1.319 in the herd's tmux pane, as the scratch run captured it
+;; (2026-11-06): its conversation drawn from the top, a blank gap down to
+;; its spinner over the box.  GAP blank rows instead of the 19 it had.
+(defun ghostherd-tests--claude-gap-screen (gap)
+  (string-join
+   (append (list "" " ▐▛███▛█   Claude Code v2.1.319" "▝▜██████▀  Opus 5.5 with xhigh effort · Claude Team"
+                 " ▝▝   ▝▝   /…/src/app" "" ""
+                 "❯ Use the Bash tool to run ping -c 45 127.0.0.1 | tail -1 in the foreground with a 120000 ms timeout"
+                 "  just the word done." ""
+                 "⏺ Pinging localhost 45 times and showing summary · 6s"
+                 "  ⎿  $ ping -c 45 127.0.0.1 | tail -1 (5s)"
+                 "     (ctrl+b ctrl+b (twice) to run in background)" ""
+                 "❯ typed at claude's terminal: what is 2+2? 另外，順便說一下 3+3 是多少，and keep this one long"
+                 "  enough to wrap"
+                 "  ctrl+x ctrl+s to send now")
+           (make-list gap "")
+           (list "· Brewing… (9s · ↓ 124 tokens)"
+                 "                     tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf"
+                 ghostherd-tests--rule
+                 (concat "❯" " " "Press up to edit queued messages")
+                 ghostherd-tests--rule
+                 "  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt"))
+   "\n"))
+
+(ert-deftest ghostherd-test-claudes-queue-over-a-blank-gap ()
+  "In a tall pane claude draws its conversation from the top: a blank gap,
+as tall as the pane allows, between its queue and its spinner.  Read
+over it however tall; and when the poll's tail starts inside it, so
+holds no queue while claude is at work, from the whole pane."
+  (let ((words "typed at claude's terminal: what is 2+2? 另外，順便說一下 3+3 是多少，and keep this one long enough to wrap"))
+    (dolist (gap '(19 60))
+      (should (equal (mapcar #'car (plist-get (ghostherd--queue-read (ghostherd-tests--claude-gap-screen gap)
+                                                                     #'ghostherd--claude-queue)
+                                              :items))
+                     (list words))))
+    (ghostherd-tests--with-herd ((ghostherd--queues (make-hash-table :test 'equal)))
+      (let* ((s (ghostherd-tests--session :name "rd" :kind 'claude :backend 'fake))
+             (pane (ghostherd-tests--claude-gap-screen 60))
+             (tail (string-join (last (split-string pane "\n") 40) "\n")))
+        (should-not (ghostherd--queue-read tail #'ghostherd--claude-queue))
+        (puthash (ghostherd-session-id s) (cons tail pane) ghostherd--panes)
+        (cl-letf (((symbol-function 'ghostherd-backend-styled-screen) (lambda (_b _s cb) (funcall cb nil))))
+          (ghostherd--read-queue s tail))
+        (should (equal (ghostherd-session-queued s) (list words)))
+        ;; Not at work: the pane is not asked.
+        (puthash (ghostherd-session-id s) (cons "x" "y") ghostherd--panes)
+        (cl-letf (((symbol-function 'ghostherd--pane) (lambda (&rest _) (error "asked"))))
+          (ghostherd--read-queue s (ghostherd-tests--claude-screen '("❯ "))))
+        (should-not (ghostherd-session-queued s))))))
+
 (ert-deftest ghostherd-test-claudes-queued-line-by-its-styles ()
   "A queued message's words are drawn in its sign's own colour; a prompt
 claude has taken switches to brighter words after the sign."
@@ -2135,6 +2185,26 @@ thoughts or an old line for a queued one."
                                        #'ghostherd--grok-queue)
                                       :items)))
                  "grok queued test: what is 2+2? keep this long enough to wrap maybe over the line width of the pane so we see how it is d…"))
+  ;; In the herd's taller pane: blank rows between them all (2026-11-06).
+  (let ((q (ghostherd--queue-read
+            (string-join
+             (list "" "    #1 typed at grok's terminal: what is 2+2? 另外，順便說一下 3+3 是多少" "    #2 from the page box to grok: what is 6+6?"
+                   "" "    ⠼ Ping localhost 45 times, show last line… 36s                  42s ⇣21.9k [↓][stop]"
+                   "" "  [Click here to Upgrade] or use Ctrl+O" ""
+                   (concat "  ╭" (make-string 60 ?─) "╮") (concat "  │ ❯" (make-string 57 ? ) "│")
+                   (concat "  ╰" (make-string 30 ?─) " Grok 4.7 (xhigh) · always-approve ─╯") ""
+                   "  Enter:send now  │  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+x:shortcuts")
+             "\n")
+            #'ghostherd--grok-queue)))
+    (should (equal (mapcar #'car (plist-get q :items))
+                   '("typed at grok's terminal: what is 2+2? 另外，順便說一下 3+3 是多少" "from the page box to grok: what is 6+6?")))
+    (should (plist-get q :now)))
+  (should (equal (mapcar #'car (plist-get (ghostherd--queue-read
+                                           (ghostherd-tests--agy-queue-screen
+                                            '("⣽  Generating..." "▸ one (alt+m to send immediately)" "" ""))
+                                           #'ghostherd--agy-queue)
+                                          :items))
+                 '("one")))
   (should-not (ghostherd--queue-read (replace-regexp-in-string "    #[12] .*\n" "" ghostherd-tests--grok-queue-screen)
                                      #'ghostherd--grok-queue))
   ;; Numbered from 1 or not grok's queue (a list in its reply).
@@ -2143,7 +2213,7 @@ thoughts or an old line for a queued one."
   (let ((q (ghostherd--queue-read
             (ghostherd-tests--agy-queue-screen
              '("⣽  Generating..." "└ Tip: Use /help to see all commands."
-               "▸ second agy queued: 3 plus 3 (alt+m to send immediately)"
+               "▸ second agy queued: 3 plus 3"
                "▸ third agy queued, a long one that should wrap over the width of the pane so that we can see wheth... (alt+m to send immediately)"))
             #'ghostherd--agy-queue)))
     (should (equal (mapcar #'car (plist-get q :items))
@@ -2155,9 +2225,40 @@ thoughts or an old line for a queued one."
             #'ghostherd--agy-queue)))
     (should (equal (mapcar #'car (plist-get q :items)) '("agy sendnow two: 6 plus 6")))
     (should-not (plist-get q :now)))
+  ;; Two queued in the herd's pane (2026-11-06): only the last offers alt+m,
+  ;; the first its words alone; then, alt+m pressed, the last is sending.
+  (let ((q (ghostherd--queue-read
+            (ghostherd-tests--agy-queue-screen
+             '("  538" "⣽  Loading..."
+               "▸ typed at agy's terminal: what is 2+2? 另外，順便說一下 3+3 是多少，and keep this one long enough to wrap"
+               "▸ from the page box to agy: what is 6+6? (alt+m to send immediately)"))
+            #'ghostherd--agy-queue)))
+    (should (equal (mapcar #'car (plist-get q :items))
+                   '("typed at agy's terminal: what is 2+2? 另外，順便說一下 3+3 是多少，and keep this one long enough to wrap"
+                     "from the page box to agy: what is 6+6?")))
+    (should (plist-get q :now)))
+  (let ((q (ghostherd--queue-read
+            (ghostherd-tests--agy-queue-screen
+             '("⣻  Loading..." "▸ typed at agy's terminal: what is 2+2?"
+               "▸ from the page box to agy: what is 6+6?" "  ⎿  Sending to agent..."))
+            #'ghostherd--agy-queue)))
+    (should (equal (mapcar #'car (plist-get q :items))
+                   '("typed at agy's terminal: what is 2+2?" "from the page box to agy: what is 6+6?")))
+    (should-not (plist-get q :now)))
+  ;; Its thoughts, and a line of words with no queue under it, are none.
   (should-not (ghostherd--queue-read
                (ghostherd-tests--agy-queue-screen '("▸ Thought for 9s, 330 tokens" "  2 plus 2 is 4."))
-               #'ghostherd--agy-queue)))
+               #'ghostherd--agy-queue))
+  (should-not (ghostherd--queue-read
+               (ghostherd-tests--agy-queue-screen '("  done" "▸ Thought for 7s, 123 tokens"))
+               #'ghostherd--agy-queue))
+  ;; A thought's head right over the queue: the queue alone.
+  (should (equal (mapcar #'car (plist-get (ghostherd--queue-read
+                                           (ghostherd-tests--agy-queue-screen
+                                            '("▸ Thought for 7s, 123 tokens" "▸ queued words (alt+m to send immediately)"))
+                                           #'ghostherd--agy-queue)
+                                          :items))
+                 '("queued words"))))
 
 (ert-deftest ghostherd-test-the-poll-reads-a-queue ()
   "Each poll keeps what a CLI holds queued.  A claude block not seen

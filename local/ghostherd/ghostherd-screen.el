@@ -567,13 +567,20 @@ them drawn the same -- but in other colours
 \(`ghostherd--claude-queued-line-p')."
   (let* ((lines (vconcat lines))
          (top (ghostherd--box-top lines))
+         ;; Up from the box over the spinner and what it lists under it --
+         ;; and the blank rows between them and the conversation, however
+         ;; many: in a tall pane claude draws its conversation from the top
+         ;; (19 such rows in the herd's tmux, 2026-11-06).  A prompt or a
+         ;; reply is the conversation.
          (hint (and top
-                    ;; Up from the box over the spinner and what it lists
-                    ;; under it; a prompt or a reply is the conversation.
-                    (cl-loop for i downfrom (1- top) to (max 0 (- top ghostherd--spinner-reach))
-                             for line = (aref lines i)
-                             when (string-match-p ghostherd--claude-send-now-re line) return i
-                             when (string-match-p "\\`[❯⏺]" line) return nil)))
+                    (let ((i (1- top)) (words 0) found)
+                      (while (and (>= i 0) (not found) (< words ghostherd--spinner-reach))
+                        (let ((line (aref lines i)))
+                          (cond ((string-match-p ghostherd--claude-send-now-re line) (setq found i))
+                                ((string-match-p "\\`[❯⏺]" line) (setq i 0))
+                                ((not (string-blank-p line)) (cl-incf words))))
+                        (setq i (1- i)))
+                      found)))
          (i (and hint (1- hint)))
          items cut)
     (when i
@@ -625,52 +632,68 @@ taken as queued, and the page leaves out what the conversation has."
 (defun ghostherd--grok-queue (lines)
   "The messages grok holds queued on LINES, a screen's lines: \"#1 words\" a
 line each, numbered from 1 at the top, over the spinner above its input
-box -- cut to the line, ending \"…\".  Nil when none; else (:items
-\((WORDS . LINE)...) :now NOW), NOW when its footer offers \"Enter:send
-now\": Enter on its empty box moves a command at work to the background
-and hands the agent the first at once."
+box -- cut to the line, ending \"…\".  Blank rows between them, the
+spinner, a banner and the box, as a tall pane has them.  Nil when none;
+else (:items ((WORDS . LINE)...) :now NOW), NOW when its footer offers
+\"Enter:send now\": Enter on its empty box moves a command at work to
+the background and hands the agent the first at once."
   (let* ((lines (vconcat lines))
          (top (ghostherd--box-top lines))
-         ;; Under it, a banner at most; grok's spinner may end in buttons
-         ;; other than [stop] ("[↓][stop]"), so only its braille is asked.
-         (spin (and top (cl-loop for i downfrom (1- top) to (max 0 (- top 3))
-                                 when (string-match-p "\\`[[:blank:]]*[⠁-⣿][[:blank:]]" (aref lines i))
-                                 return i)))
-         (i (and spin (1- spin)))
-         items)
-    (while (and i (>= i 0) (string-match "\\`[[:blank:]]+#\\([0-9]+\\) \\(.*[^[:blank:]]\\)" (aref lines i)))
-      ;; Its scrollbar, when drawn, ends the line.
-      (push (list (string-to-number (match-string 1 (aref lines i)))
-                  (replace-regexp-in-string "[[:blank:]]\\{2,\\}█\\'" "" (match-string 2 (aref lines i)))
-                  i)
-            items)
+         (i (and top (1- top)))
+         (others 0) spin items)
+    ;; Up to its spinner, over blank rows and a banner at most.  grok's
+    ;; spinner may end in buttons other than [stop] ("[↓][stop]"), so only
+    ;; its braille is asked.
+    (while (and i (>= i 0) (not spin) (<= others 2))
+      (let ((line (aref lines i)))
+        (cond ((string-match-p "\\`[[:blank:]]*[⠁-⣿][[:blank:]]" line) (setq spin i))
+              ((not (string-blank-p line)) (cl-incf others))))
       (setq i (1- i)))
+    (when spin
+      (while (and (>= i 0) (string-blank-p (aref lines i)))
+        (setq i (1- i)))
+      (while (and (>= i 0) (string-match "\\`[[:blank:]]+#\\([0-9]+\\) \\(.*[^[:blank:]]\\)" (aref lines i)))
+        ;; Its scrollbar, when drawn, ends the line.
+        (push (list (string-to-number (match-string 1 (aref lines i)))
+                    (replace-regexp-in-string "[[:blank:]]\\{2,\\}█\\'" "" (match-string 2 (aref lines i)))
+                    i)
+              items)
+        (setq i (1- i))))
     (when (and items (cl-loop for (n) in items for want from 1 always (= n want)))
       (list :items (mapcar (lambda (it) (cons (nth 1 it) (nth 2 it))) items)
             :now (cl-loop for j from top below (length lines)
                           thereis (string-match-p "Enter:send now" (aref lines j)))))))
 
 (defun ghostherd--agy-queue (lines)
-  "The messages agy holds queued on LINES, a screen's lines: \"▸ words
-\(alt+m to send immediately)\" a line each right over its input box, cut
-to the line with \"...\"; once alt+m is pressed for one, \"▸ words\" with
-\"⎿  Sending to agent...\" under it, until the agent's next step takes
-it.  Nil when none; else (:items ((WORDS . LINE)...) :now NOW), NOW when
-one still offers alt+m."
+  "The messages agy holds queued on LINES, a screen's lines: \"▸ words\" a
+line each right over its input box, the last offering \"(alt+m to send
+immediately)\" and cut with \"...\" to make room for it; once alt+m is
+pressed, \"⎿  Sending to agent...\" under the last instead, until the
+agent's next step takes them.  Nil when none; else (:items ((WORDS
+. LINE)...) :now NOW), NOW when the last still offers alt+m."
   (let* ((lines (vconcat lines))
          (top (ghostherd--box-top lines))
          (i (and top (1- top)))
-         items now)
+         items now anchored)
     (catch 'done
       (while (and i (>= i 0))
         (let ((line (aref lines i)))
-          (cond ((string-match "\\`▸ \\(.*[^[:blank:]]\\)[[:blank:]]+(alt\\+m to send immediately)[[:blank:]]*\\'" line)
+          (cond ((and (not items)
+                      (string-match "\\`▸ \\(.*[^[:blank:]]\\)[[:blank:]]+(alt\\+m to send immediately)[[:blank:]]*\\'" line))
                  (push (cons (match-string 1 line) i) items)
-                 (setq now t i (1- i)))
-                ((and (> i 0) (string-match-p "\\`[[:blank:]]+⎿[[:blank:]]+Sending to agent" line)
+                 (setq now t anchored t i (1- i)))
+                ((and (not items) (> i 0) (string-match-p "\\`[[:blank:]]+⎿[[:blank:]]+Sending to agent" line)
                       (string-match "\\`▸ \\(.*[^[:blank:]]\\)" (aref lines (1- i))))
                  (push (cons (match-string 1 (aref lines (1- i))) (1- i)) items)
-                 (setq i (- i 2)))
+                 (setq anchored t i (- i 2)))
+                ;; One queued before the last: its words alone -- not a
+                ;; thought's head over a reply.
+                ((and anchored (string-match "\\`▸ \\(.*?[^[:blank:]]\\)\\(?:[[:blank:]]+(alt\\+m to send immediately)\\)?[[:blank:]]*\\'" line)
+                      (not (string-match-p "\\`▸ Thought for [0-9]" line)))
+                 (push (cons (match-string 1 line) i) items)
+                 (setq i (1- i)))
+                ;; A tall pane's blank rows, between the box and them.
+                ((and (not items) (string-blank-p line)) (setq i (1- i)))
                 (t (throw 'done nil))))))
     (when items
       (list :items items :now now))))
@@ -707,14 +730,22 @@ found, by SEEN, whether each is queued; NOW, the reader's."
   "Keep what SESSION's CLI holds queued, as its screen TEXT shows it.  A
 claude block not seen before is asked of the host's styles, once: a
 prompt just taken sits over the queue drawn the same, in other colours.
-Its first running off the top of TEXT, the whole pane is read."
+Its first running off the top of TEXT, or none in it while claude is at
+work, the whole pane is read."
   (let* ((id (ghostherd-session-id session))
          (claude (eq (ghostherd-session-kind session) 'claude))
          (reader (cadr (assq (ghostherd-session-kind session) ghostherd--queue-readers)))
          (q (and reader (ghostherd--screen-read text 'queue #'ghostherd--queue-read reader)))
-         (q (or (and (plist-get q :cut)
+         ;; Its first cut off the top of TEXT; or, at work, none in TEXT:
+         ;; claude's may sit over a blank gap taller than the tail.  The
+         ;; whole pane -- on tmux, in hand already.
+         (q (or (and (or (plist-get q :cut)
+                         (and claude (null q)
+                              (ghostherd--spinning-p
+                               text (plist-get (ignore-errors (ghostherd--spec 'claude)) :spinner))))
                      (let ((pane (ghostherd--pane session text)))
-                       (and pane (ghostherd--screen-read pane 'queue #'ghostherd--queue-read reader))))
+                       (and pane (not (equal pane text))
+                            (ghostherd--screen-read pane 'queue #'ghostherd--queue-read reader))))
                 q)))
     (if (null q)
         (remhash id ghostherd--queues)
@@ -793,7 +824,7 @@ and its input box is empty: the key would act on words there too."
          (spec (assq (ghostherd-session-kind session) ghostherd--queue-readers))
          (screen (and spec (ghostherd--host-capture session ghostherd-screen-tail-lines)))
          (q (and screen (ghostherd--queue-read screen (nth 1 spec))))
-         (q (or (and (plist-get q :cut)
+         (q (or (and (or (null q) (plist-get q :cut))
                      (ghostherd--queue-read (ghostherd--host-pane session) (nth 1 spec)))
                 q))
          (items (mapcar #'car (plist-get q :items))))
