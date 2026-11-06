@@ -1226,6 +1226,7 @@ When KILL-BUFFER is non-nil (the interactive default), also kill its buffer."
     (remhash id ghostherd--screens)
     (remhash id ghostherd--panes)
     (remhash id ghostherd--feet)
+    (remhash id ghostherd--queues)
     (remhash id ghostherd--started-by)
     (remhash id ghostherd--handoff-leads)
     (remhash id ghostherd--dir-gone)

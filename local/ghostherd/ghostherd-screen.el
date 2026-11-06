@@ -140,6 +140,24 @@ the background and the prompt they suggest you send next."
           "\e\\[\\(?:[0-9;:]*;\\)?2\\(?:;[0-9;:]*\\)?m")
   "An input box's first line whose text starts faint.")
 
+(defconst ghostherd--cli-hint-re
+  (concat "\\`\\(?:"
+          ;; While messages wait in its queue, as long as you have not yet
+          ;; pressed up for them a few times: "Press up to edit queued
+          ;; messages", "Press up to select a queued message, then Enter to
+          ;; edit it", "Press Enter to edit the selected message, or up
+          ;; again for history" and their kin.
+          "Press \\(?:up\\|Enter\\) to [^\n]*"
+          ;; An example on a conversation not yet begun: Try "fix lint errors".
+          "\\|Try \"[^\"\n]*\""
+          ;; Whom the box writes to while you view a sub-agent's work.
+          "\\|Message @[^[:blank:]\n]+…"
+          "\\)\\'")
+  "What claude draws faint in its empty input box of its own -- never a
+prompt it suggests you send: no placeholder on the page, nothing to Use.
+Each of its wordings, as its placeholder function writes them (claude
+2.1.319, read from its binary, 2026-11-06).  A box showing one is empty.")
+
 (defvar ghostherd--feet (make-hash-table :test 'equal)
   "Session id -> what its screen's foot says besides its state:
 \(:background WORDS :input TEXT :suggestion TEXT).")
@@ -171,7 +189,8 @@ between ideographs."
 
 (defun ghostherd--foot (text)
   "What TEXT's foot says besides the state: (:input TEXT :background
-WORDS) -- what its input box holds, nil when empty; the background work
+WORDS) -- what its input box holds, nil when empty or showing only one
+of the CLI's own hints (`ghostherd--cli-hint-re'); the background work
 its footer counts, as (\"1 shell\").  Nil when no input box is drawn there."
   (let* ((lines (vconcat (split-string (or text "") "\n")))
          (at (ghostherd--foot-at lines)))
@@ -181,7 +200,9 @@ its footer counts, as (\"1 shell\").  Nil when no input box is drawn there."
                                 (append (seq-subseq lines (1+ (car at)) (cdr at)) nil))))
              (input (string-trim (seq-reduce #'ghostherd--join-wrapped (cdr box) (car box))))
              (footer (append (seq-subseq lines (1+ (cdr at))) nil)))
-        (list :input (and (not (string-empty-p input)) input)
+        (list :input (and (not (string-empty-p input))
+                          (not (ghostherd--rule-matches-p ghostherd--cli-hint-re input))
+                          input)
               :background (seq-filter (lambda (part) (string-match-p ghostherd--background-re part))
                                       (mapcan (lambda (line) (mapcar #'string-trim (split-string line "·")))
                                               footer)))))))
@@ -512,6 +533,289 @@ coincidence further up the scrollback."
              (when-let* ((line (ghostherd--spinner-line text (cdr hit))))
                (ghostherd--matched-line line (cdr hit))))
         (cdr hit))))
+
+;;; What a CLI holds queued
+;;
+;; A message typed to an agent at work -- in its terminal, or sent from
+;; the page while it is busy -- is not given to it at once: its CLI holds
+;; it in a queue and draws it over its spinner, faint, until the agent can
+;; read it.  claude hands it over at the agent's next step, or when the
+;; turn ends if no step is left; grok and agy each make it a turn of its
+;; own once the turn under way ends.  Until then only the screen is sure
+;; to have it -- claude's transcript once recorded one with no text at all
+;; (a lead's, 2026-11-06) -- so the poll reads it there, for the page to
+;; end the agent's room with it and offer the key that sends it now.
+;; Each CLI measured in a scratch tmux, 2026-11-06: claude 2.1.319, grok
+;; 1.0.70, agy 1.4.12.
+
+(defconst ghostherd--claude-send-now-re
+  "\\`  \\(\\(?:[^[:blank:]\n]+ \\)*[^[:blank:]\n]+\\) to send now[[:blank:]]*\\'"
+  "The line claude draws under its last queued message: the key that
+sends the queue now, as you have it bound -- \"ctrl+x ctrl+s to send
+now\" -- or \"click to send now\" with no key bound.")
+
+(defun ghostherd--claude-queue (lines)
+  "The messages claude holds queued on LINES, a screen's lines, as it
+draws them above its spinner: each a `❯ ' and its words, the lines they
+wrap onto under it two columns in, a blank line between two, and under
+the last the line `ghostherd--claude-send-now-re' matches.  Nil when it
+draws none; else (:items ((WORDS . LINE)...) :now NOW :cut CUT), oldest
+first, LINE where each starts in LINES; NOW when its key is ctrl+x
+ctrl+s, the one the herd presses; CUT when the first may start above
+LINES.  A prompt just taken, before the agent has said a word, sits over
+them drawn the same -- but in other colours
+\(`ghostherd--claude-queued-line-p')."
+  (let* ((lines (vconcat lines))
+         (top (ghostherd--box-top lines))
+         (hint (and top
+                    ;; Up from the box over the spinner and what it lists
+                    ;; under it; a prompt or a reply is the conversation.
+                    (cl-loop for i downfrom (1- top) to (max 0 (- top ghostherd--spinner-reach))
+                             for line = (aref lines i)
+                             when (string-match-p ghostherd--claude-send-now-re line) return i
+                             when (string-match-p "\\`[❯⏺]" line) return nil)))
+         (i (and hint (1- hint)))
+         items cut)
+    (when i
+      (catch 'done
+        (while t
+          (let (more)
+            (while (and (>= i 0) (string-match-p "\\`  [^[:blank:]]" (aref lines i)))
+              (push (string-trim (aref lines i)) more)
+              (setq i (1- i)))
+            (cond ((< i 0) (setq cut t) (throw 'done nil))
+                  ((string-match "\\`❯[[:blank:]]+\\(.*\\)" (aref lines i))
+                   (push (cons (string-trim (seq-reduce #'ghostherd--join-wrapped more
+                                                        (string-trim (match-string 1 (aref lines i)))))
+                               i)
+                         items))
+                  (t (throw 'done nil))))
+          ;; Another over it: a blank line, then words.
+          (if (and (>= i 2) (string-blank-p (aref lines (1- i)))
+                   (string-match-p "\\`\\(?:❯[[:blank:]]\\|  [^[:blank:]]\\)" (aref lines (- i 2))))
+              (setq i (- i 2))
+            (throw 'done nil))))
+      (when items
+        (list :items items
+              :now (and (string-match ghostherd--claude-send-now-re (aref lines hint))
+                        (equal (match-string 1 (aref lines hint)) "ctrl+x ctrl+s"))
+              :cut cut)))))
+
+(defun ghostherd--claude-queued-line-p (styled)
+  "Non-nil when STYLED, with its styles as escapes, is the first line of a
+`❯ ' block drawn as claude draws a queued message: its words in its
+sign's own colour.  A prompt it has taken changes colour after the sign,
+to brighter words (claude 2.1.319)."
+  (and (string-match (concat "❯[[:blank:]]\\(\\(?:" ghostherd--sgr-re "\\)*\\)") styled)
+       (string-empty-p (match-string 1 styled))))
+
+(defun ghostherd--claude-styled-queued (styled words)
+  "Whether the `❯ ' block of WORDS that claude's queue shows on STYLED, its
+screen with its styles, is queued: t or nil; `gone' when STYLED no longer
+shows it so.  A host that keeps no styles -- STYLED nil -- tells nothing:
+taken as queued, and the page leaves out what the conversation has."
+  (if (null styled)
+      t
+    (let* ((slines (vconcat (split-string styled "\n")))
+           (q (ghostherd--claude-queue
+               (mapcar (lambda (l) (replace-regexp-in-string ghostherd--sgr-re "" l)) slines)))
+           (at (cdr (assoc words (plist-get q :items)))))
+      (if at (and (ghostherd--claude-queued-line-p (aref slines at)) t) 'gone))))
+
+(defun ghostherd--grok-queue (lines)
+  "The messages grok holds queued on LINES, a screen's lines: \"#1 words\" a
+line each, numbered from 1 at the top, over the spinner above its input
+box -- cut to the line, ending \"…\".  Nil when none; else (:items
+\((WORDS . LINE)...) :now NOW), NOW when its footer offers \"Enter:send
+now\": Enter on its empty box moves a command at work to the background
+and hands the agent the first at once."
+  (let* ((lines (vconcat lines))
+         (top (ghostherd--box-top lines))
+         ;; Under it, a banner at most; grok's spinner may end in buttons
+         ;; other than [stop] ("[↓][stop]"), so only its braille is asked.
+         (spin (and top (cl-loop for i downfrom (1- top) to (max 0 (- top 3))
+                                 when (string-match-p "\\`[[:blank:]]*[⠁-⣿][[:blank:]]" (aref lines i))
+                                 return i)))
+         (i (and spin (1- spin)))
+         items)
+    (while (and i (>= i 0) (string-match "\\`[[:blank:]]+#\\([0-9]+\\) \\(.*[^[:blank:]]\\)" (aref lines i)))
+      ;; Its scrollbar, when drawn, ends the line.
+      (push (list (string-to-number (match-string 1 (aref lines i)))
+                  (replace-regexp-in-string "[[:blank:]]\\{2,\\}█\\'" "" (match-string 2 (aref lines i)))
+                  i)
+            items)
+      (setq i (1- i)))
+    (when (and items (cl-loop for (n) in items for want from 1 always (= n want)))
+      (list :items (mapcar (lambda (it) (cons (nth 1 it) (nth 2 it))) items)
+            :now (cl-loop for j from top below (length lines)
+                          thereis (string-match-p "Enter:send now" (aref lines j)))))))
+
+(defun ghostherd--agy-queue (lines)
+  "The messages agy holds queued on LINES, a screen's lines: \"▸ words
+\(alt+m to send immediately)\" a line each right over its input box, cut
+to the line with \"...\"; once alt+m is pressed for one, \"▸ words\" with
+\"⎿  Sending to agent...\" under it, until the agent's next step takes
+it.  Nil when none; else (:items ((WORDS . LINE)...) :now NOW), NOW when
+one still offers alt+m."
+  (let* ((lines (vconcat lines))
+         (top (ghostherd--box-top lines))
+         (i (and top (1- top)))
+         items now)
+    (catch 'done
+      (while (and i (>= i 0))
+        (let ((line (aref lines i)))
+          (cond ((string-match "\\`▸ \\(.*[^[:blank:]]\\)[[:blank:]]+(alt\\+m to send immediately)[[:blank:]]*\\'" line)
+                 (push (cons (match-string 1 line) i) items)
+                 (setq now t i (1- i)))
+                ((and (> i 0) (string-match-p "\\`[[:blank:]]+⎿[[:blank:]]+Sending to agent" line)
+                      (string-match "\\`▸ \\(.*[^[:blank:]]\\)" (aref lines (1- i))))
+                 (push (cons (match-string 1 (aref lines (1- i))) (1- i)) items)
+                 (setq i (- i 2)))
+                (t (throw 'done nil))))))
+    (when items
+      (list :items items :now now))))
+
+(defconst ghostherd--queue-readers
+  '((claude ghostherd--claude-queue ("C-x" "C-s"))
+    (grok ghostherd--grok-queue ("return"))
+    (agy ghostherd--agy-queue ("M-m")))
+  "Kind -> (READER KEYS): how its CLI's queue is read off its screen, and
+the keys that send it now.  claude's ctrl+x ctrl+s (chat:sendNow) moves a
+command at work to the background and hands the agent the queue at once;
+Enter on grok's empty box, as its footer offers, does the same for its
+first; agy's alt+m has it taken at the agent's next step.")
+
+(defvar ghostherd--queues (make-hash-table :test 'equal)
+  "Session id -> what its CLI holds queued, as its screen last showed it:
+\(:items WORDS :now NOW :offers OFFERS :cands WORDS :seen ALIST).  CANDS,
+each block over the queue's hint; SEEN, of claude's, whether each is
+queued by its styles, asked of the host once per block
+\(`ghostherd--read-queue'); OFFERS, whether the CLI offers its key to
+send them now, and NOW, that with something queued.")
+
+(defun ghostherd--queue-read (text reader)
+  "READER, one of `ghostherd--queue-readers', applied to TEXT's lines."
+  (funcall reader (split-string (or text "") "\n")))
+
+(defun ghostherd--queue-state (cands seen now)
+  "What `ghostherd--queues' keeps of CANDS, the blocks a queue's reader
+found, by SEEN, whether each is queued; NOW, the reader's."
+  (let ((items (seq-filter (lambda (c) (eq (cdr (assoc c seen)) t)) cands)))
+    (list :items items :now (and items now) :offers now :cands cands :seen seen)))
+
+(defun ghostherd--read-queue (session text)
+  "Keep what SESSION's CLI holds queued, as its screen TEXT shows it.  A
+claude block not seen before is asked of the host's styles, once: a
+prompt just taken sits over the queue drawn the same, in other colours.
+Its first running off the top of TEXT, the whole pane is read."
+  (let* ((id (ghostherd-session-id session))
+         (claude (eq (ghostherd-session-kind session) 'claude))
+         (reader (cadr (assq (ghostherd-session-kind session) ghostherd--queue-readers)))
+         (q (and reader (ghostherd--screen-read text 'queue #'ghostherd--queue-read reader)))
+         (q (or (and (plist-get q :cut)
+                     (let ((pane (ghostherd--pane session text)))
+                       (and pane (ghostherd--screen-read pane 'queue #'ghostherd--queue-read reader))))
+                q)))
+    (if (null q)
+        (remhash id ghostherd--queues)
+      (let* ((cands (mapcar #'car (plist-get q :items)))
+             (seen (if claude
+                       (seq-filter (lambda (c) (member (car c) cands))
+                                   (plist-get (gethash id ghostherd--queues) :seen))
+                     (mapcar (lambda (c) (cons c t)) cands)))
+             (unknown (seq-remove (lambda (c) (assoc c seen)) cands)))
+        (puthash id (ghostherd--queue-state cands seen (plist-get q :now)) ghostherd--queues)
+        (when unknown
+          (ignore-errors
+            (ghostherd-backend-styled-screen
+             (ghostherd--backend-of session) session
+             (lambda (styled)
+               (when-let* ((now (gethash id ghostherd--queues)))
+                 (let ((seen (plist-get now :seen)))
+                   (dolist (c unknown)
+                     (let ((queued (ghostherd--claude-styled-queued styled c)))
+                       (unless (or (assoc c seen) (eq queued 'gone))
+                         (push (cons c queued) seen))))
+                   (puthash id (ghostherd--queue-state (plist-get now :cands) seen (plist-get now :offers))
+                            ghostherd--queues)))))))))))
+
+(defun ghostherd-session-queued (session)
+  "The messages SESSION's CLI holds queued, oldest first, as its screen
+last showed them -- cut, as grok and agy cut them to a line."
+  (plist-get (gethash (ghostherd-session-id session) ghostherd--queues) :items))
+
+(defun ghostherd-session-queued-now-p (session)
+  "Non-nil when SESSION's CLI offers the key that sends its queue now."
+  (plist-get (gethash (ghostherd-session-id session) ghostherd--queues) :now))
+
+(defun ghostherd--queue-forget (session)
+  "Drop what SESSION's CLI held queued when it is gone."
+  (remhash (ghostherd-session-id session) ghostherd--queues))
+
+(add-hook 'ghostherd-session-removed-hook #'ghostherd--queue-forget)
+
+(defun ghostherd--queue-words (text)
+  "TEXT's words, whitespace made single spaces: how two reads of one
+message are compared."
+  (string-trim (replace-regexp-in-string "[[:space:]]+" " " (or text ""))))
+
+(defun ghostherd--box-words (screen)
+  "The words in the input box at SCREEN's foot -- a frame, the prompt sign
+and the CLI's own hints (`ghostherd--cli-hint-re') left out -- or nil
+when it is empty."
+  (let* ((lines (vconcat (split-string (or screen "") "\n")))
+         (top (ghostherd--box-top lines))
+         (words (and top
+                     (cl-loop for i from (1+ top) below (min (length lines) (+ top 12))
+                              for line = (aref lines i)
+                              until (string-match-p ghostherd--input-rule-re line)
+                              collect (string-trim
+                                       (replace-regexp-in-string
+                                        "\\`[[:blank:]]*[│┃]?[[:blank:]]*\\(?:[❯›>][[:blank:]]+\\|[❯›>]\\'\\)?\\|[[:blank:]]*[│┃][[:blank:]]*\\'"
+                                        "" line)))))
+         (words (string-trim (string-join words " "))))
+    (and (not (string-empty-p words))
+         (not (ghostherd--rule-matches-p ghostherd--cli-hint-re words))
+         words)))
+
+;;;###autoload
+(defun ghostherd-send-queued-now (session &optional words)
+  "Have SESSION's CLI hand it the messages it holds queued now, rather than
+when it can: the key it offers for that (`ghostherd--queue-readers').
+Only while WORDS, when given, are verifiably still in its queue on its
+screen -- read live now, not the last poll's -- its CLI offers that key,
+and its input box is empty: the key would act on words there too."
+  (interactive (list (ghostherd--read-session "Send its queued messages now: ")))
+  (setq session (ghostherd-get session))
+  (unless (ghostherd--session-live-p session)
+    (user-error "Session host is not live"))
+  (let* ((name (ghostherd-session-name session))
+         (spec (assq (ghostherd-session-kind session) ghostherd--queue-readers))
+         (screen (and spec (ghostherd--host-capture session ghostherd-screen-tail-lines)))
+         (q (and screen (ghostherd--queue-read screen (nth 1 spec))))
+         (q (or (and (plist-get q :cut)
+                     (ghostherd--queue-read (ghostherd--host-pane session) (nth 1 spec)))
+                q))
+         (items (mapcar #'car (plist-get q :items))))
+    (cond
+     ((null spec)
+      (user-error "The herd cannot read %s's queue" name))
+     ((null items)
+      (user-error "%s holds nothing queued" name))
+     ((and words (not (member (ghostherd--queue-words words)
+                              (mapcar #'ghostherd--queue-words items))))
+      (user-error "That message is no longer queued for %s" name))
+     ((not (plist-get q :now))
+      (user-error "%s's CLI offers no key to send its queue now" name))
+     ((ghostherd--box-words screen)
+      (user-error "%s has words in its input box: the key would act on them too" name))
+     (t
+      (ghostherd--host-send-keys session (nth 2 spec))
+      (ghostherd--log-add session 'input
+                          (format "↵ sent its queue now, as asked: %s"
+                                  (ghostherd--clean-screen-line (car items)))
+                          screen)
+      name))))
 
 ;;; A menu prompt, read off the screen
 ;;
@@ -1400,7 +1704,10 @@ does."
                (seen (or pane tail)))
           (when tail
             (puthash (ghostherd-session-id session) tail ghostherd--screens)
-            (ghostherd--read-foot session tail))
+            (ghostherd--read-foot session tail)
+            ;; Scrolled back, the queue is out of view, not gone.
+            (unless scrolled
+              (ghostherd--read-queue session tail)))
           (cond
            ;; Scrolled back: what the agent last said of itself, if it is
            ;; still believed, or else the state it was in -- the view tells

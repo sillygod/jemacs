@@ -1942,6 +1942,327 @@ claude: nothing is read."
           (ghostherd-kill s))
         (should-not (gethash (ghostherd-session-id s) ghostherd--feet))))))
 
+(ert-deftest ghostherd-test-a-clis-own-hint-is-no-suggestion ()
+  "What claude draws faint in its empty box of its own -- its hints about
+queued messages, an example on a fresh conversation, whom the box writes
+to -- is no prompt it suggests: no input, no suggestion, the host not
+even asked.  Words you typed that only start alike are yours."
+  (let ((nbsp " "))
+    (dolist (hint (list "Press up to edit queued messages"
+                        "Press up to edit queued messages, Enter to send them immediately"
+                        "Press Enter to edit the selected message, or up again for history"
+                        "Try \"fix lint errors\"" "Try \"how does src/app.py work?\""
+                        "Message @worker…"))
+      (should (equal (ghostherd--foot (ghostherd-tests--claude-screen (list (concat "❯" nbsp hint))))
+                     '(:input nil :background nil))))
+    ;; Wrapped onto a second line in a narrow pane: still the hint.
+    (should-not (plist-get (ghostherd--foot (ghostherd-tests--claude-screen
+                                             '("❯ Press up to select a queued message to edit, or Enter to"
+                                               "  send them now")))
+                           :input))
+    (dolist (typed '("Press up harder" "Try \"this\" and that" "try \"lower case\"" "Message @worker now"))
+      (should (equal (plist-get (ghostherd--foot (ghostherd-tests--claude-screen (list (concat "❯ " typed)))) :input)
+                     typed))))
+  (ghostherd-tests--with-herd ((ghostherd--feet (make-hash-table :test 'equal)))
+    (let ((s (ghostherd-tests--session :name "rd" :kind 'claude :backend 'fake))
+          (asked 0))
+      (cl-letf (((symbol-function 'ghostherd-backend-styled-screen)
+                 (lambda (_b _s cb)
+                   (cl-incf asked)
+                   (funcall cb (ghostherd-tests--claude-screen
+                                (list "\e[38;5;246m❯ \e[2m\e[39mPress up to edit queued messages\e[0m"))))))
+        (ghostherd--read-foot s (ghostherd-tests--claude-screen (list (concat "❯ " "Press up to edit queued messages"))))
+        (should-not (ghostherd-session-suggestion s))
+        (should (= asked 0))
+        ;; Nor is it a draft: a lead showing it may be stopped to make room.
+        (should-not (ghostherd--draft-p s))))))
+
+;; claude 2.1.319 at work with two messages queued, as tmux captured it
+;; (2026-11-06): the first wrapped, its words half Chinese; the hint under
+;; the last; its spinner and a tip under that; the box showing its hint.
+(defconst ghostherd-tests--claude-queue-screen
+  (string-join
+   (list "❯ Use the Bash tool to run ping -c 45 127.0.0.1 | tail -1 in the foreground, then reply with"
+         "  just the word done."
+         ""
+         "⏺ Pinging localhost 45 times and showing summary · 25s"
+         "  ⎿  $ ping -c 45 127.0.0.1 | tail -1 (25s)"
+         "     (ctrl+b ctrl+b (twice) to run in background)"
+         ""
+         "❯ 另外你這個 queued message test: please also tell me what 2+2 is, and keep it long enough that it wraps"
+         "  over more than one line."
+         ""
+         "❯ second queued: what is 3+3?"
+         "  ctrl+x ctrl+s to send now"
+         ""
+         "✽ Dilly-dallying… (29s · ↓ 364 tokens)"
+         "  ⎿  Tip: Run /install-github-app to tag @claude right from your Github issues and PRs"
+         ""
+         ghostherd-tests--rule
+         "❯ Press up to edit queued messages"
+         ghostherd-tests--rule
+         "  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt"
+         "" "")
+   "\n"))
+
+;; A prompt just taken, a follow-up typed before claude said a word: drawn
+;; alike in plain text -- only the styles tell them apart.  As captured.
+(defconst ghostherd-tests--claude-taken-then-queued
+  '("\e[38;5;246m✻\e[39m \e[38;5;246mWorked for 1s · done 2:15 PM\e[39m"
+    ""
+    "\e[38;5;246m\e[48;5;237m❯ \e[38;5;231mThink about whether 1009 is prime, then run \e[38;5;153mping -c 20 127.0.0.1\e[38;5;231m in the \e[39m"
+    "  \e[38;5;231mforeground, then reply with one line.\e[39m"
+    ""
+    "\e[38;5;246m❯ quick follow-up while you think: also say what 7+7 is\e[39m"
+    "\e[49m  \e[38;5;246mctrl+x ctrl+s to send now\e[39m"
+    ""
+    "\e[38;5;215m✽\e[39m \e[38;5;215mUnraveling… \e[38;5;246m(2s · \e[38;5;247mthinking with xhigh effort\e[38;5;246m)\e[39m"
+    ""))
+
+(defun ghostherd-tests--taken-then-queued-screen (&optional styled)
+  "`ghostherd-tests--claude-taken-then-queued' over claude's box, STYLED or not."
+  (let ((s (ghostherd-tests--claude-screen
+            (list "\e[38;5;246m❯ \e[2m\e[39mPress up to edit queued messages\e[0m")
+            nil ghostherd-tests--claude-taken-then-queued)))
+    (if styled s (replace-regexp-in-string ghostherd--sgr-re "" s))))
+
+(ert-deftest ghostherd-test-claudes-queue-read-off-its-screen ()
+  "claude's queue: each `❯ ' block over the hint that sends it now, oldest
+first, a wrapped one joined -- not the tool's output over them, nor
+anything when no hint is drawn.  Its first cut off the top of the tail
+says so; a hint naming another key, or a click, gives no key to press."
+  (let* ((q (ghostherd--queue-read ghostherd-tests--claude-queue-screen #'ghostherd--claude-queue)))
+    (should (equal (mapcar #'car (plist-get q :items))
+                   '("另外你這個 queued message test: please also tell me what 2+2 is, and keep it long enough that it wraps over more than one line."
+                     "second queued: what is 3+3?")))
+    (should (equal (mapcar #'cdr (plist-get q :items)) '(7 10)))
+    (should (plist-get q :now))
+    (should-not (plist-get q :cut)))
+  ;; A todo list under the spinner: still found.
+  (let ((s (replace-regexp-in-string
+            "  ⎿  Tip: .*" "  ⎿  ☒ Read the code\n     ☐ Write the test\n     ☐ Run it"
+            ghostherd-tests--claude-queue-screen)))
+    (should (= 2 (length (plist-get (ghostherd--queue-read s #'ghostherd--claude-queue) :items)))))
+  ;; Cut: the tail starts inside the first.
+  (let* ((lines (split-string ghostherd-tests--claude-queue-screen "\n"))
+         (q (ghostherd--claude-queue (nthcdr 8 lines))))
+    (should (plist-get q :cut))
+    (should (equal (mapcar #'car (plist-get q :items)) '("second queued: what is 3+3?"))))
+  ;; Another key, or none: nothing to press.
+  (dolist (hint '("  ctrl+enter to send now" "  click to send now"))
+    (let ((q (ghostherd--queue-read (replace-regexp-in-string "  ctrl\\+x ctrl\\+s to send now" hint
+                                                              ghostherd-tests--claude-queue-screen)
+                                    #'ghostherd--claude-queue)))
+      (should (= 2 (length (plist-get q :items))))
+      (should-not (plist-get q :now))))
+  ;; The prompt just taken reads as one too, in plain text.
+  (should (equal (mapcar #'car (plist-get (ghostherd--queue-read (ghostherd-tests--taken-then-queued-screen)
+                                                                 #'ghostherd--claude-queue)
+                                          :items))
+                 '("Think about whether 1009 is prime, then run ping -c 20 127.0.0.1 in the foreground, then reply with one line."
+                   "quick follow-up while you think: also say what 7+7 is")))
+  ;; No hint: no queue -- an idle screen, one at work, a reply that
+  ;; quotes the hint up in the conversation.
+  (should-not (ghostherd--queue-read (ghostherd-tests--claude-screen '("❯ ")) #'ghostherd--claude-queue))
+  (should-not (ghostherd--queue-read ghostherd-tests--claude-footer-working #'ghostherd--claude-queue))
+  (should-not (ghostherd--queue-read
+               (ghostherd-tests--claude-screen '("❯ ") nil
+                                               '("❯ what does it say?" ""
+                                                 "⏺ It says:" "  ctrl+x ctrl+s to send now" ""
+                                                 "✻ Baked for 2s"))
+               #'ghostherd--claude-queue)))
+
+(ert-deftest ghostherd-test-claudes-queued-line-by-its-styles ()
+  "A queued message's words are drawn in its sign's own colour; a prompt
+claude has taken switches to brighter words after the sign."
+  (let ((lines (vconcat ghostherd-tests--claude-taken-then-queued)))
+    (should-not (ghostherd--claude-queued-line-p (aref lines 2)))
+    (should (ghostherd--claude-queued-line-p (aref lines 5)))
+    ;; The first of two queued, drawn on a shade: still queued.
+    (should (ghostherd--claude-queued-line-p "\e[38;5;246m\e[48;5;237m❯ 另外你這個 queued message test\e[39m"))
+    (should-not (ghostherd--claude-queued-line-p "no sign here")))
+  (let ((styled (ghostherd-tests--taken-then-queued-screen t)))
+    (should (eq (ghostherd--claude-styled-queued styled "quick follow-up while you think: also say what 7+7 is") t))
+    (should-not (ghostherd--claude-styled-queued
+                 styled "Think about whether 1009 is prime, then run ping -c 20 127.0.0.1 in the foreground, then reply with one line."))
+    (should (eq (ghostherd--claude-styled-queued styled "not on this screen") 'gone))
+    ;; A host that keeps no styles tells nothing: taken as queued.
+    (should (eq (ghostherd--claude-styled-queued nil "anything") t))))
+
+;; grok 1.0.70 at work with two queued, and agy 1.4.12 with two, then one
+;; it was told to send now -- as tmux captured them (2026-11-06).
+(defconst ghostherd-tests--grok-queue-screen
+  (string-join
+   (list "     ◆ Running ping localhost 40 times, show last line"
+         "    #1 grok queued test: what is 2+2? keep this long enough to wrap maybe over the line width of the pane so we see how it is d…"
+         "    #2 second grok queued: 3+3?"
+         "    ⠸ Ping localhost 40 times, show last line… 5.4s                                   21s ⇣21.3k [↓][stop]"
+         "  [Click here to Upgrade] or use Ctrl+O"
+         (concat "  ╭" (make-string 60 ?─) "╮")
+         (concat "  │ ❯" (make-string 57 ? ) "│")
+         (concat "  ╰" (make-string 30 ?─) " Grok 4.7 (xhigh) · always-approve ─╯")
+         "  Enter:send now  │  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+b:send to bg  │  Ctrl+;:queue  │  Ctrl+x:shortcuts"
+         "")
+   "\n"))
+
+(defun ghostherd-tests--agy-queue-screen (above &optional box)
+  "agy's foot: ABOVE its box, BOX in it, its task panel and footer under."
+  (string-join (append above (list ghostherd-tests--rule (or box ">") ghostherd-tests--rule
+                                   "  ● [14:17:42] ping -c 30 127.0.0.1 | tail -1 running"
+                                   ghostherd-tests--rule
+                                   "  Press up to edit queued messages                  Gemini 4 Argon · high · 1 task(s) · /tasks"
+                                   ""))
+               "\n"))
+
+(ert-deftest ghostherd-test-grok-and-agy-queues-read-off-their-screens ()
+  "grok's: \"#N words\" over its spinner, Enter its key while its footer
+offers \"Enter:send now\".  agy's: \"▸ words (alt+m to send immediately)\"
+over its box, one being sent now still queued, alt+m offered while one
+still offers it.  Each cut to a line, as drawn.  Neither reads its own
+thoughts or an old line for a queued one."
+  (let ((q (ghostherd--queue-read ghostherd-tests--grok-queue-screen #'ghostherd--grok-queue)))
+    (should (equal (mapcar #'car (plist-get q :items))
+                   '("grok queued test: what is 2+2? keep this long enough to wrap maybe over the line width of the pane so we see how it is d…"
+                     "second grok queued: 3+3?")))
+    (should (plist-get q :now)))
+  (let ((q (ghostherd--queue-read (replace-regexp-in-string "Enter:send now  │  " "" ghostherd-tests--grok-queue-screen)
+                                  #'ghostherd--grok-queue)))
+    (should (= 2 (length (plist-get q :items))))
+    (should-not (plist-get q :now)))
+  ;; Its scrollbar at the line's end is not words.
+  (should (equal (car (car (plist-get (ghostherd--queue-read
+                                       (replace-regexp-in-string "3\\+3\\?" "3+3?          █" ghostherd-tests--grok-queue-screen)
+                                       #'ghostherd--grok-queue)
+                                      :items)))
+                 "grok queued test: what is 2+2? keep this long enough to wrap maybe over the line width of the pane so we see how it is d…"))
+  (should-not (ghostherd--queue-read (replace-regexp-in-string "    #[12] .*\n" "" ghostherd-tests--grok-queue-screen)
+                                     #'ghostherd--grok-queue))
+  ;; Numbered from 1 or not grok's queue (a list in its reply).
+  (should-not (ghostherd--queue-read (replace-regexp-in-string "#1 " "#3 " ghostherd-tests--grok-queue-screen)
+                                     #'ghostherd--grok-queue))
+  (let ((q (ghostherd--queue-read
+            (ghostherd-tests--agy-queue-screen
+             '("⣽  Generating..." "└ Tip: Use /help to see all commands."
+               "▸ second agy queued: 3 plus 3 (alt+m to send immediately)"
+               "▸ third agy queued, a long one that should wrap over the width of the pane so that we can see wheth... (alt+m to send immediately)"))
+            #'ghostherd--agy-queue)))
+    (should (equal (mapcar #'car (plist-get q :items))
+                   '("second agy queued: 3 plus 3"
+                     "third agy queued, a long one that should wrap over the width of the pane so that we can see wheth...")))
+    (should (plist-get q :now)))
+  (let ((q (ghostherd--queue-read
+            (ghostherd-tests--agy-queue-screen '("⣾  Working..." "▸ agy sendnow two: 6 plus 6" "  ⎿  Sending to agent..."))
+            #'ghostherd--agy-queue)))
+    (should (equal (mapcar #'car (plist-get q :items)) '("agy sendnow two: 6 plus 6")))
+    (should-not (plist-get q :now)))
+  (should-not (ghostherd--queue-read
+               (ghostherd-tests--agy-queue-screen '("▸ Thought for 9s, 330 tokens" "  2 plus 2 is 4."))
+               #'ghostherd--agy-queue)))
+
+(ert-deftest ghostherd-test-the-poll-reads-a-queue ()
+  "Each poll keeps what a CLI holds queued.  A claude block not seen
+before is asked of the host's styles, once: a prompt just taken is no
+queued message.  A host with no styles takes them all.  grok's and agy's
+need no asking.  Scrolled back, the queue is kept; gone from the screen,
+gone; killed, forgotten.  The page has it."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd ((ghostherd--feet (make-hash-table :test 'equal))
+                               (ghostherd--queues (make-hash-table :test 'equal)))
+    (let ((s (ghostherd-tests--session :name "rd" :kind 'claude :backend 'fake))
+          (g (ghostherd-tests--session :name "gk" :kind 'grok :backend 'fake))
+          (asked 0)
+          (styled (ghostherd-tests--taken-then-queued-screen t)))
+      (cl-letf (((symbol-function 'ghostherd-backend-styled-screen)
+                 (lambda (_b _s cb) (cl-incf asked) (funcall cb styled))))
+        (ghostherd--read-queue s (ghostherd-tests--taken-then-queued-screen))
+        (should (equal (ghostherd-session-queued s) '("quick follow-up while you think: also say what 7+7 is")))
+        (should (ghostherd-session-queued-now-p s))
+        (should (= asked 1))
+        ;; The same blocks: not asked again.
+        (ghostherd--read-queue s (ghostherd-tests--taken-then-queued-screen))
+        (should (= asked 1))
+        ;; A new one under it: asked for that one; the rest kept meanwhile.
+        (let (later)
+          (cl-letf (((symbol-function 'ghostherd-backend-styled-screen) (lambda (_b _s cb) (setq later cb))))
+            (ghostherd--read-queue s ghostherd-tests--claude-queue-screen)
+            (should-not (ghostherd-session-queued s))
+            (funcall later nil))
+          ;; No styles on that host: both taken.
+          (should (= 2 (length (ghostherd-session-queued s)))))
+        ;; Through the poll; scrolled back it is kept.
+        (cl-letf (((symbol-function 'ghostherd--session-live-p) (lambda (_s) t))
+                  ((symbol-function 'ghostherd--host-exited-p) (lambda (_s) nil)))
+          (ghostherd--detect-state s (ghostherd-tests--claude-screen '("❯ ") nil
+                                                                     '("⏺ old" "" "  Jump to bottom (click) ↓")))
+          (should (= 2 (length (ghostherd-session-queued s))))
+          (let ((page (ghostherd-memory-page--agent s)))
+            (should (= 2 (length (plist-get page :queued))))
+            (should (eq (plist-get page :queuedNow) t)))
+          ;; Delivered: gone from the screen, gone.
+          (ghostherd--detect-state s (ghostherd-tests--claude-screen '("❯ ")))
+          (should-not (ghostherd-session-queued s))
+          (let ((page (ghostherd-memory-page--agent s)))
+            (should (equal (plist-get page :queued) []))
+            (should (eq (plist-get page :queuedNow) :json-false))))
+        ;; grok: its screen alone says it.
+        (setq asked 0)
+        (ghostherd--read-queue g ghostherd-tests--grok-queue-screen)
+        (should (= 2 (length (ghostherd-session-queued g))))
+        (should (= asked 0))
+        (cl-letf (((symbol-function 'ghostherd--host-kill) #'ignore))
+          (ghostherd-kill g))
+        (should-not (gethash (ghostherd-session-id g) ghostherd--queues))))))
+
+(ert-deftest ghostherd-test-send-queued-now-only-while-verifiably-queued ()
+  "Send now presses the CLI's own key -- claude's ctrl+x ctrl+s, Enter on
+grok's empty box, agy's alt+m -- read live off its screen: only while
+the message the page showed is still queued there, the CLI offers the
+key, and its box holds no words the key would act on."
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--session :name "rd" :kind 'claude :backend 'fake))
+           (g (ghostherd-tests--session :name "gk" :kind 'grok :backend 'fake))
+           (a (ghostherd-tests--session :name "ag" :kind 'agy :backend 'fake))
+           (screen ghostherd-tests--claude-queue-screen)
+           (keys nil))
+      (cl-letf (((symbol-function 'ghostherd--session-live-p) (lambda (_s) t))
+                ((symbol-function 'ghostherd--host-capture) (lambda (_s &optional _n) screen))
+                ((symbol-function 'ghostherd--host-pane) (lambda (_s) screen))
+                ((symbol-function 'ghostherd--host-send-keys) (lambda (_s k) (push k keys))))
+        (should (equal (ghostherd-send-queued-now s "second  queued: what is\n3+3?") "rd"))
+        (should (equal keys '(("C-x" "C-s"))))
+        (should (string-match-p "sent its queue now" (ghostherd-log-entry-text (car ghostherd--log))))
+        (setq keys nil)
+        (ghostherd-send-queued-now s)
+        (should (equal keys '(("C-x" "C-s"))))
+        (setq keys nil)
+        ;; Delivered meanwhile, or another message: nothing pressed.
+        (should-error (ghostherd-send-queued-now s "something else") :type 'user-error)
+        (setq screen (ghostherd-tests--claude-screen '("❯ ")))
+        (should-error (ghostherd-send-queued-now s) :type 'user-error)
+        ;; Words in its box: the key would send them too.
+        (setq screen (replace-regexp-in-string "❯ Press up to edit queued messages" "❯ half a thought"
+                                               ghostherd-tests--claude-queue-screen))
+        (should-error (ghostherd-send-queued-now s) :type 'user-error)
+        ;; Its key not the herd's.
+        (setq screen (replace-regexp-in-string "ctrl\\+x ctrl\\+s" "ctrl+enter" ghostherd-tests--claude-queue-screen))
+        (should-error (ghostherd-send-queued-now s) :type 'user-error)
+        (should-not keys)
+        ;; grok: Enter on its empty box.
+        (setq screen ghostherd-tests--grok-queue-screen)
+        (ghostherd-send-queued-now g "second grok queued: 3+3?")
+        (should (equal keys '(("return"))))
+        (setq keys nil
+              screen (replace-regexp-in-string "│ ❯   " "│ ❯ hi" ghostherd-tests--grok-queue-screen))
+        (should-error (ghostherd-send-queued-now g) :type 'user-error)
+        ;; agy: alt+m, while one offers it.
+        (setq screen (ghostherd-tests--agy-queue-screen '("▸ second agy queued: 3 plus 3 (alt+m to send immediately)")))
+        (ghostherd-send-queued-now a "second agy queued: 3 plus 3")
+        (should (equal keys '(("M-m"))))
+        (setq keys nil
+              screen (ghostherd-tests--agy-queue-screen '("▸ agy sendnow two: 6 plus 6" "  ⎿  Sending to agent...")))
+        (should-error (ghostherd-send-queued-now a) :type 'user-error)
+        (should-not keys)))))
+
 (ert-deftest ghostherd-test-status-region-is-the-bottom ()
   "The region is the live status area, not the scrollback above it."
   (let ((ghostherd-status-lines 3))
