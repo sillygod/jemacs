@@ -139,10 +139,47 @@ Enumerating the glyphs is a losing game; requiring words is not."
 (ert-deftest ghostherd-test-reason-falls-back-for-bare-prompts ()
   "An anchored prompt cleans away to nothing.  Dressing it with whatever
 happened to precede it would attribute an unrelated line to the reason,
-so it keeps the pattern instead."
+and the pattern is no reason either: its state, in words."
   (should (equal (ghostherd--rule-reason "some earlier output\n> \n"
                                          '(idle . "^> "))
-                 "^> ")))
+                 "waiting at its prompt"))
+  (should (equal (ghostherd--rule-reason "a\n   \n" '(working . "^[[:blank:]]+$")) "at work"))
+  (should (equal (ghostherd--rule-reason "❯\n" '(blocked . "^❯$")) "waiting for an answer on its screen")))
+
+;; agy 1.4.12 idle in the herd's tmux, its turn just ended (the scratch run,
+;; 2026-11-06): a bare `>' in its box.  Its card said "^>[[:blank:]]*$".
+(defconst ghostherd-tests--agy-idle-screen
+  (string-join
+   (list "> from the page box to agy: what is 6+6?"
+         "▸ Thought for 7s, 123 tokens"
+         "  • 2 + 2 = 4"
+         "  • 6 + 6 = 12"
+         (make-string 120 ?─)
+         ">"
+         (make-string 120 ?─)
+         "? for shortcuts                                                               Gemini 4 Argon · high"
+         "")
+   "\n"))
+
+(ert-deftest ghostherd-test-no-reason-is-a-pattern ()
+  "An idle agy's card said \"^>[[:blank:]]*$\": its idle rule matched a bare
+`>', which cleans to nothing, and the reason fell back to the pattern.
+Through the poll it now says so in words.  And no kind's rule, of any
+state, comes back as a reason from a line that says nothing."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake))
+          (ghostherd-tests--fake-screen ghostherd-tests--agy-idle-screen))
+      (pcase-let ((`(,state . ,reason) (ghostherd--detect-state s)))
+        (should (eq state 'idle))
+        (should (equal reason "waiting at its prompt")))))
+  (dolist (kind '(claude grok agy))
+    (let ((spec (ghostherd--spec kind)))
+      (pcase-dolist (`(,state . ,patterns) (plist-get spec :screen-rules))
+        (dolist (pat (cons (plist-get spec :spinner) patterns))
+          (when pat
+            (let ((reason (ghostherd--rule-reason "\n\n" (cons state pat))))
+              (should-not (equal reason pat))
+              (should (equal reason (ghostherd--state-words state))))))))))
 
 (ert-deftest ghostherd-test-detect-state-reason-comes-from-the-screen ()
   "Pins the call site, not just the helper.  A mutation that rewires
@@ -2363,6 +2400,260 @@ key, and its box holds no words the key would act on."
               screen (ghostherd-tests--agy-queue-screen '("▸ agy sendnow two: 6 plus 6" "  ⎿  Sending to agent...")))
         (should-error (ghostherd-send-queued-now a) :type 'user-error)
         (should-not keys)))))
+
+;;; A turn its CLI says was interrupted
+
+(defun ghostherd-tests--box (above &optional box footer)
+  "A screen: ABOVE, then an input box holding BOX, then FOOTER."
+  (string-join (append above (list ghostherd-tests--rule (or box "❯ ") ghostherd-tests--rule
+                                   (or footer "  ⏵⏵ auto mode on (shift+tab to cycle)") ""))
+               "\n"))
+
+;; Real screens, 2026-11-06.  A lead's (its words replaced) and the
+;; scratch tmux's: claude 2.1.319, agy 1.4.12, grok 1.0.70.
+(defconst ghostherd-tests--interrupted-screens
+  `((a-lead
+     . ,(ghostherd-tests--box
+         '("  Ran 3 shell commands" ""
+           "⏺ The front page opens the third-party chat first, so the button goes"
+           "  straight to it."
+           "  ⎿  Interrupted · What should Claude do instead?"
+           "                                                                ✔ Update installed · Restart to update")
+         "❯ " "  ⏵⏵ auto mode on · 1 shell · ⧉ 2 · ↓ to manage"))
+    (claude-permission
+     . ,(ghostherd-tests--box
+         '("❯ Use the Bash tool to run ping -c 30 127.0.0.1 | tail -1 in the foreground with a 60000 ms timeout, then reply with"
+           "  one line." "" "  Ran 1 shell command"
+           "  ⎿  Interrupted · What should Claude do instead?" ""
+           "✻ Churned for 2s · done 3:23 PM" ""
+           "                  tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking")
+         "❯ " "  ⏸ manual mode on · ? for shortcuts"))
+    ;; In the herd's tmux, full-screen: a blank gap down to the box.
+    (claude-tall
+     . ,(ghostherd-tests--box
+         (append '("❯ Use the Bash tool to run ping -c 40 127.0.0.1 | tail -1 in the foreground with a 120000 ms timeout, then rep"
+                   "  one line." "" "  Ran 1 shell command" "  ⎿  Interrupted · What should Claude do instead?")
+                 (make-list 24 "")
+                 '("                     tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf for whee"))))
+    (claude-tool
+     . ,(ghostherd-tests--box
+         '("  Ran 1 shell command" "  ⎿  Interrupted · What should Claude do instead?" ""
+           "                                                                                                     ◉ xhigh · /effort")
+         "❯ " "  ⏸ manual mode on · ? for shortcuts"))
+    ;; Esc before any output: claude puts the prompt back in the box.
+    (claude-early
+     . ,(ghostherd-tests--box
+         '("  Ran 1 shell command" "  ⎿  Interrupted · What should Claude do instead?")
+         "❯ Write a 500 word story about a lighthouse keeper. No tools." "  ⏸ manual mode on"))
+    (agy
+     . ,(string-join (list "  79" "  80" "  8" "  ⎿  Interrupted · What should Antigravity CLI do instead?"
+                           ghostherd-tests--rule ">" ghostherd-tests--rule
+                           "? for shortcuts                                                               Gemini 4 Argon · high" "")
+                     "\n"))
+    (grok
+     . ,(string-join (list "     ❯ Run the shell command `ping -c 30 127.0.0.1 | tail -1` and wait for it to finish, then reply with     3:25 PM"
+                           "       one line." "     Turn cancelled by user in 18s." "" "  [Click here to Upgrade] or use Ctrl+O" ""
+                           (concat "  ╭" (make-string 60 ?─) "╮") (concat "  │ ❯" (make-string 57 ? ) "│")
+                           (concat "  ╰" (make-string 30 ?─) " Grok 4.7 (xhigh) · always-approve ─╯") ""
+                           "  Shift+Tab:mode  │  Ctrl+x:shortcuts" "")
+                     "\n")))
+  "Screens of a turn just interrupted, as each CLI draws it.")
+
+(defconst ghostherd-tests--not-interrupted-screens
+  `(;; Esc on a question: the turn ended, but its screen says no "Interrupted"
+    ;; (its transcript does).
+    (claude-declined
+     . ,(ghostherd-tests--box
+         '("⏺ User declined to answer questions" "  ⎿  · Which colour do you prefer, red or blue? (Red / Blue)" ""
+           "✻ Crunched for 1s · done 3:24 PM")))
+    ;; The next prompt, 0.15 s after it was sent: under the old word.
+    (claude-next
+     . ,(ghostherd-tests--box
+         '("  ⎿  Interrupted · What should Claude do instead?" "" "❯ Reply with the single word ok." "" "✳ Grooving…")
+         "❯ " "  ⏸ manual mode on · esc to interrupt"))
+    ;; grok and Esc: no interrupt, its turn goes on.
+    (grok-esc
+     . ,(string-join (list "                                                                     Press Ctrl+c to cancel the turn"
+                           "    ⠙ Server error (500) | Retrying (attempt 3)... 2.3s                     12s ⇣1.33k [stop]"
+                           "  [Click here to Upgrade] or use Ctrl+O"
+                           (concat "  ╭" (make-string 60 ?─) "╮") (concat "  │ ❯" (make-string 57 ? ) "│")
+                           (concat "  ╰" (make-string 30 ?─) " Grok 4.7 (xhigh) · always-approve ─╯")
+                           "  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+x:shortcuts" "")
+                     "\n"))
+    ;; An agent that quotes it, with more said since.
+    (quoted
+     . ,(ghostherd-tests--box
+         '("⏺ claude draws this when you press Esc:" "  ⎿  Interrupted · What should Claude do instead?"
+           "  and writes [Request interrupted by user]." "" "✻ Baked for 3s · done 3:30 PM"))))
+  "Screens over which no interrupt is the last word.")
+
+(ert-deftest ghostherd-test-each-clis-interrupt-read-off-its-screen ()
+  "The line each CLI draws over its box when its turn was interrupted --
+claude's and agy's after Esc, grok's after Ctrl+C -- with only blank
+rows and banners between: an interrupt.  Not when anything else came
+since, nor grok's hint that Esc does not cancel."
+  (pcase-dolist (`(,name . ,screen) ghostherd-tests--interrupted-screens)
+    (ert-info ((symbol-name name))
+      (should (ghostherd--interrupted-screen-p screen))))
+  (pcase-dolist (`(,name . ,screen) ghostherd-tests--not-interrupted-screens)
+    (ert-info ((symbol-name name))
+      (should-not (ghostherd--interrupted-screen-p screen)))))
+
+(ert-deftest ghostherd-test-an-interrupt-is-told-to-the-sidecar ()
+  "What a Stop hook would have told the sidecar, Emacs tells it: the turn
+ended, done, \"interrupted\" -- no last words, which would answer an ask.
+Its answer settles again an ask Emacs settled before the sidecar heard."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "g" :kind 'grok :backend 'fake :state 'working))
+          sent resettled)
+      (puthash "g" (list 'working nil (time-subtract (current-time) 30)) ghostherd--reports)
+      (cl-letf (((symbol-function 'ghostherd-memory-rpc-url) (lambda () "http://x"))
+                ((symbol-function 'ghostherd-memory-request-async)
+                 (lambda (method cb &optional params _err) (push (list method params) sent) (funcall cb nil)))
+                ((symbol-function 'ghostherd--ask-on-state)
+                 (lambda (who _old new) (push (list (ghostherd-session-name who) new) resettled))))
+        (let ((ghostherd-tests--fake-screen (alist-get 'grok ghostherd-tests--interrupted-screens)))
+          (should (equal (ghostherd--detect-state s) '(done . "interrupted")))))
+      (should (equal sent '(("herd_report" (:session "g" :state "done" :reason "interrupted")))))
+      ;; Still at work by Emacs's reckoning when the answer came: nothing to settle yet.
+      (should-not resettled)
+      (setf (ghostherd-session-state s) 'done)
+      (cl-letf (((symbol-function 'ghostherd-memory-rpc-url) (lambda () "http://x"))
+                ((symbol-function 'ghostherd-memory-request-async)
+                 (lambda (_m cb &optional _p _e) (funcall cb nil)))
+                ((symbol-function 'ghostherd--ask-on-state)
+                 (lambda (who _old new) (push (list (ghostherd-session-name who) new) resettled))))
+        (ghostherd--interrupt-heard s 'screen))
+      (should (equal resettled '(("g" done)))))))
+
+(defconst ghostherd-tests--grok-taken-back
+  (string-join (list "  main /p/t/c/-/c/s/cli/grok [Click here to Upgrade]                       1.3K / 256K │ [Dashboard]"
+                     "" "" "" "  [Click here to Upgrade] or use Ctrl+O" ""
+                     (concat "  ╭" (make-string 60 ?─) "╮")
+                     "  │ ❯ Run the shell command `ping -c 40 127.0.0.1 | tail -1` and wait for it to finish, then reply with one line.    │"
+                     (concat "  ╰" (make-string 30 ?─) " Grok 4.7 (xhigh) · always-approve ─╯") ""
+                     "  Enter:send  │  Opt+Enter:newline  │  Shift+Tab:mode  │  Ctrl+x:shortcuts" "")
+               "\n")
+  "grok 1.0.70 after Ctrl+C before its reply began, in the herd's tmux
+(scratch run, 2026-11-06): its prompt back in the box, the conversation
+empty, no record, no hook.")
+
+(ert-deftest ghostherd-test-a-turn-taken-back-ends-it ()
+  "Esc (claude) or Ctrl+C (grok) before the reply began takes the turn
+back: its prompt returns to the input box, and nothing else says so.
+That prompt back in the box -- as the herd submitted it, or as claude's
+transcript has it last -- ends a turn its hook left at work.  Words in
+the box that are not its prompt -- a draft -- do not."
+  (ghostherd-tests--with-herd ()
+    (let ((g (ghostherd-tests--session :name "g" :kind 'grok :backend 'fake :state 'working))
+          (c (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake :state 'working))
+          (task "Run the shell command `ping -c 40 127.0.0.1 | tail -1` and wait for it to finish, then reply with one line."))
+      (cl-flet ((report (who) (puthash (ghostherd-session-id who)
+                                       (list 'working nil (time-subtract (current-time) 30)) ghostherd--reports))
+                (poll (who screen)
+                  (let ((ghostherd-tests--fake-screen screen))
+                    (ghostherd-poll-session who)
+                    (cons (ghostherd-session-state who) (ghostherd-session-state-reason who)))))
+        ;; grok, the prompt the herd sent it, taken in, then back.
+        (puthash "g" (list :text task :state 'confirmed) ghostherd--submits)
+        (report g)
+        (should (equal (poll g ghostherd-tests--grok-taken-back) '(done . "interrupted")))
+        (should (string-match-p "its prompt is back in its input box" (ghostherd-log-entry-text (cadr ghostherd--log))))
+        ;; A draft that is not its prompt: the report wins.
+        (setf (ghostherd-session-state g) 'working)
+        (report g)
+        (should (eq (car (poll g (replace-regexp-in-string "Run the shell command[^│]*" "a draft of the next one       "
+                                                          ghostherd-tests--grok-taken-back)))
+                    'working))
+        ;; claude, typed at its terminal: its transcript's last entry.
+        (let ((early (ghostherd-tests--box '("⏺ ok" "" "✻ Cooked for 1s · done 3:26 PM")
+                                           "❯ Write a 500 word story about a lighthouse keeper. No tools.")))
+          (report c)
+          (ghostherd-tests--with-transcript
+              c (list "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-11-06T07:23:46.786Z\",\"message\":{\"role\":\"user\",\"content\":\"Write a 500 word story about a lighthouse keeper. No tools.\"}}"
+                      "{\"type\":\"last-prompt\",\"lastPrompt\":\"Write a 500 word story\"}")
+            (should (equal (poll c early) '(done . "interrupted"))))
+          ;; ...but not when its last entry is a reply: the box's words are a draft.
+          (setf (ghostherd-session-state c) 'working)
+          (report c)
+          (ghostherd-tests--with-transcript c (ghostherd-tests--entries 'lead-reply 'lead-turn)
+            (should (eq (car (poll c early)) 'working))))))))
+
+(defconst ghostherd-tests--interrupt-lines
+  '("{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-11-06T07:23:12.078Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"The user doesn't want to proceed with this tool use. The tool use was rejected.\",\"is_error\":true,\"tool_use_id\":\"toolu_1\"}]}}"
+    "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-11-06T07:23:12.079Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"[Request interrupted by user for tool use]\"}]}}"
+    "{\"type\":\"system\",\"subtype\":\"turn_duration\",\"isSidechain\":false,\"timestamp\":\"2026-11-06T07:23:12.082Z\"}")
+  "claude 2.1.319's transcript after Esc on its question (scratch, 2026-11-06).")
+
+(ert-deftest ghostherd-test-an-interrupt-ends-a-turn-its-hook-left-at-work ()
+  "Esc, and no hook says so: the `working' claude reported when its turn
+began is out of date once its CLI says the turn was interrupted -- on
+its screen, or (claude) in its transcript after that report.  The card
+goes to done, \"interrupted\", as for any finished turn; its report
+stands as done.  Not when the CLI says no such thing (compaction, a
+first frame with no timer), nor while its screen is at work, nor just
+after it was prompted, nor when its report was not at work."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake :state 'working))
+          (g (ghostherd-tests--session :name "g" :kind 'grok :backend 'fake :state 'working))
+          (a (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake :state 'working)))
+      (cl-flet ((report (who state &optional ago)
+                  (puthash (ghostherd-session-id who)
+                           (list state nil (time-subtract (current-time) (or ago 30)))
+                           ghostherd--reports))
+                (poll (who screen)
+                  (let ((ghostherd-tests--fake-screen screen))
+                    (ghostherd-poll-session who)
+                    (cons (ghostherd-session-state who) (ghostherd-session-state-reason who)))))
+        ;; The incident: at work by its hook, interrupted on its screen.
+        (report s 'working)
+        (should (equal (poll s (alist-get 'a-lead ghostherd-tests--interrupted-screens))
+                       '(done . "interrupted")))
+        (should (eq (car (gethash "c" ghostherd--reports)) 'done))
+        (should (string-match-p "interrupted: its screen says so" (ghostherd-log-entry-text (cadr ghostherd--log))))
+        ;; Over a gap taller than the poll's tail: read from the whole pane.
+        (setf (ghostherd-session-state s) 'working)
+        (report s 'working)
+        (let* ((pane (alist-get 'claude-tall ghostherd-tests--interrupted-screens))
+               (tail (string-join (last (split-string pane "\n") 12) "\n")))
+          (should-not (ghostherd--interrupted-screen-p tail))
+          (puthash "c" (cons tail pane) ghostherd--panes)
+          (should (equal (poll s tail) '(done . "interrupted"))))
+        ;; grok's Ctrl+C, agy's Esc.
+        (report g 'working)
+        (should (equal (poll g (alist-get 'grok ghostherd-tests--interrupted-screens)) '(done . "interrupted")))
+        (report a 'blocked)
+        (should (equal (poll a (alist-get 'agy ghostherd-tests--interrupted-screens)) '(done . "interrupted")))
+        ;; A screen at rest that says no such thing: the report wins, as before.
+        (setf (ghostherd-session-state s) 'working)
+        (report s 'working)
+        (should (eq (car (poll s ghostherd-tests--idle-screen)) 'working))
+        ;; At work over an old one: working.
+        (should (eq (car (poll s (alist-get 'claude-next ghostherd-tests--not-interrupted-screens))) 'working))
+        ;; Just prompted: not yet.
+        (puthash "c" (float-time) ghostherd--input-at)
+        (should (eq (car (poll s (alist-get 'claude-tool ghostherd-tests--interrupted-screens))) 'working))
+        (remhash "c" ghostherd--input-at)
+        ;; Esc while idle: its report says done already; nothing to undo.
+        (setf (ghostherd-session-state s) 'idle)
+        (report s 'idle)
+        (should (eq (car (poll s (alist-get 'claude-tool ghostherd-tests--interrupted-screens))) 'idle))
+        ;; Esc on a question: no word on the screen, its transcript has it.
+        (setf (ghostherd-session-state s) 'working)
+        (report s 'working 30)
+        (ghostherd-tests--with-transcript s ghostherd-tests--interrupt-lines
+          (should (eq (ghostherd--transcript-turn-end s) :interrupted))
+          ;; ...which is no CLI error.
+          (should-not (ghostherd--cli-error s))
+          (should (equal (poll s (alist-get 'claude-declined ghostherd-tests--not-interrupted-screens))
+                         '(done . "interrupted")))
+          (should (string-match-p "its transcript says so" (ghostherd-log-entry-text (cadr ghostherd--log)))))
+        ;; ...but not one written before its report: an earlier turn's.
+        (setf (ghostherd-session-state s) 'working)
+        (ghostherd-tests--with-transcript s ghostherd-tests--interrupt-lines
+          (set-file-times path (time-subtract (current-time) 60))
+          (report s 'working 5)
+          (should (eq (car (poll s (alist-get 'claude-declined ghostherd-tests--not-interrupted-screens))) 'working)))))))
 
 (ert-deftest ghostherd-test-status-region-is-the-bottom ()
   "The region is the live status area, not the scrollback above it."

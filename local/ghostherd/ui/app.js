@@ -3651,7 +3651,9 @@
     const out = [];
     for (let i = (entries || []).length - 1; i >= 0; i--) {
       const e = entries[i];
-      if (e && (e.who === "user" || e.role === "user"))
+      // Not a note: said by no one -- "Request interrupted by user", a
+      // background command that ended, a compaction.
+      if (e && (e.who === "user" || e.role === "user") && e.kind !== "note")
         out.push({ ts: e.ts, i, text: (e.text || "").replace(/\s+/g, " ").trim() });
     }
     return out; // newest first

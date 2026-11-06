@@ -163,6 +163,102 @@ def test_a_message_typed_while_it_worked_is_said_where_it_reached_it(home):
     ]
 
 
+def shell_notice(tid, summary, status="completed"):
+    "A background command's notice, as claude 2.1.x writes it (paths made up)."
+    return ("<task-notification>\n<task-id>%s</task-id>\n<tool-use-id>toolu_%s</tool-use-id>\n"
+            "<output-file>/tmp/x/tasks/%s.output</output-file>\n<status>%s</status>\n"
+            "<summary>%s</summary>\n</task-notification>" % (tid, tid, tid, status, summary))
+
+
+def test_a_notice_taken_mid_turn_is_a_note_once(home):
+    """A notice that background work ended, taken at the agent's next step,
+    is the attachment of the queued command (absorbed_mid_turn), as a
+    message typed is -- never a user record.  It is a note as one delivered
+    when the turn ended is, once.  A sub-agent's, taken mid-turn, is its
+    report once, not a note.  As a lead's transcript had them
+    (2026-11-06), ids and paths made up."""
+    mid = shell_notice("bbz3cg4kb", 'Background command "Wait for the rollout" completed (exit code 0)')
+    end = shell_notice("b400eu8tc", 'Background command "Run the tests" failed with exit code 1', "failed")
+    sub = ("<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>toolu_s1</tool-use-id>\n<status>completed</status>\n"
+           "<summary>Agent \"Find the config\" finished</summary>\n<result>It is in conf/app.toml.</result>\n"
+           "</task-notification>")
+    att = lambda prompt, mode="task-notification": {
+        "type": "attachment", "isSidechain": False, "timestamp": "2026-10-09T01:00:02Z",
+        "attachment": {"type": "queued_command", "prompt": prompt, "commandMode": mode,
+                       "origin": {"kind": "task-notification", "producer": "session-task"}}}
+    path = _claude_file(home, [
+        u("Roll it out"),
+        a("m1", use("t1", "Bash", command="kubectl rollout status ds/x", run_in_background=True),
+          use("s1", "Agent", description="Find the config", prompt="find it", run_in_background=True)),
+        u([result("t1", "Command running in background with ID: bbz3cg4kb. Output is being written to: /tmp/x/tasks/bbz3cg4kb.output")]),
+        u([result("s1", [{"type": "text", "text": "Async agent launched successfully.\nagentId: a1 (internal ID)"}])]),
+        a("m2", use("t2", "Read", file_path="/x/runbook.md")),
+        qop("enqueue", mid),
+        qop("enqueue", sub),
+        u([result("t2", "the runbook")]),
+        qop("remove", mid, reason="absorbed_mid_turn"),
+        qop("remove", sub, reason="absorbed_mid_turn"),
+        att(mid),
+        att(sub),
+        a("m3", text("The rollout is done.")),
+        # Delivered when the turn had ended, as before: a user record.
+        qop("enqueue", end),
+        qop("dequeue"),
+        u(end, origin={"kind": "task-notification"}),
+        a("m4", text("The tests failed.")),
+    ])
+    got = [(e["role"], e.get("kind"), e.get("text")) for e in conv.read(path)["entries"] if e["role"] != "tools"]
+    assert got == [
+        ("user", "prompt", "Roll it out"),
+        # The report where it came back, as before; the note where it
+        # reached the agent.
+        ("sub", "report", "It is in conf/app.toml."),
+        ("user", "note", 'Background command "Wait for the rollout" completed (exit code 0)'),
+        ("assistant", None, "The rollout is done."),
+        ("user", "note", 'Background command "Run the tests" failed with exit code 1'),
+        ("assistant", None, "The tests failed."),
+    ]
+    # The room's chat says neither notice: notes are not said to anyone.
+    r = conv.chat([("rd", path)])
+    assert [e.get("text") for e in r["entries"] if e.get("kind") != "turn"] == ["Roll it out"]
+
+
+# grok 1.0.70's first record of a conversation, shaped as on this machine
+# (2026-11-06) -- its context, the user's rules -- with made-up contents.
+GROK_OPENING = {"type": "user", "content": [{"type": "text", "text": (
+    "<user_info>\nOS Version: macos\nShell: /bin/bash\nWorkspace Path: /x/proj\nToday's date: 2026-11-06\n"
+    "</user_info>\n\n<rules>\nThe rules section has a number of possible rules/memories/context.\n\n"
+    "<user_rules description=\"These are rules set by the user.\">\n<user_rule>\nBe brief.\n</user_rule>\n"
+    "</user_rules>\n</rules>")}]}
+
+
+def test_grok_opens_with_its_own_context_not_a_prompt(home):
+    """grok writes the context it opens a conversation with -- the machine,
+    the workspace, the user's rules -- as its first user record: no one said
+    it.  Out of the room, so out of its "You:" list and its chat too.  A
+    prompt is kept, with or without the prompt_index older groks left out,
+    and a prompt that comes with that context in one record keeps its words."""
+    path = _write(home / ".grok" / "sessions" / "%2Fx%2Fproj" / "s1" / "chat_history.jsonl", [
+        {"type": "system", "content": "you are grok"},
+        GROK_OPENING,
+        {"type": "user", "content": [{"type": "text", "text": "<system-reminder>\nskills\n</system-reminder>"}],
+         "synthetic_reason": "system_reminder"},
+        {"type": "user", "content": [{"type": "text", "text": "<user_query>\nrun the tests\n</user_query>"}], "prompt_index": 0},
+        {"type": "assistant", "content": "All green."},
+        {"type": "user", "content": [{"type": "text", "text": "<user_query>and lint</user_query>"}]},
+        {"type": "user", "content": [{"type": "text", "text": "<user_info>\nOS Version: macos\n</user_info>\n"
+                                                              "<user_query>and the docs</user_query>"}]},
+    ])
+    e = conv.read(path)["entries"]
+    assert [(x["role"], x.get("kind"), x.get("text")) for x in e] == [
+        ("user", "prompt", "run the tests"), ("assistant", None, "All green."),
+        ("user", "prompt", "and lint"), ("user", "prompt", "and the docs")]
+    r = conv.chat([("gk", path)])
+    assert [x.get("text") for x in r["entries"] if x["who"] == "user"] == ["run the tests", "and lint", "and the docs"]
+    # The Threads tab's opening prompt for a task: the user's words.
+    assert conv.turn(path, "gk", "run the tests")["prompt"]["text"] == "run the tests"
+
+
 def test_what_the_herd_said_is_attributed(home):
     path = _claude_file(home, [u(ASK_TEXT), u(ANSWER_TEXT), u(AUTO_TEXT), u(FAILED_TEXT),
                                u("[ghostherd message from user → qa]\nplease hurry\n")])
