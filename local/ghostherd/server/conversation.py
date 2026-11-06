@@ -615,11 +615,16 @@ def _claude(records, thread: Thread, sub: bool = False) -> None:
             # writes it as the attachment of the queued command, never as a
             # user record -- so it is said here, where it reached the agent.
             # One delivered when the turn ended comes as a user record, after
-            # a dequeue.  A sub-agent's hand-back comes this way too, marked
+            # a dequeue.  So does a notice that background work ended
+            # ("task-notification": a shell, a monitor, a sub-agent): a note
+            # here as there, or the sub-agent's report, once -- in 515 such
+            # attachments on this machine (2026-11-06) none was also a user
+            # record.  A sub-agent's hand-back comes this way too, marked
             # isMeta: it was read off the queue (Thread.queued).
             att = o.get("attachment")
             if (isinstance(att, dict) and att.get("type") == "queued_command"
-                    and att.get("commandMode") == "prompt" and not att.get("isMeta")):
+                    and att.get("commandMode") in ("prompt", "task-notification")
+                    and not att.get("isMeta")):
                 prompt = att.get("prompt")
                 said = prompt if isinstance(prompt, str) else "\n".join(
                     b.get("text", "") for b in prompt or [] if isinstance(b, dict) and b.get("type") == "text")

@@ -163,6 +163,66 @@ def test_a_message_typed_while_it_worked_is_said_where_it_reached_it(home):
     ]
 
 
+def shell_notice(tid, summary, status="completed"):
+    "A background command's notice, as claude 2.1.x writes it (paths made up)."
+    return ("<task-notification>\n<task-id>%s</task-id>\n<tool-use-id>toolu_%s</tool-use-id>\n"
+            "<output-file>/tmp/x/tasks/%s.output</output-file>\n<status>%s</status>\n"
+            "<summary>%s</summary>\n</task-notification>" % (tid, tid, tid, status, summary))
+
+
+def test_a_notice_taken_mid_turn_is_a_note_once(home):
+    """A notice that background work ended, taken at the agent's next step,
+    is the attachment of the queued command (absorbed_mid_turn), as a
+    message typed is -- never a user record.  It is a note as one delivered
+    when the turn ended is, once.  A sub-agent's, taken mid-turn, is its
+    report once, not a note.  As a lead's transcript had them
+    (2026-11-06), ids and paths made up."""
+    mid = shell_notice("bbz3cg4kb", 'Background command "Wait for the rollout" completed (exit code 0)')
+    end = shell_notice("b400eu8tc", 'Background command "Run the tests" failed with exit code 1', "failed")
+    sub = ("<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>toolu_s1</tool-use-id>\n<status>completed</status>\n"
+           "<summary>Agent \"Find the config\" finished</summary>\n<result>It is in conf/app.toml.</result>\n"
+           "</task-notification>")
+    att = lambda prompt, mode="task-notification": {
+        "type": "attachment", "isSidechain": False, "timestamp": "2026-10-09T01:00:02Z",
+        "attachment": {"type": "queued_command", "prompt": prompt, "commandMode": mode,
+                       "origin": {"kind": "task-notification", "producer": "session-task"}}}
+    path = _claude_file(home, [
+        u("Roll it out"),
+        a("m1", use("t1", "Bash", command="kubectl rollout status ds/x", run_in_background=True),
+          use("s1", "Agent", description="Find the config", prompt="find it", run_in_background=True)),
+        u([result("t1", "Command running in background with ID: bbz3cg4kb. Output is being written to: /tmp/x/tasks/bbz3cg4kb.output")]),
+        u([result("s1", [{"type": "text", "text": "Async agent launched successfully.\nagentId: a1 (internal ID)"}])]),
+        a("m2", use("t2", "Read", file_path="/x/runbook.md")),
+        qop("enqueue", mid),
+        qop("enqueue", sub),
+        u([result("t2", "the runbook")]),
+        qop("remove", mid, reason="absorbed_mid_turn"),
+        qop("remove", sub, reason="absorbed_mid_turn"),
+        att(mid),
+        att(sub),
+        a("m3", text("The rollout is done.")),
+        # Delivered when the turn had ended, as before: a user record.
+        qop("enqueue", end),
+        qop("dequeue"),
+        u(end, origin={"kind": "task-notification"}),
+        a("m4", text("The tests failed.")),
+    ])
+    got = [(e["role"], e.get("kind"), e.get("text")) for e in conv.read(path)["entries"] if e["role"] != "tools"]
+    assert got == [
+        ("user", "prompt", "Roll it out"),
+        # The report where it came back, as before; the note where it
+        # reached the agent.
+        ("sub", "report", "It is in conf/app.toml."),
+        ("user", "note", 'Background command "Wait for the rollout" completed (exit code 0)'),
+        ("assistant", None, "The rollout is done."),
+        ("user", "note", 'Background command "Run the tests" failed with exit code 1'),
+        ("assistant", None, "The tests failed."),
+    ]
+    # The room's chat says neither notice: notes are not said to anyone.
+    r = conv.chat([("rd", path)])
+    assert [e.get("text") for e in r["entries"] if e.get("kind") != "turn"] == ["Roll it out"]
+
+
 def test_what_the_herd_said_is_attributed(home):
     path = _claude_file(home, [u(ASK_TEXT), u(ANSWER_TEXT), u(AUTO_TEXT), u(FAILED_TEXT),
                                u("[ghostherd message from user → qa]\nplease hurry\n")])
