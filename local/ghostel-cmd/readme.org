@@ -191,6 +191,11 @@ refuses to save until the file reads again.
 The overlay is the only menu.  Open a terminal with =SPC '=, replay
 the last command with =SPC TAB=, send a region with =SPC x s=.
 
+A command pastes into the project's terminal: with ghostel-dock
+loaded (=local/ghostel-dock/=), the one last used in the project,
+shown in the dock's panel, a new =shell= when there is none.  Without
+it, the project's =ghostel-project= buffer in a split, as before.
+
 #+begin_src sh
   emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
         -L ~/.emacs.d/local/ghostel-cmd \
