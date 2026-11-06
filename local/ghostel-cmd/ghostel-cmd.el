@@ -32,7 +32,10 @@
 ;; ghostel-dock it runs in that terminal of the project, started when
 ;; missing, restarted when it still runs it.  A discovered task's
 ;; terminal is kept under (:task-terminal . ROOT).  T runs any command
-;; in a terminal picked on the spot.
+;; in a terminal picked on the spot.  One that names none is pasted
+;; into the project's last-used terminal; with ghostel-dock, when that
+;; one runs something, it asks where instead (a new terminal named
+;; after the command first).  The footer says where RET goes.
 ;;
 ;; `ghostel-project-cmd-run' is an alias for the overlay so existing
 ;; keybindings keep working.
@@ -57,6 +60,8 @@
 (declare-function ghostel-dock-show "ghostel-dock")
 (declare-function ghostel-dock-run "ghostel-dock")
 (declare-function ghostel-dock-terminal-names "ghostel-dock")
+(declare-function ghostel-dock-target "ghostel-dock")
+(declare-function ghostel-dock-paste "ghostel-dock")
 (declare-function ghostel-paste-string "ghostel")
 (declare-function ghostel-send-key "ghostel")
 (declare-function magit-get-current-branch "magit-git")
@@ -313,16 +318,18 @@ any other name starts a new one when the command runs."
                                 nil nil initial))))
     (unless (string-empty-p name) name)))
 
-(defun ghostel-cmd--deliver-to (terminal)
+(defun ghostel-cmd--deliver-to (terminal &optional name)
   "A deliver function for a command bound to TERMINAL, or to none.
 Bound, it runs through ghostel-dock in that terminal of the project;
-without ghostel-dock, or unbound, as `ghostel-cmd--deliver'."
+without ghostel-dock, or unbound, as `ghostel-cmd--deliver'.  NAME,
+the command's, names the new terminal an unbound one is offered when
+the project's last used is busy."
   (lambda (cmd submit)
     (if (and terminal (fboundp 'ghostel-dock-run))
         (let ((root (ghostel-cmd--dock-root)))
           (ghostel-cmd--hide-overlay)
           (ghostel-dock-run cmd terminal root submit))
-      (ghostel-cmd--deliver cmd submit))))
+      (ghostel-cmd--deliver cmd submit nil name))))
 
 (defun ghostel-cmd--task-p (scope)
   "Non-nil when SCOPE is a discovered task's, not a bookmark's."
@@ -1239,8 +1246,10 @@ posframe sets the frame's height in lines, and the header line (the
 column titles) and the mode line (the footer) each take one of them.")
 
 (defconst ghostel-cmd-sidebar-help-commands
-  '(("RET"      "Paste into Ghostel (fill {{vars}}); a URL opens in the browser")
-    ("C-RET"    "Paste and press Enter; a URL opens in an Emacs xwidget")
+  '(("RET"      "Paste where the footer says (fill {{vars}}); a URL: browser")
+    (""         "→dev: its own terminal.  Else the last used; busy, it asks:")
+    (""         "a new one named after the command, another, or it anyway")
+    ("C-RET"    "The same, and press Enter; a URL opens in an Emacs xwidget")
     ("T"        "Run in a terminal of the project picked now (→dev: its own)")
     ("u"        "Open the project's frontend in the browser")
     ("j, k"     "Move; past the rows shown the list scrolls")
@@ -1598,6 +1607,7 @@ ROOT is where TMPL runs."
   (forward-line (- ghostel-cmd--index ghostel-cmd--top))
   (ghostel-cmd--draw-preview)
   (setq ghostel-cmd--preview-id (tabulated-list-get-id))
+  (ghostel-cmd--update-target)
   ;; Every row printed fits: show them from the first.
   (when-let* ((win (get-buffer-window (current-buffer) t)))
     (set-window-start win (point-min) t)
@@ -1670,7 +1680,8 @@ ROOT is where TMPL runs."
       (let ((id (tabulated-list-get-id)))
         (unless (equal id ghostel-cmd--preview-id)
           (setq ghostel-cmd--preview-id id)
-          (ghostel-cmd--draw-preview))))))
+          (ghostel-cmd--draw-preview)
+          (ghostel-cmd--update-target))))))
 
 (defun ghostel-cmd--refresh-overlay ()
   (when-let* ((buf (get-buffer ghostel-cmd--buffer-name)))
@@ -1688,6 +1699,71 @@ ROOT is where TMPL runs."
                      (propertize (format "[%s]" shown) 'face 'bold)
                    shown)))
              choices " "))
+
+(defconst ghostel-cmd--target-ttl 2
+  "Seconds a look at where RET goes stays good for the footer.")
+
+(defvar ghostel-cmd--targets nil
+  "Looks at where RET goes: ((TERMINAL . COMMAND) TIME . TEXT).
+TERMINAL is the one a row names, nil for the last used; COMMAND, a
+bound row's when it has no {{vars}}.  Rows that go to the same terminal
+share one look, so moving through them asks no process again.")
+
+(defvar ghostel-cmd--target-text nil
+  "Where RET sends the selected row, for the footer; nil: not known.")
+
+(defun ghostel-cmd--target-words (target)
+  "TARGET, a `ghostel-dock-target' plist, as the footer says it:
+RET → shell, RET → logs (new), RET → shell ▶ docker-compose up: asks."
+  (let ((job (plist-get target :job)))
+    (concat "RET → " (plist-get target :label)
+            (when (plist-get target :new) " (new)")
+            (cond ((stringp job)
+                   (concat " ▶ " (truncate-string-to-width job 24 nil nil "…")))
+                  ((eq job 'running) " ▶ running")
+                  ((eq job 'exited) " (exited)"))
+            (pcase (plist-get target :then)
+              ('ask ": asks")
+              ('restart ": restarts")))))
+
+(defun ghostel-cmd--target-for (record root)
+  "What the footer says of where RET sends RECORD, run under ROOT.
+A URL opens in a browser; a command goes where ghostel-dock says, looked
+at once per terminal every `ghostel-cmd--target-ttl' seconds; nil
+without ghostel-dock, or when the look fails."
+  (cond
+   ((null record) nil)
+   ((plist-get record :url) "RET browser  C-RET xwidget")
+   ((fboundp 'ghostel-dock-target)
+    (let* ((terminal (ghostel-cmd--terminal-of record))
+           (cmd (plist-get record :cmd))
+           (exact (and terminal (stringp cmd)
+                       (not (string-match-p ghostel-cmd--var-regexp cmd))
+                       cmd))
+           (key (cons terminal exact))
+           (hit (cdr (assoc key ghostel-cmd--targets)))
+           (now (float-time)))
+      (if (and hit (< (- now (car hit)) ghostel-cmd--target-ttl))
+          (cdr hit)
+        (let ((text (condition-case err
+                        (ghostel-cmd--target-words
+                         (ghostel-dock-target root terminal exact))
+                      (error
+                       (message "ghostel-cmd: where RET goes: %s" (error-message-string err))
+                       nil))))
+          (setf (alist-get key ghostel-cmd--targets nil nil #'equal) (cons now text))
+          text))))))
+
+(defun ghostel-cmd--update-target ()
+  "Note where RET sends the selected row, for the footer.  Called when
+the selection changes, never from the mode line, which is redrawn only
+when it says something new."
+  (let ((text (ghostel-cmd--target-for
+               (cdr (assoc (tabulated-list-get-id) ghostel-cmd--matched))
+               (or ghostel-cmd--root (ghostel-cmd--current-project-root)))))
+    (unless (equal text ghostel-cmd--target-text)
+      (setq ghostel-cmd--target-text text)
+      (force-mode-line-update))))
 
 (defun ghostel-cmd--footer ()
   "The overlay's mode line; a % in it shows as itself."
@@ -1714,6 +1790,12 @@ ROOT is where TMPL runs."
         "   RET apply  C-n/C-p move  Esc clear")
        (ghostel-cmd--help-visible
         "   ? close help  Esc close")
+       (ghostel-cmd--target-text
+        (concat "   " ghostel-cmd--target-text
+                (if (string-prefix-p "RET →" ghostel-cmd--target-text)
+                    "  C-RET send  T pick"
+                  "")
+                "  a add  / filter  ? keys  Esc close"))
        (t
         "   RET paste  C-RET send  T in terminal  a add  / filter  ? keys  Esc close"))))))
 
@@ -2191,23 +2273,28 @@ panel, selected."
      (inhibit-same-window . t)
      (reusable-frames . visible))))
 
-(defun ghostel-cmd--deliver (cmd-string submit &optional terminal)
+(defun ghostel-cmd--deliver (cmd-string submit &optional terminal name)
   "Paste CMD-STRING into Ghostel.  SUBMIT non-nil presses Enter.
 TERMINAL, a live Ghostel buffer, takes it; else the project's.
 Keeps the current file window: reuse a visible terminal window, or
 split if none is showing.  With ghostel-dock, the project's terminal
-is the one last used there, shown in its panel."
-  (ghostel-cmd--hide-overlay)
-  (require 'ghostel)
-  (let ((term-buf (or (and (buffer-live-p terminal) terminal)
-                      (ghostel-cmd--existing-terminal)
-                      (ghostel-cmd--create-terminal))))
-    (when (buffer-live-p term-buf)
-      (ghostel-cmd--display-terminal term-buf)
-      (with-current-buffer term-buf
-        (ghostel-paste-string cmd-string)
-        (when submit
-          (ghostel-send-key "return"))))))
+is the one last used there, shown in its panel; when it runs
+something, `ghostel-dock-paste' asks where instead, offering a new
+terminal NAME first."
+  (let ((root (ghostel-cmd--dock-root)))
+    (ghostel-cmd--hide-overlay)
+    (if (and (not (buffer-live-p terminal)) (fboundp 'ghostel-dock-paste))
+        (ghostel-dock-paste cmd-string root submit name)
+      (require 'ghostel)
+      (let ((term-buf (or (and (buffer-live-p terminal) terminal)
+                          (ghostel-cmd--existing-terminal)
+                          (ghostel-cmd--create-terminal))))
+        (when (buffer-live-p term-buf)
+          (ghostel-cmd--display-terminal term-buf)
+          (with-current-buffer term-buf
+            (ghostel-paste-string cmd-string)
+            (when submit
+              (ghostel-send-key "return"))))))))
 
 (defun ghostel-cmd--open-url (url &optional in-emacs)
   "Open URL in the system browser, or an Emacs xwidget when IN-EMACS."
@@ -2224,7 +2311,8 @@ is the one last used there, shown in its panel."
 A URL entry opens in the system browser, or an Emacs xwidget with a
 prefix (C-RET).  A command fills its {{vars}} in the overlay first.
 It goes to TERMINAL, else the terminal it names, else the project's
-last used; SUBMIT presses Enter."
+last used -- with ghostel-dock, asked about when that one is busy; the
+footer says which.  SUBMIT presses Enter."
   (interactive)
   (when ghostel-cmd--filtering
     (ghostel-cmd--set-filtering nil))
@@ -2232,7 +2320,8 @@ last used; SUBMIT presses Enter."
          (record (cdr row))
          (root (or ghostel-cmd--root (ghostel-cmd--current-project-root)))
          (deliver (ghostel-cmd--deliver-to
-                   (or terminal (ghostel-cmd--terminal-of record)))))
+                   (or terminal (ghostel-cmd--terminal-of record))
+                   (plist-get record :name))))
     (unless record
       (user-error "No command at point"))
     (cond
@@ -2741,8 +2830,9 @@ The list shows fewer rows meanwhile, so all of the legend fits."
   (force-mode-line-update t))
 
 (defun ghostel-cmd-revert ()
-  "Read the commands and tasks again and redraw."
+  "Read the commands and tasks again, look at the terminals again, redraw."
   (interactive)
+  (setq ghostel-cmd--targets nil)
   (ghostel-cmd--refresh-overlay))
 
 (defun ghostel-cmd--close-side-windows (buf)
@@ -2893,8 +2983,12 @@ presses Enter."
         ghostel-cmd--query ""
         ghostel-cmd--help-visible nil
         ghostel-cmd--fill nil
-        ghostel-cmd--preview-id nil)
+        ghostel-cmd--preview-id nil
+        ghostel-cmd--targets nil)
   (ghostel-cmd--set-filtering nil)
+  ;; A fill left in a side window keeps its keys, which would take
+  ;; every key with no fill there: the posframe drops them on hiding.
+  (ghostel-cmd--set-filling nil)
   (setq ghostel-cmd--display (and (ghostel-cmd--use-posframe-p) 'posframe))
   (let* ((overlay (eq ghostel-cmd--display 'posframe))
          (ghostel-cmd--target-width

@@ -24,9 +24,10 @@ minibuffer does not count.  The list keeps the order you give it with
 | =gg= / =G=  | First / last row (=<home>= / =<end>=, =M-<= /     |
 |             | =M->=); =C-d= / =C-u=: half a page (=<next>= /    |
 |             | =<prior>=, =C-v= / =M-v=)                         |
-| =RET=       | Paste (fill ={{vars}}= first); a URL opens in the |
-|             | system browser                                    |
-| =C-RET=     | Paste and press Enter; a URL opens in an xwidget  |
+| =RET=       | Paste where the footer says (fill ={{vars}}=      |
+|             | first); a URL opens in the system browser         |
+| =C-RET=     | The same, and press Enter; a URL opens in an      |
+|             | xwidget                                           |
 | =T=         | Run in a terminal of the project picked now       |
 | =u=         | Open the project's frontend in the browser        |
 | =/=         | Live-narrow (flex, whitespace is AND); every      |
@@ -51,6 +52,31 @@ text a system input method (Squirrel) commits.  An Emacs input method
 (rime, quail) cannot compose in the read-only overlay, and evil turns
 it off in normal state, so =C-\= edits the input in the minibuffer with
 it on; the list follows as you type and =C-g= keeps the old text.
+
+The footer says where =RET= and =C-RET= send the selected row, before
+you press them, and follows the selection (with ghostel-dock; see
+"Which terminal" below):
+
+#+begin_example
+  jrevba   RET → shell  C-RET send  T pick  a add  / filter  ? keys  Esc close
+  jrevba   RET → shell ▶ docker-compose up: asks  C-RET send  T pick  ...
+  jrevba   RET → dev (new)  C-RET send  T pick  ...
+  jrevba   RET → dev ▶ npm run dev: restarts  C-RET send  T pick  ...
+  jrevba   RET browser  C-RET xwidget  a add  / filter  ? keys  Esc close
+#+end_example
+
+- The terminal by the name its manager row shows: an old
+  =*PROJECT-ghostel*= is =shell=.  =(new)=: it starts.
+- =▶ JOB=: what it runs in the foreground.  =asks=: =RET= asks first --
+  where, for a command naming no terminal; whether to stop it, for a
+  bound one running something else.  =restarts=: a bound command still
+  running there is restarted.  A bound command with ={{vars}}= says
+  neither: its own command may run there, to be restarted, or not.
+- Cheap: one look at a terminal (two =process-attributes= calls), made
+  when the selection lands on a row, shared by the rows that go to the
+  same terminal and kept 2 s; never from the mode line.  =g= looks
+  again.  =RET= looks once more when it goes, so the footer can only be
+  a moment behind.
 
 The preview under the list wraps a long command onto at most
 =ghostel-cmd-preview-max-lines= (3) lines and cuts the rest with =…=,
@@ -192,10 +218,38 @@ refuses to save until the file reads again.
 The overlay is the only menu.  Open a terminal with =SPC '=, replay
 the last command with =SPC TAB=, send a region with =SPC x s=.
 
+* Which terminal
+
 A command pastes into the project's terminal: with ghostel-dock
 loaded (=local/ghostel-dock/=), the one last used in the project,
 shown in the dock's panel, a new =shell= when there is none.  Without
 it, the project's =ghostel-project= buffer in a split, as before.
+
+With ghostel-dock, a command naming no terminal is never typed into a
+program that runs.  When the last-used terminal runs something in the
+foreground -- the dock's busy test: OSC 133 says a command runs, or the
+terminal's foreground job is not the shell -- =RET= and =C-RET= ask
+instead, in one prompt with completion, as =T= does:
+
+#+begin_example
+  shell is running docker-compose up; paste it in (default logs):
+    logs    new terminal
+    dev     idle  *jrevba:dev*
+    shell   ▶ docker-compose up · paste here anyway  *jrevba-ghostel*
+#+end_example
+
+- The default, =RET= on the empty prompt: a new terminal of the
+  project named after the row (its Name: =logs=), =logs-2= when taken.
+  It shows in the panel and gets the command once its shell shows its
+  prompt.
+- The project's other terminals, the last used first, take it at once.
+- The busy one, last: paste there anyway.
+- Any other name starts a terminal of that name.  =C-g=: nothing goes.
+- An old =*PROJECT-ghostel*= is a terminal like any other: =shell= in
+  the list (=shell<2>= for its =<2>=), its full name beside it.  When a
+  terminal is named =shell= too, the old one goes by its full name.
+- An idle terminal takes the command as before, no question.  A bound
+  command keeps its own rules (below).
 
 A command can name its terminal: =:terminal "dev"= in its record.  The
 =a= and =e= flows ask for it (empty: none) when ghostel-dock is there;

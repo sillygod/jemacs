@@ -25,6 +25,12 @@
 ;; a terminal no window shows says so in the echo area, and its row in
 ;; the manager keeps a dot until the terminal shows again.
 ;;
+;; A ghostel-cmd command runs in the terminal it names
+;; (`ghostel-dock-run'), or is pasted into the project's last used
+;; (`ghostel-dock-paste') -- unless that one runs something: then one
+;; prompt asks where, a new terminal named after the command first.
+;; `ghostel-dock-target' tells ghostel-cmd's footer where RET goes.
+;;
 ;; A terminal is a buffer *PROJECT:NAME*.  It belongs to the directory
 ;; it was made for -- its project's root, or the directory it started
 ;; in outside a project -- and keeps belonging to it across `cd'.
@@ -950,6 +956,186 @@ Return the terminal."
              (unless (member root ghostel-dock--restored)
                (mapcar (lambda (entry) (plist-get entry :name))
                        (cdr (assoc root (ghostel-dock--stored)))))))))
+
+
+;;; Where an unbound command goes
+
+(defun ghostel-dock--job (buffer)
+  "What terminal BUFFER runs, as a row's :job says it: `exited', the
+foreground job's command line, `running' (OSC 133 says so, no job seen),
+or nil when idle.  The row's look without the rest: two
+`process-attributes' calls."
+  (cond ((not (process-live-p (ghostel-dock--local 'ghostel--process buffer))) 'exited)
+        ((cdr (ghostel-dock--foreground buffer)))
+        ((ghostel-dock--local 'ghostel--command-running buffer) 'running)))
+
+(defun ghostel-dock--choices (root)
+  "ROOT's terminals as (LABEL . BUFFER), the last used first.
+LABEL is what the manager's row shows -- shell for an old
+*PROJECT-ghostel* -- or, when two would read alike, its own name."
+  (let* ((buffers (ghostel-dock-terminals root))
+         (labels (mapcar #'ghostel-dock--label-of buffers)))
+    (cl-mapcar (lambda (buffer label)
+                 (cons (if (and (> (cl-count label labels :test #'equal) 1)
+                                (not (equal label (ghostel-dock--name-of buffer))))
+                           (ghostel-dock--name-of buffer)
+                         label)
+                       buffer))
+               buffers labels)))
+
+(defun ghostel-dock--saved-names (root)
+  "Names of ROOT's saved terminals that may come back this session."
+  (unless (member root ghostel-dock--restored)
+    (mapcar (lambda (entry) (plist-get entry :name))
+            (cdr (assoc root (ghostel-dock--stored))))))
+
+(defun ghostel-dock--first-name (root)
+  "The name of the terminal `ghostel-dock-terminal' starts for ROOT,
+which has none open: its first saved one, come back, else a new shell."
+  (or (and (not (member root ghostel-dock--picked))
+           (plist-get (seq-find (lambda (entry) (not (plist-get entry :forgotten)))
+                                (and (not (member root ghostel-dock--restored))
+                                     (cdr (assoc root (ghostel-dock--stored)))))
+                      :name))
+      (ghostel-dock--free-name root ghostel-dock-default-name)))
+
+;;;###autoload
+(defun ghostel-dock-target (&optional root name command)
+  "Where a ghostel-cmd command of ROOT goes, told before it runs: a plist.
+NAME is the terminal the command is bound to; nil, ROOT's last used.
+COMMAND, the bound command as it will run, tells a restart from a
+question; nil when it is not known yet ({{vars}} to fill).
+
+  :label   the terminal's name as the manager's row shows it: shell
+           for an old *PROJECT-ghostel*
+  :buffer  the terminal; nil when it starts
+  :new     non-nil when it starts (or comes back from the save file)
+  :job     what it runs: a command line, `running', `exited'; nil idle
+  :then    what RET does there: nil, it goes in; `ask', it asks first
+           (unbound: where; bound: whether to stop it); `restart'
+
+A look at one terminal: two `process-attributes' calls."
+  (let* ((root (ghostel-dock--norm (or root (ghostel-dock--current-root))))
+         (buffer (if name (ghostel-dock--named root name) (ghostel-dock-terminal root))))
+    (if (null buffer)
+        (list :label (or name (ghostel-dock--first-name root)) :new t)
+      (let* ((job (ghostel-dock--job buffer))
+             (busy (ghostel-dock--busy-p (list :job job))))
+        (list :label (or name (car (rassq buffer (ghostel-dock--choices root))))
+              :buffer buffer
+              :job job
+              :then (cond ((not busy) nil)
+                          ((not name) 'ask)
+                          ((and command (ghostel-dock--running-p buffer command)) 'restart)
+                          ;; {{vars}}: the binding's own command may run
+                          ;; there, restarted, or not, asked about.
+                          ((and (not command)
+                                (buffer-local-value 'ghostel-dock--command-live buffer))
+                           nil)
+                          (t 'ask)))))))
+
+(defun ghostel-dock--paste-into (buffer command submit)
+  "Show BUFFER in the panel, selected, and paste COMMAND; SUBMIT runs it.
+An unbound command's paste: nothing is kept of it, unlike a binding's."
+  (ghostel-dock-show buffer t)
+  (with-current-buffer buffer
+    (ghostel-paste-string command)
+    (when submit
+      (ghostel-send-key "return")))
+  buffer)
+
+(defun ghostel-dock--unique (base taken)
+  "BASE, or BASE-2, BASE-3...: the first not in TAKEN."
+  (let ((name base) (n 1))
+    (while (member name taken)
+      (setq n (1+ n) name (format "%s-%d" base n)))
+    name))
+
+(defun ghostel-dock--ask-where (root busy submit name)
+  "Ask where a command goes, BUSY -- ROOT's last-used terminal -- running
+something; SUBMIT: it runs there, else it is pasted.  Return a terminal
+of ROOT, or the name of a new one.  The default is a new terminal NAME,
+made unique; the choices, ROOT's other terminals, then BUSY itself:
+paste there anyway.  Any other name starts a terminal of that name."
+  (let* ((choices (ghostel-dock--choices root))
+         (busy-label (car (rassq busy choices)))
+         (fresh (ghostel-dock--unique
+                 (if (and name (not (string-empty-p (string-trim name))))
+                     (string-trim name)
+                   ghostel-dock-default-name)
+                 (append (mapcar #'car choices)
+                         (mapcar (lambda (choice) (ghostel-dock--name-of (cdr choice))) choices)
+                         (ghostel-dock--saved-names root))))
+         (order (append (list fresh)
+                        (mapcar #'car (seq-remove (lambda (choice) (eq (cdr choice) busy))
+                                                  choices))
+                        (list busy-label)))
+         (annotate
+          (lambda (label)
+            (if-let* ((buffer (cdr (assoc label choices))))
+                (let ((job (ghostel-dock--job buffer)))
+                  (concat "  " (ghostel-dock--job-text (list :job job))
+                          (when (eq buffer busy)
+                            (propertize " · paste here anyway" 'face 'warning))
+                          "  " (propertize (buffer-name buffer) 'face 'shadow)))
+              (and (equal label fresh)
+                   (propertize "  new terminal" 'face 'shadow)))))
+         (table (lambda (string pred action)
+                  (if (eq action 'metadata)
+                      `(metadata (category . ghostel-dock-terminal)
+                                 (annotation-function . ,annotate)
+                                 (display-sort-function . identity)
+                                 (cycle-sort-function . identity))
+                    (complete-with-action action order string pred))))
+         (answer (string-trim
+                  (completing-read
+                   (format-prompt "%s is running %s; %s in" fresh busy-label
+                                  (truncate-string-to-width
+                                   (ghostel-dock--job-words (list :job (ghostel-dock--job busy)))
+                                   40 nil nil "…")
+                                  (if submit "run it" "paste it"))
+                   table nil nil nil nil fresh))))
+    (cond ((string-empty-p answer) fresh)
+          ((cdr (assoc answer choices)))
+          ((ghostel-dock--named root answer))
+          (t answer))))
+
+;;;###autoload
+(defun ghostel-dock-paste (command &optional root submit name)
+  "Paste COMMAND into ROOT's last-used terminal, shown in the panel and
+selected; SUBMIT presses Return after it.  ROOT is the current buffer's
+by default.  A ghostel-cmd command bound to no terminal goes here.
+
+With none open, one starts, as `ghostel-dock-terminal' starts it.
+Running something in the foreground -- the rows' busy test: OSC 133, or
+a job that is not the shell -- it is not typed into.  One prompt asks
+where, with completion: a new terminal NAME, made unique (the default;
+`ghostel-dock-default-name' when NAME is nil), another of ROOT's
+terminals, or that one anyway.  A new one gets COMMAND at its prompt.
+Return the terminal, or nil when nothing went."
+  (let* ((root (ghostel-dock--norm (or root (ghostel-dock--current-root))))
+         (target (or (ghostel-dock-terminal root) (ghostel-dock-terminal root t))))
+    (if (not (ghostel-dock--busy-p (list :job (ghostel-dock--job target))))
+        (ghostel-dock--paste-into target command submit)
+      (let ((where (ghostel-dock--ask-where root target submit name)))
+        (if (bufferp where)
+            (ghostel-dock--paste-into where command submit)
+          (let ((buffer (or (ghostel-dock--bring-back root where t)
+                            (ghostel-dock--create root where (current-buffer)))))
+            (ghostel-dock-show buffer t)
+            (ghostel-dock--when
+             buffer #'ghostel-dock--ready-p
+             (lambda (ok)
+               (if (not ok)
+                   (message "%s showed no prompt: %s not %s"
+                            (if (buffer-live-p buffer) (buffer-name buffer) where)
+                            command (if submit "run" "pasted"))
+                 (with-current-buffer buffer
+                   (ghostel-paste-string command)
+                   (when submit
+                     (ghostel-send-key "return")))))
+             ghostel-dock-ready-timeout)
+            buffer))))))
 
 
 ;;; The panel

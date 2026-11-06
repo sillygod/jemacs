@@ -363,11 +363,14 @@ value is the terminal lagging behind the window while you drag.")
                         ghostel-dock-show
                         ghostel-dock-rerun)
              :init
-             ;; ghostel-cmd pastes into the dock's terminal, and runs a
-             ;; command bound to a named terminal there, when it can call
-             ;; these; it asks with `fboundp'.
+             ;; ghostel-cmd pastes into the dock's terminal (asking where
+             ;; when it is busy), runs a command bound to a named
+             ;; terminal there, and tells on its footer where RET goes,
+             ;; when it can call these; it asks with `fboundp'.
              (autoload 'ghostel-dock-terminal "ghostel-dock")
              (autoload 'ghostel-dock-run "ghostel-dock")
+             (autoload 'ghostel-dock-paste "ghostel-dock")
+             (autoload 'ghostel-dock-target "ghostel-dock")
              (autoload 'ghostel-dock-terminal-names "ghostel-dock")
              :config
              (setq ghostel-dock-layer-function #'jemacs-ghostel-dock-layer

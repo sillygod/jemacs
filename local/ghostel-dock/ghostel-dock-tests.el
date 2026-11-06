@@ -851,6 +851,254 @@ shell shows a prompt; the panel shows it, selected."
       ;; Unbound: the last-used terminal, as before.
       (should (equal sent `((,(get-buffer "*web:shell*") . "ls")))))))
 
+;;; ghostel-cmd: where a command goes, told before; a busy one asks
+
+(defmacro ghostel-dock-tests--jobs (var &rest body)
+  "BODY with each terminal's foreground job looked up in VAR, an alist
+\(BUFFER PGID . COMMAND); a terminal not in it is idle."
+  (declare (indent 1) (debug t))
+  `(cl-letf (((symbol-function 'ghostel-dock--foreground)
+              (lambda (buffer) (cdr (assq buffer ,var)))))
+     ,@body))
+
+(defmacro ghostel-dock-tests--answering (asked answer &rest body)
+  "BODY with `completing-read' recording what it is asked in ASKED, newest
+first -- (PROMPT CANDIDATES ANNOTATIONS DEFAULT) -- and answering ANSWER,
+an expression of `default'."
+  (declare (indent 2) (debug t))
+  `(cl-letf (((symbol-function 'completing-read)
+              (lambda (prompt table &optional _pred _require _initial _hist default &rest _)
+                (let* ((meta (funcall table "" nil 'metadata))
+                       (annotate (alist-get 'annotation-function (cdr meta)))
+                       (candidates (all-completions "" table)))
+                  (push (list prompt candidates
+                              (mapcar (lambda (c) (substring-no-properties
+                                                   (or (funcall annotate c) "")))
+                                      candidates)
+                              default)
+                        ,asked)
+                  (let ((default default)) (ignore default) ,answer)))))
+     ,@body))
+
+(ert-deftest ghostel-dock-test-target-tells-where-ret-goes ()
+  "What ghostel-cmd's footer says: the terminal RET goes to, by its row's
+name, new when it starts, what it runs and whether RET asks first."
+  (ghostel-dock-tests--with
+    (let ((web (ghostel-dock-tests--project "web"))
+          (api (ghostel-dock-tests--project "api"))
+          (jobs nil))
+      (ghostel-dock-tests--jobs jobs
+        ;; None open: the one that starts, or comes back first.
+        (ghostel-dock-tests--write-save `((,api (:name "server" :dir ,api))))
+        (should (equal (ghostel-dock-target web) '(:label "shell" :new t)))
+        (should (equal (ghostel-dock-target web "dev") '(:label "dev" :new t)))
+        (should (equal (ghostel-dock-target api) '(:label "server" :new t)))
+        (let ((old (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web-ghostel*" web))))
+          ;; An old *PROJECT-ghostel* goes by shell, as its manager row.
+          (should (equal (ghostel-dock-target web)
+                         `(:label "shell" :buffer ,old :job nil :then nil)))
+          (push (cons old '(202 . "docker-compose up")) jobs)
+          (should (equal (ghostel-dock-target web)
+                         `(:label "shell" :buffer ,old :job "docker-compose up" :then ask)))
+          ;; OSC 133 alone says busy too.
+          (setq jobs nil)
+          (with-current-buffer old (setq ghostel--command-running t))
+          (should (eq (plist-get (ghostel-dock-target web) :then) 'ask))
+          (should (eq (plist-get (ghostel-dock-target web) :job) 'running))
+          (with-current-buffer old (setq ghostel--command-running nil))
+          ;; Bound: its own command running there restarts; another asks.
+          (let ((dev (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web:dev*" web))))
+            (with-current-buffer dev
+              (setq ghostel-dock--name "dev"
+                    ghostel-dock--command "npm run dev"
+                    ghostel-dock--command-live (float-time)))
+            (should (equal (ghostel-dock-target web "dev" "npm run dev")
+                           `(:label "dev" :buffer ,dev :job nil :then nil)))
+            (push (cons dev '(300 . "npm run dev")) jobs)
+            (should (eq (plist-get (ghostel-dock-target web "dev" "npm run dev") :then) 'restart))
+            (should (eq (plist-get (ghostel-dock-target web "dev" "npm test") :then) 'ask))
+            ;; Its {{vars}} not filled: maybe its own, restarted; not told.
+            (should-not (plist-get (ghostel-dock-target web "dev") :then))
+            (with-current-buffer dev (setq ghostel-dock--command-live nil))
+            (should (eq (plist-get (ghostel-dock-target web "dev") :then) 'ask))
+            ;; Unbound: still the last used.
+            (should (eq (plist-get (ghostel-dock-target web) :buffer) old))))))))
+
+(ert-deftest ghostel-dock-test-paste-into-an-idle-terminal-as-before ()
+  "An unbound command goes into the last-used terminal when it is idle:
+no question, shown in the panel, selected."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (file (ghostel-dock-tests--file web))
+           (old (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web-ghostel*" web)))
+           (asked nil)
+           (sent nil))
+      (switch-to-buffer file)
+      (ghostel-dock-tests--keys sent
+        (ghostel-dock-tests--answering asked (error "Asked")
+          (should (eq (ghostel-dock-paste "make test" web t "test") old))))
+      (should-not asked)
+      (should (equal (reverse sent) `((,old . "make test") (,old . "return"))))
+      (should (eq (window-buffer (ghostel-dock--panel)) old))
+      (should (eq (selected-window) (ghostel-dock--panel))))))
+
+(ert-deftest ghostel-dock-test-paste-into-a-busy-terminal-asks ()
+  "The last used runs something: nothing is typed into it.  One question:
+a new terminal named after the command (the default), the project's
+other terminals, the busy one last; the new one gets it at its prompt."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (file (ghostel-dock-tests--file web))
+           (dev (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web:dev*" web)))
+           (old (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web-ghostel*" web)))
+           (jobs `((,old 202 . "docker-compose up")))
+           (asked nil)
+           (sent nil))
+      (with-current-buffer dev (setq ghostel-dock--name "dev"))
+      (switch-to-buffer dev)
+      (switch-to-buffer old)
+      (switch-to-buffer file)
+      (ghostel-dock-tests--jobs jobs
+        (ghostel-dock-tests--keys sent
+          (ghostel-dock-tests--answering asked default
+            (let ((logs (ghostel-dock-paste "docker compose logs -f backend" web t "logs")))
+              (should (equal (buffer-name logs) "*web:logs*"))
+              (should (equal (car asked)
+                             '("shell is running docker-compose up; run it in (default logs): "
+                               ("logs" "dev" "shell")
+                               ("  new terminal"
+                                "  idle  *web:dev*"
+                                "  ▶ docker-compose up · paste here anyway  *web-ghostel*")
+                               "logs")))
+              (should (eq (window-buffer (ghostel-dock--panel)) logs))
+              (should (eq (selected-window) (ghostel-dock--panel)))
+              ;; A new shell prints first: it waits for the prompt.
+              (should-not sent)
+              (ghostel-dock-tests--quiet logs)
+              (ghostel-dock--poll-waiters)
+              (should (equal (reverse sent) `((,logs . "docker compose logs -f backend")
+                                              (,logs . "return"))))
+              ;; A paste, not a binding: nothing kept of it.
+              (should-not (buffer-local-value 'ghostel-dock--command logs))
+              ;; Asked again, the name is taken: logs-2, and logs is a choice.
+              (setq asked nil sent nil)
+              (select-window (get-buffer-window file))
+              (switch-to-buffer old)
+              (switch-to-buffer file)
+              (ghostel-dock-paste "docker compose logs -f backend" web nil "logs")
+              (should (equal (nth 1 (car asked)) '("logs-2" "logs" "dev" "shell")))
+              (should (string-prefix-p "shell is running docker-compose up; paste it in (default logs-2)"
+                                       (car (car asked))))
+              (should (get-buffer "*web:logs-2*")))))))))
+
+(ert-deftest ghostel-dock-test-paste-into-a-busy-terminal-other-choices ()
+  "Asked where: another terminal takes it at once, the busy one takes it
+anyway, a name never seen starts that terminal."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (file (ghostel-dock-tests--file web))
+           (dev (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web:dev*" web)))
+           (old (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web-ghostel*" web)))
+           (jobs `((,old 202 . "docker-compose up")))
+           (answer nil)
+           (asked nil)
+           (sent nil))
+      (with-current-buffer dev (setq ghostel-dock--name "dev"))
+      (switch-to-buffer old)
+      (switch-to-buffer file)
+      (ghostel-dock-tests--jobs jobs
+        (ghostel-dock-tests--keys sent
+          (ghostel-dock-tests--answering asked answer
+            (setq answer "dev")
+            (should (eq (ghostel-dock-paste "ls" web nil "ls") dev))
+            (should (equal sent `((,dev . "ls"))))
+            (should (eq (window-buffer (ghostel-dock--panel)) dev))
+            ;; dev is the last used now, and idle: no question.
+            (setq sent nil asked nil)
+            (ghostel-dock-paste "pwd" web nil "pwd")
+            (should-not asked)
+            (should (equal sent `((,dev . "pwd"))))
+            ;; The busy one, by its label: pasted there anyway.
+            (select-window (get-buffer-window file))
+            (switch-to-buffer old)
+            (switch-to-buffer file)
+            (setq sent nil answer "shell")
+            (should (eq (ghostel-dock-paste "q" web nil "q") old))
+            (should (equal sent `((,old . "q"))))
+            ;; A name of its own: that terminal, new.
+            (select-window (get-buffer-window file))
+            (switch-to-buffer old)
+            (switch-to-buffer file)
+            (setq sent nil answer "scratch")
+            (let ((scratch (ghostel-dock-paste "top" web nil "top")))
+              (should (equal (buffer-name scratch) "*web:scratch*"))
+              (ghostel-dock-tests--quiet scratch)
+              (ghostel-dock--poll-waiters)
+              (should (equal sent `((,scratch . "top")))))))))))
+
+(ert-deftest ghostel-dock-test-paste-labels-stay-apart ()
+  "An old *PROJECT-ghostel* reads shell, unless a terminal is named shell
+too: then it goes by its buffer's name.  The new name never takes a
+label, a name, or a saved terminal's name."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (shell (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web:shell*" web)))
+           (old (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web-ghostel*" web)))
+           (jobs `((,old 202 . "docker-compose up")))
+           (asked nil)
+           (sent nil))
+      (with-current-buffer shell (setq ghostel-dock--name "shell"))
+      (ghostel-dock-tests--write-save `((,web (:name "shell-3" :dir ,web))))
+      (switch-to-buffer old)
+      (should (equal (mapcar #'car (ghostel-dock--choices web)) '("*web-ghostel*" "shell")))
+      (ghostel-dock-tests--jobs jobs
+        (ghostel-dock-tests--keys sent
+          (ghostel-dock-tests--answering asked default
+            (ghostel-dock-paste "ls" web nil "shell"))))
+      (should (equal (nth 1 (car asked)) '("shell-2" "shell" "*web-ghostel*")))
+      (should-not sent))))
+
+(ert-deftest ghostel-dock-test-ghostel-cmd-unbound-goes-through-the-dock ()
+  "ghostel-cmd's unbound RET: the footer tells, a busy target asks, the
+row's name the default; an idle one takes it as before."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (file (ghostel-dock-tests--file web))
+           (old (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web-ghostel*" web)))
+           (jobs nil)
+           (asked nil)
+           (sent nil)
+           (ghostel-cmd--targets nil)
+           (ghostel-cmd--root web))
+      (switch-to-buffer old)
+      (switch-to-buffer file)
+      (ghostel-dock-tests--jobs jobs
+        (ghostel-dock-tests--keys sent
+          (ghostel-dock-tests--answering asked default
+            (should (equal (ghostel-cmd--target-for '(:name "logs" :cmd "docker compose logs") web)
+                           "RET → shell"))
+            (should (equal (ghostel-cmd--target-for '(:name "s" :cmd "x" :terminal "dev") web)
+                           "RET → dev (new)"))
+            (funcall (ghostel-cmd--deliver-to nil "logs") "docker compose logs" nil)
+            (should-not asked)
+            (should (equal sent `((,old . "docker compose logs"))))
+            (setq sent nil ghostel-cmd--targets nil)
+            (select-window (get-buffer-window file))
+            (switch-to-buffer old)
+            (switch-to-buffer file)
+            (push (cons old '(202 . "docker-compose up")) jobs)
+            (should (equal (ghostel-cmd--target-for '(:name "logs" :cmd "docker compose logs") web)
+                           "RET → shell ▶ docker-compose up: asks"))
+            (funcall (ghostel-cmd--deliver-to nil "logs") "docker compose logs" t)
+            (should (equal (nth 3 (car asked)) "logs"))
+            (should-not sent)
+            (let ((logs (get-buffer "*web:logs*")))
+              (should logs)
+              (ghostel-dock-tests--quiet logs)
+              (ghostel-dock--poll-waiters)
+              (should (equal (reverse sent) `((,logs . "docker compose logs")
+                                              (,logs . "return")))))))))))
+
 
 ;;; Phase 2: after a restart
 
