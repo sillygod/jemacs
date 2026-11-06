@@ -1050,10 +1050,11 @@ status in magit, or `vc-dir' without magit."
      s (read-string "Note: " (ghostherd-session-notes s)))))
 
 (defun ghostherd-sidebar-interrupt ()
-  "Send Escape to the session at point."
+  "Interrupt the session at point: Escape, or Ctrl+C for a grok at work
+(`ghostherd-interrupt')."
   (interactive)
   (when-let* ((s (ghostherd--sidebar-session-at-point)))
-    (ghostherd-interrupt s)))
+    (message "%s" (ghostherd-interrupt s))))
 
 (defun ghostherd-sidebar-abort ()
   "Send C-c to the session at point."

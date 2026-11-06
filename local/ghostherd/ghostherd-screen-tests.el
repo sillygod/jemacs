@@ -2579,6 +2579,39 @@ the box that are not its prompt -- a draft -- do not."
           (ghostherd-tests--with-transcript c (ghostherd-tests--entries 'lead-reply 'lead-turn)
             (should (eq (car (poll c early)) 'working))))))))
 
+(ert-deftest ghostherd-test-the-herds-ctrl-c-stops-a-grok-turn ()
+  "The herd sends grok Ctrl+C only while its live screen shows a turn under
+way.  Its screen at rest soon after -- its box at the foot, no spinner,
+no Ctrl+c:cancel -- that Ctrl+C stopped the turn, whatever grok drew: a
+permission card it cancelled went with nothing in its place.  Not with
+no Ctrl+C sent, nor one long ago, nor while it is still at work."
+  (ghostherd-tests--with-herd ((ghostherd--ctrl-c-at (make-hash-table :test 'equal)))
+    (let ((g (ghostherd-tests--session :name "g" :kind 'grok :backend 'fake :state 'blocked))
+          (rest (string-join (list "  [Click here to Upgrade] or use Ctrl+O"
+                                   (concat "  ╭" (make-string 60 ?─) "╮") (concat "  │ ❯" (make-string 57 ? ) "│")
+                                   (concat "  ╰" (make-string 30 ?─) " Grok 4.7 (xhigh) ─╯") ""
+                                   "  Shift+Tab:mode  │  Ctrl+x:shortcuts" "")
+                             "\n")))
+      (cl-flet ((poll (screen)
+                  (puthash "g" (list 'blocked "Tool permission requested" (time-subtract (current-time) 5))
+                           ghostherd--reports)
+                  (let ((ghostherd-tests--fake-screen screen))
+                    (ghostherd-poll-session g)
+                    (prog1 (cons (ghostherd-session-state g) (ghostherd-session-state-reason g))
+                      (setf (ghostherd-session-state g) 'blocked)))))
+        ;; No Ctrl+C of the herd's: its report wins, as before.
+        (should (eq (car (poll rest)) 'blocked))
+        ;; One long ago: the same.
+        (puthash "g" (- (float-time) 60) ghostherd--ctrl-c-at)
+        (should (eq (car (poll rest)) 'blocked))
+        ;; Just sent, and at rest now: stopped.
+        (puthash "g" (- (float-time) 2) ghostherd--ctrl-c-at)
+        (should (equal (poll rest) '(done . "interrupted")))
+        (should (string-match-p "the herd's Ctrl\\+C left it at rest" (ghostherd-log-entry-text (cadr ghostherd--log))))
+        ;; Just sent, still at work: not yet.
+        (should-not (ghostherd--ctrl-c-stopped-p
+                     g (replace-regexp-in-string "Shift\\+Tab:mode" "Shift+Tab:mode  │  Ctrl+c:cancel" rest)))))))
+
 (defconst ghostherd-tests--interrupt-lines
   '("{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-11-06T07:23:12.078Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"The user doesn't want to proceed with this tool use. The tool use was rejected.\",\"is_error\":true,\"tool_use_id\":\"toolu_1\"}]}}"
     "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"2026-11-06T07:23:12.079Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"[Request interrupted by user for tool use]\"}]}}"
