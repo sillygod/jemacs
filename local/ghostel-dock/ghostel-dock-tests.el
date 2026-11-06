@@ -70,6 +70,10 @@
           (ghostel-dock--save-timer nil)
           (ghostel-dock--waiters nil)
           (ghostel-dock--wait-timer nil)
+          (ghostel-dock--unseen nil)
+          (ghostel-dock-notify-after 10)
+          ;; Batch Emacs's one frame reports no focus: never notify outside.
+          (ghostel-dock-notify-system nil)
           (project-find-functions (list #'ghostel-dock-tests--find-project))
           (project--list nil)
           (ghostel-dock-tests--tmp
@@ -1284,6 +1288,227 @@ at it says meanwhile."
             (cl-letf (((symbol-function 'ghostel-dock--foreground) #'ignore))
               (ghostel-dock--poll-waiters))
             (should (equal (car sent) (cons dev "return")))))))))
+
+;;; A command finished out of sight
+
+(defun ghostel-dock-tests--ran (buffer secs status)
+  "BUFFER's shell ran a command SECS long that ended with STATUS: its
+OSC 133 C, then its D."
+  (run-hook-with-args 'ghostel-command-start-functions buffer)
+  (with-current-buffer buffer
+    (setq ghostel-dock--command-at (- (float-time) secs)))
+  (run-hook-with-args 'ghostel-command-finish-functions buffer status))
+
+(defmacro ghostel-dock-tests--messages (var &rest body)
+  "BODY with what goes to the echo area recorded in VAR, newest first."
+  (declare (indent 1) (debug t))
+  `(cl-letf (((symbol-function 'message)
+              (lambda (format &rest args)
+                (when format (push (apply #'format-message format args) ,var)))))
+     ,@body))
+
+(defvar ghostel-dock-tests--muted nil
+  "Echo-area text a test does not look at.")
+
+(ert-deftest ghostel-dock-test-finish-texts ()
+  (should (equal (ghostel-dock--duration 45.7) "45s"))
+  (should (equal (ghostel-dock--duration 192) "3m 12s"))
+  (should (equal (ghostel-dock--duration 3900) "1h 5m"))
+  (should (equal (substring-no-properties (ghostel-dock--finish-words 1 192))
+                 "finished ✗ 1 · 3m 12s"))
+  (should (equal (substring-no-properties (ghostel-dock--finish-words 0 45)) "finished ✓ · 45s"))
+  (should (equal (ghostel-dock--finish-words nil 45) "finished · 45s"))
+  (should (equal (substring-no-properties
+                  (ghostel-dock--finished-text '(:status 1 :secs 192 :at 100) 220))
+                 "● not looked at: finished ✗ 1 · 3m 12s, 2m ago"))
+  (should (equal (ghostel-dock--finished-dot '(:finished nil)) ""))
+  (should (eq (get-text-property 0 'face (ghostel-dock--finished-dot '(:finished (:status 0))))
+              'success)))
+
+(ert-deftest ghostel-dock-test-finish-told-out-of-sight ()
+  "A command that ran long and finishes where no window shows it says so
+in the echo area, and marks its terminal."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (test (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web:test*" web)))
+           (said nil))
+      (ghostel-dock-tests--messages said
+        (ghostel-dock-tests--ran test 192 1))
+      (should (equal said '("*web:test* finished ✗ 1 · 3m 12s")))
+      (let ((finished (buffer-local-value 'ghostel-dock--finished test)))
+        (should (eql (plist-get finished :status) 1))
+        (should (>= (plist-get finished :secs) 192))
+        (should (< (- (float-time) (plist-get finished :at)) 5)))
+      (should (equal ghostel-dock--unseen (list test)))
+      (should (plist-get (ghostel-dock--info test) :finished))
+      ;; The time runs from the first C: `make && make test' sends two.
+      (run-hook-with-args 'ghostel-command-start-functions test)
+      (with-current-buffer test (setq ghostel-dock--command-at (- (float-time) 45)))
+      (run-hook-with-args 'ghostel-command-start-functions test)
+      (setq said nil)
+      (ghostel-dock-tests--messages said
+        (run-hook-with-args 'ghostel-command-finish-functions test 0))
+      (should (equal said '("*web:test* finished ✓ · 45s")))
+      ;; The newest finish is the one marked.
+      (should (eql (plist-get (buffer-local-value 'ghostel-dock--finished test) :status) 0)))))
+
+(ert-deftest ghostel-dock-test-finish-quiet-when-seen-quick-or-not-a-terminal ()
+  "Nothing is told of a finish on screen, a quick one, a prompt redrawn,
+an agent's buffer, or with `ghostel-dock-notify-after' nil."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (shown (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web:shown*" web)))
+           (hidden (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web:hidden*" web)))
+           (agent (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*ghostherd:web*" web)))
+           (said nil))
+      (with-current-buffer agent (setq-local ghostherd-session-id "abc"))
+      (ghostel-dock-show shown)
+      (ghostel-dock-tests--messages said
+        ;; On screen: seen finishing.
+        (ghostel-dock-tests--ran shown 300 2)
+        ;; Quick.
+        (ghostel-dock-tests--ran hidden 9 1)
+        ;; A prompt redrawn: a D with no C.
+        (run-hook-with-args 'ghostel-command-finish-functions hidden 1)
+        ;; Not a terminal of the dock's.
+        (ghostel-dock-tests--ran agent 300 0)
+        (let ((ghostel-dock-notify-after nil))
+          (ghostel-dock-tests--ran hidden 300 0)))
+      (should-not said)
+      (should-not ghostel-dock--unseen)
+      (dolist (buffer (list shown hidden agent))
+        (should-not (buffer-local-value 'ghostel-dock--finished buffer)))
+      ;; The status is kept all the same.
+      (should (eql (buffer-local-value 'ghostel-dock--status shown) 2)))))
+
+(ert-deftest ghostel-dock-test-finish-quiet-after-the-dock-s-interrupt ()
+  "A bound command restarted: the dock's Ctrl-C ends it, and that end is
+not told of, even with the panel hidden meanwhile.  The command run
+after it is."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (file (ghostel-dock-tests--file web))
+           (dev (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web:dev*" web)))
+           (said nil)
+           (sent nil))
+      (switch-to-buffer file)
+      (run-hook-with-args 'ghostel-command-start-functions dev)
+      (with-current-buffer dev
+        (setq ghostel-dock--name "dev"
+              ghostel-dock--command "npm run dev"
+              ghostel-dock--command-live (float-time)
+              ghostel-dock--command-at (- (float-time) 600)
+              ghostel--command-running t))
+      (ghostel-dock-tests--keys sent
+        (ghostel-dock-tests--messages said
+          (ghostel-dock-run "npm run dev" "dev" web t)
+          (should (equal sent `((,dev . C-c))))
+          ;; Hidden before the old one stops.
+          (ghostel-dock-hide)
+          (with-current-buffer dev (setq ghostel--command-running nil))
+          (run-hook-with-args 'ghostel-command-finish-functions dev 130)
+          (should-not (cl-remove-if (lambda (text) (string-prefix-p "Restarting" text)) said))
+          (should-not (buffer-local-value 'ghostel-dock--hush dev))
+          (ghostel-dock--poll-waiters)
+          (should (equal (car sent) (cons dev "return")))
+          ;; The new run, out of sight, ends: that is news.
+          (ghostel-dock-tests--ran dev 30 1)))
+      (should (equal (car said) "*web:dev* finished ✗ 1 · 30s")))))
+
+(ert-deftest ghostel-dock-test-finish-mark-clears-when-shown ()
+  "The mark stays until the terminal shows: in the panel, in a window, the
+manager opening it.  A preview while the manager is up does not count."
+  (ghostel-dock-tests--with-manager
+    (ghostel-dock-tests--messages ghostel-dock-tests--muted
+      (ghostel-dock-tests--ran test 60 1))
+    (ghostel-dock--refresh t)
+    ;; The row: a dot before its name; the details: what finished.
+    (let ((lines (ghostel-dock-tests--manager-lines)))
+      (should (string-match-p "\\` +● test +idle +✗ 1" (nth 2 lines))))
+    (ghostel-dock-tests--goto-row test)
+    (should (string-match-p "● not looked at: finished ✗ 1 · 1m 0s, just now"
+                            (buffer-substring-no-properties ghostel-dock--preview-start
+                                                            (point-max))))
+    ;; Previewed while the manager shows: still marked.
+    (ghostel-dock--preview)
+    (should (eq (window-buffer (ghostel-dock--panel)) test))
+    (ghostel-dock--note-seen)
+    (should (buffer-local-value 'ghostel-dock--finished test))
+    ;; q: the panel goes back; the terminal never showed for real.
+    (execute-kbd-macro (kbd "q"))
+    (ghostel-dock--note-seen)
+    (should (buffer-local-value 'ghostel-dock--finished test))
+    ;; Shown in a window by other means: seen.
+    (with-selected-window (get-buffer-window api-file)
+      (switch-to-buffer test))
+    (ghostel-dock--note-seen)
+    (should-not (buffer-local-value 'ghostel-dock--finished test))
+    (should-not ghostel-dock--unseen)
+    (should (memq #'ghostel-dock--note-seen (default-value 'window-buffer-change-functions)))
+    (should (memq #'ghostel-dock--note-seen
+                  (default-value 'window-selection-change-functions)))))
+
+(ert-deftest ghostel-dock-test-finish-mark-clears-in-the-panel ()
+  "Showing the terminal in the panel clears its mark at once; RET in the
+manager too.  A killed one leaves the list."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (file (ghostel-dock-tests--file web))
+           (a (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web:a*" web)))
+           (b (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web:b*" web)))
+           (c (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web:c*" web))))
+      (switch-to-buffer file)
+      (ghostel-dock-tests--messages ghostel-dock-tests--muted
+        (dolist (buffer (list a b c))
+          (ghostel-dock-tests--ran buffer 20 0)))
+      (should (= 3 (length ghostel-dock--unseen)))
+      (ghostel-dock-show a)
+      (should-not (buffer-local-value 'ghostel-dock--finished a))
+      (should-not (memq a ghostel-dock--unseen))
+      (ghostel-dock-hide)
+      (ghostel-dock-manager)
+      (with-current-buffer ghostel-dock--buffer-name
+        (ghostel-dock-tests--goto-row b)
+        (execute-kbd-macro (kbd "RET")))
+      (should (eq (window-buffer (ghostel-dock--panel)) b))
+      (should-not (buffer-local-value 'ghostel-dock--finished b))
+      (let ((kill-buffer-query-functions nil)
+            (ghostel-query-before-killing nil))
+        (kill-buffer c))
+      (ghostel-dock--note-seen)
+      (should-not ghostel-dock--unseen))))
+
+(ert-deftest ghostel-dock-test-finish-told-outside-when-unfocused ()
+  "With `ghostel-dock-notify-system', a finish is told outside Emacs too
+-- only while no Emacs frame has the focus."
+  (ghostel-dock-tests--with
+    (let* ((web (ghostel-dock-tests--project "web"))
+           (test (ghostel-dock-tests--live (ghostel-dock-tests--terminal "*web:test*" web)))
+           (told nil)
+           (focus nil)
+           (ghostel-dock-notify-system (lambda (title body) (push (list title body) told))))
+      (cl-letf (((symbol-function 'frame-focus-state) (lambda (&rest _) focus)))
+        (ghostel-dock-tests--messages ghostel-dock-tests--muted
+          (setq focus t)
+          (ghostel-dock-tests--ran test 30 0)
+          (should-not told)
+          (setq focus 'unknown)
+          (ghostel-dock-tests--ran test 30 0)
+          (should-not told)
+          (setq focus nil)
+          (ghostel-dock-tests--ran test 30 2)
+          (should (equal told '(("*web:test*" "finished ✗ 2 · 30s"))))
+          ;; osascript: the text goes as its argv, never into the script.
+          (let ((ghostel-dock-notify-system 'osascript)
+                (made nil))
+            (cl-letf (((symbol-function 'make-process)
+                       (lambda (&rest args) (push (plist-get args :command) made)))
+                      ((symbol-function 'executable-find) (lambda (_) "/usr/bin/osascript")))
+              (ghostel-dock-tests--ran test 30 0))
+            (should (equal (car made)
+                           '("osascript" "-e" "on run argv"
+                             "-e" "display notification (item 2 of argv) with title (item 1 of argv)"
+                             "-e" "end run" "*web:test*" "finished ✓ · 30s")))))))))
 
 (provide 'ghostel-dock-tests)
 ;;; ghostel-dock-tests.el ends here
