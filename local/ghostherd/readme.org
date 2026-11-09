@@ -2783,8 +2783,9 @@ words are Traditional Chinese.
 - An item is *live* while an ask in it is open, *quiet* when none is,
   and *done* only once a lead closed it --- never by its quiet: work
   nobody picked up looks as quiet as work finished.  The page adds
-  *收尾* (its asks answered, a PR of its own still open, by the forge)
-  and *等 Jing* (the Inbox has something of yours from an agent in it).
+  *收尾* (its asks answered, a PR of its own still open, by the forge),
+  *等 Jing* (a lead's need open in it, or the Inbox has something of
+  yours from an agent in it) and *沒人接* (below).
 - Across the top, four tiles: the items by status with what their asks
   were (cross-project, FYI, relays, cancelled or failed); the open asks
   with the oldest; what waits on you; the PRs by state.
@@ -2806,11 +2807,31 @@ words are Traditional Chinese.
 - Every PR the window's asks name, by repository: a link, a
   =bitbucket.org/.../pull-requests/N=, or =REPO #N= for a repository
   the herd has seen a link to; with its state from the forge, through
-  the PR chips' own lookup and cache.  A PR is the item's whose ask
-  named it first.
-- *等 Jing*: in phase 1, the Inbox's Needs-you items, each put on the
-  item its agent was last in (a guess, said so), a click away from
-  handling it in the Inbox.
+  the PR chips' own lookup and cache.  A PR is the item's whose ask's
+  answer said it was opened (=開好=, =opened= ... beside its number), else
+  whose answer named it first, else whose ask did.
+- *等 Jing*: first the leads' own lines.  A lead (or primary) ends an
+  answer or a report with a line of its own for each that applies ---
+  =需要 Jing：what the user must do= and =部署：what went where=, either
+  colon, the item's id in brackets after the word when it covers more
+  than one (its role says so).  The herd keeps them as the item's
+  events, from its answers to asks and the reports that end its turns
+  (a report's go to the item of the ask it was answering, else of the
+  last it asked).  A need ends when you mark it 已處理 --- on the Board,
+  or in the Inbox, where each shows as a 需要 Jing item --- when its lead
+  writes need lines in that item again (what is still needed it says
+  again; =需要 Jing：無= ends them all), or when the item is closed.
+  Then, the fallback, the Inbox's Needs-you items, each put on the item
+  its agent was last in (a guess, said so).  A 部署 line marks the PRs
+  it names *已部署* on their chips.
+- *沒人接*: an item quiet for =ghostherd-board-orphan-hours= (4) with a
+  need still open, or whose last ask failed, was cancelled or was left
+  unanswered (its taker stopped without one), and nothing open.
+- A card's timeline shows its *key events* first: the ask that began
+  it, each 需要 Jing (and how it ended) and 部署 line, each PR an answer
+  said was opened and each own PR's merge (the forge's time: GitHub's,
+  or Bitbucket's last update once merged), a request that failed, the
+  closing, what is open; every ask and answer on asking.
 
 It lists every item an ask is open in, and the quiet and done ones of
 the last day (seven on asking, kept in your browser); the herd keeps

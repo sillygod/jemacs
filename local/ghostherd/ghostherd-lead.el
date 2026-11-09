@@ -290,6 +290,17 @@ When an ask fails, or comes back as the herd's answer rather than the
 agent's, say what happened and decide: ask again, ask someone else, or
 ask the user.
 
+The herd puts each ask in a work item on the user's Board, with the ask
+it was made answering.  One that goes on with work you know -- a
+follow-up, a fix after review -- say so: ask NAME --item ID (an item's
+id, or an ask's in it); one that passes on another's answer: --relay-of
+ASK.  \"$GHOSTHERD_HERD\" item lists them; \"$GHOSTHERD_HERD\" item close ID
+once the work is done -- nothing else marks it done.  End an answer or
+a report with a line of its own for each that applies, the item's id in
+brackets after the word when it covers more than one:
+  需要 Jing：what the user must do (\"需要 Jing：無\" once nothing is)
+  部署：what went where -- the PR, the environment
+
 When the work needs a change in another project -- an API it serves, a
 config it owns, a bug on its side -- do not edit its checkout, and do
 not have your agents do it: you do not know its rules, and its own

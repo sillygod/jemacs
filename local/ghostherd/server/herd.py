@@ -34,6 +34,7 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -1166,6 +1167,48 @@ class HerdStore:
             )
             """
         )
+        # What a reply names as its own: the PRs it names (`reply_prs'), and
+        # those it says were opened (`opened_prs') -- a PR is the item's whose
+        # ask's answer said so.  Added after the Board began: its replies are
+        # read again, once, for them.
+        item_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(ask_item)")}
+        if "reply_prs" not in item_cols:
+            self._conn.execute("ALTER TABLE ask_item ADD COLUMN reply_prs TEXT")
+            self._conn.execute("ALTER TABLE ask_item ADD COLUMN opened_prs TEXT")
+            self._conn.execute("UPDATE ask_item SET replied = 0")
+        # A lead's fixed lines (board.fixed_lines): "需要 Jing：..." and
+        # "部署：...", from its answers to asks (`reply', ASK the ask) and the
+        # reports that end its turns (`report', no ask).  ITEM is the ask's,
+        # or -- a report's -- the item the lead was last at work in, found
+        # once its asks are placed (`resolved'); the line may name it (REF).
+        # MSG is its message's hash: one message read twice is one line.  A
+        # need the user marked handled is CLOSED_AT.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS item_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item TEXT,
+                kind TEXT NOT NULL,
+                text TEXT NOT NULL,
+                none INTEGER NOT NULL DEFAULT 0,
+                ref TEXT,
+                ask TEXT,
+                agent TEXT,
+                src TEXT NOT NULL,
+                msg TEXT NOT NULL,
+                at TEXT NOT NULL,
+                resolved INTEGER NOT NULL DEFAULT 0,
+                closed_at TEXT,
+                closed_by TEXT,
+                UNIQUE (msg, kind, text)
+            )
+            """
+        )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS item_events_by_item ON item_events (item)")
+        # Since when lines are kept: replies read again when the Board grew
+        # its events, answered before, are not taken for needs open now.
+        self._conn.execute("INSERT OR IGNORE INTO meta (k, v) VALUES ('board_events_since', ?)",
+                           (datetime.now(timezone.utc).isoformat(),))
         # A line the last sidecar was to make and never did -- it stopped
         # between an answer and its trace -- will not come now: no waiter
         # holds for it, and an answer held for it goes without.
@@ -2744,7 +2787,8 @@ class HerdStore:
             "SELECT a.id, a.reply FROM asks a JOIN ask_item i ON i.ask = a.id "
             "WHERE a.status = 'answered' AND a.reply IS NOT NULL AND length(a.reply) != i.replied"
         ).fetchall()
-        if not new and not replies:
+        waiting = self._conn.execute("SELECT 1 FROM item_events WHERE resolved = 0 LIMIT 1").fetchone()
+        if not new and not replies and not waiting:
             return
         now = datetime.now(timezone.utc).isoformat()
         # Every link first -- a new ask's reply's too: an ask after it may
@@ -2802,20 +2846,190 @@ class HerdStore:
                  json.dumps(board.tickets(body)), 1 if board.fyi(body) else 0, fp, tp))
             self._conn.execute("UPDATE work_items SET updated_at = ? WHERE id = ?", (now, it))
         self._conn.execute("DELETE FROM ask_hints WHERE ask IN (SELECT ask FROM ask_item)")
-        # What each new reply names joins what its ask named.
+        # What each new reply names joins what its ask named; the PRs it
+        # says were opened are its ask's own; a lead's fixed lines in it are
+        # its item's events.
         replies = self._conn.execute(
-            "SELECT a.id, a.reply, i.refs, i.prs, i.tickets, i.from_proj, i.to_proj FROM asks a "
-            "JOIN ask_item i ON i.ask = a.id "
+            "SELECT a.id, a.reply, i.refs, i.prs, i.tickets, i.from_proj, i.to_proj, a.to_name, a.answered_at, "
+            "i.item, a.auto FROM asks a JOIN ask_item i ON i.ask = a.id "
             "WHERE a.status = 'answered' AND a.reply IS NOT NULL AND length(a.reply) != i.replied"
         ).fetchall()
-        for aid, reply, refs, prs, tks, fp, tp in replies:
+        since = (self._conn.execute("SELECT v FROM meta WHERE k = 'board_events_since'").fetchone() or ("",))[0]
+        for aid, reply, refs, prs, tks, fp, tp, by, answered, item, auto in replies:
             refs, prs, tks = json.loads(refs or "[]"), json.loads(prs or "[]"), json.loads(tks or "[]")
             refs += [r for r in board.ask_ids(reply, known, aid) if r not in refs]
-            prs += [list(p) for p in board.pr_refs(reply, repos, (fp, tp)) if list(p) not in prs]
+            mine = [list(p) for p in board.pr_refs(reply, repos, (fp, tp))]
+            prs += [p for p in mine if p not in prs]
             tks += [t for t in board.tickets(reply) if t not in tks]
-            self._conn.execute("UPDATE ask_item SET refs = ?, prs = ?, tickets = ?, replied = ? WHERE ask = ?",
-                               (json.dumps(refs), json.dumps(prs), json.dumps(tks), len(reply), aid))
+            opened = [list(p) for p in board.opened_prs(reply, repos, (fp, tp))]
+            self._conn.execute(
+                "UPDATE ask_item SET refs = ?, prs = ?, tickets = ?, reply_prs = ?, opened_prs = ?, replied = ? WHERE ask = ?",
+                (json.dumps(refs), json.dumps(prs), json.dumps(tks), json.dumps(mine), json.dumps(opened), len(reply), aid))
+            if by and board.is_lead(by, snap) and board.may_have_lines(reply) and (answered or now) >= since:
+                self._note_lines(by, reply, "reply", answered or now, ask=aid, item=item)
+        self._resolve_events()
         self._conn.commit()
+
+    def _note_lines(self, agent: str, text: str, src: str, at: str,
+                    ask: str | None = None, item: str | None = None) -> int:
+        """Keep the fixed lines AGENT wrote in TEXT (board.fixed_lines) as
+        events: from an answer to ASK, in its ITEM, or (SRC `report') from
+        the report that ended its turn, its item found later
+        (`_resolve_events').  One message read twice keeps them once.
+        Returns how many were new.  Caller holds `_mu`."""
+        lines = board.fixed_lines(text)
+        if not lines:
+            return 0
+        msg = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()
+        n = 0
+        for ln in lines:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO item_events (item, kind, text, none, ref, ask, agent, src, msg, at, resolved) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (item, ln["kind"], ln["text"], 1 if ln["none"] else 0, ln["ref"], ask, agent, src, msg, at,
+                 1 if item and not ln["ref"] else 0))
+            n += cur.rowcount
+        return n
+
+    def _resolve_events(self) -> None:
+        """Find the item of each event that has none yet: the one its line
+        names (an item's id, or an ask's); else, for a report, the item of
+        the ask its lead was answering then, else of the last it asked, else
+        of the last answered to it.  Tried once: one with none is the
+        user's to read, under no item.  Caller holds `_mu`."""
+        for eid, agent, at, ref, item in self._conn.execute(
+                "SELECT id, agent, at, ref, item FROM item_events WHERE resolved = 0").fetchall():
+            it = (self._live_item(ref) or self._item_of(ref)) if ref else None
+            if not it and not item:
+                row = (self._conn.execute(
+                    "SELECT id FROM asks WHERE to_name = ? AND delivered_at <= ? "
+                    "AND (answered_at IS NULL OR answered_at >= ?) ORDER BY delivered_at DESC LIMIT 1",
+                    (agent, at, (datetime.fromisoformat(at) - timedelta(seconds=10)).isoformat())).fetchone()
+                       or self._conn.execute(
+                           "SELECT id FROM asks WHERE from_name = ? AND created_at <= ? ORDER BY created_at DESC LIMIT 1",
+                           (agent, at)).fetchone()
+                       or self._conn.execute(
+                           "SELECT id FROM asks WHERE to_name = ? AND answered_at <= ? ORDER BY answered_at DESC LIMIT 1",
+                           (agent, at)).fetchone())
+                it = self._item_of(row[0]) if row else None
+            self._conn.execute("UPDATE item_events SET item = COALESCE(?, item), resolved = 1 WHERE id = ?", (it, eid))
+
+    def note_report_lines(self, session: str, text: str) -> int:
+        """A lead's report -- the words that ended its turn -- read for its
+        fixed lines (`_note_lines').  Only a lead's, or primary's: theirs
+        are the lines the user reads."""
+        if not board.may_have_lines(text):
+            return 0
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            if not board.is_lead(session, self._thread_snap()):
+                return 0
+            n = self._note_lines(session, text, "report", now)
+            if n:
+                self._conn.commit()
+        return n
+
+    def need_close(self, event: int, by: str = "user") -> dict[str, Any]:
+        """The user handled a need (a lead's "需要 Jing" line): it is no longer
+        shown as waiting on them."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            cur = self._conn.execute(
+                "UPDATE item_events SET closed_at = ?, closed_by = ? WHERE id = ? AND kind = 'need' AND closed_at IS NULL",
+                (now, by, int(event)))
+            self._conn.commit()
+        return {"id": int(event), "closed": cur.rowcount == 1}
+
+    def open_needs(self) -> dict[str, Any]:
+        """What the leads' lines say waits on the user now, newest first --
+        for the Inbox, every few seconds: the events alone, not the board."""
+        with self._mu:
+            self._assign_items()
+            events = self._events()
+            rows = {r[0]: (r[1], r[2]) for r in self._conn.execute("SELECT id, title, closed_at FROM work_items")}
+            out = []
+            for item, evs in events.items():
+                title, closed = rows.get(item, (None, None)) if item else (None, None)
+                states = board.need_states(evs, closed)
+                mine = [e for e in evs if states.get(e["id"]) == "open"]
+                if mine and item and not title:
+                    first = self._conn.execute(
+                        "SELECT a.body FROM asks a JOIN ask_item i ON i.ask = a.id WHERE i.item = ? "
+                        "ORDER BY a.created_at LIMIT 1", (item,)).fetchone()
+                    title = board.title(first[0]) if first else ""
+                for e in mine:
+                    out.append(dict(board._event(e), item=item or "", itemTitle=title or ""))
+        out.sort(key=lambda e: -(e["at"] or 0))
+        return {"needs": out}
+
+    def _events(self) -> dict[str | None, list[dict[str, Any]]]:
+        "Every event, by item (None: of no item).  Caller holds `_mu`."
+        cur = self._conn.execute(
+            "SELECT id, item, kind, text, none, ref, ask, agent, src, at, closed_at, closed_by FROM item_events ORDER BY at")
+        names = [d[0] for d in cur.description]
+        out: dict[str | None, list[dict[str, Any]]] = {}
+        for r in cur.fetchall():
+            e = dict(zip(names, r))
+            e["item"] = self._live_item(e["item"]) if e["item"] else None
+            out.setdefault(e["item"], []).append(e)
+        return out
+
+    @staticmethod
+    def _pr_owners(rows: list[dict[str, Any]], extra: dict[str, dict[str, Any]]) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
+        """Whose each pull request is: the item of the ask whose answer said
+        it was opened; else of the first whose answer named it; else of the
+        first to name it.  And, for each one said opened, by which ask and
+        when.  EXTRA holds each ask's reply_prs and opened_prs."""
+        owner: dict[str, str] = {}
+        replied: dict[str, str] = {}
+        opened: dict[str, dict[str, Any]] = {}
+        for r in sorted(rows, key=lambda r: r["answered_at"] or r["created_at"]):
+            x = extra.get(r["id"]) or {}
+            for p in x.get("opened") or []:
+                k = board.pr_key(p)
+                if k not in opened:
+                    opened[k] = {"ask": r["id"], "at": r["answered_at"] or r["created_at"], "item": r["item"],
+                                 "by": board.taker(r)}
+            for p in x.get("replied") or []:
+                replied.setdefault(board.pr_key(p), r["item"])
+        for r in sorted(rows, key=lambda r: r["created_at"]):
+            for p in r["prs"]:
+                k = board.pr_key(p)
+                owner.setdefault(k, (opened.get(k) or {}).get("item") or replied.get(k) or r["item"])
+        return owner, opened
+
+    @staticmethod
+    def _deployed(events: dict[str | None, list[dict[str, Any]]], prs_of: dict[str, list[list[Any]]],
+                  repos: dict[str, tuple[str, str]], proj_of_item: dict[str, list[str]]) -> dict[str, dict[str, Any]]:
+        """Each pull request a 部署 line names -- by its link, `REPO #N', or a
+        bare `#N' of its item's own -- with the last such line."""
+        out: dict[str, dict[str, Any]] = {}
+        for item, evs in events.items():
+            mine = {board.pr_key(p): p for p in prs_of.get(item or "", [])}
+            for e in evs:
+                if e["kind"] != "deploy":
+                    continue
+                keys = [board.pr_key(p) for p in board.pr_refs(e["text"], repos, proj_of_item.get(item or "", []))]
+                for m in re.finditer(r"(?<![\w/])#(\d{1,6})(?!\d)", e["text"]):
+                    keys += [k for k, p in mine.items() if p[3] == int(m.group(1))]
+                for k in keys:
+                    out[k] = {"at": e["at"], "text": e["text"], "item": item}
+        return out
+
+    def _board_state(self):
+        """What a board is made of, read at once: the snapshot, the asks
+        with their items, the items, the events by item, what each reply
+        named as its own, the repositories known.  Caller holds `_mu`."""
+        self._assign_items()
+        snap = self._thread_snap()
+        rows = self._board_rows("ORDER BY a.created_at")
+        items = {r[0]: {"id": r[0], "title": r[1], "labels": json.loads(r[2] or "[]"), "closed_at": r[3], "closed_by": r[4]}
+                 for r in self._conn.execute(
+                     "SELECT id, title, labels, closed_at, closed_by FROM work_items WHERE merged_into IS NULL")}
+        extra = {r[0]: {"replied": json.loads(r[1] or "[]"), "opened": json.loads(r[2] or "[]")}
+                 for r in self._conn.execute("SELECT ask, reply_prs, opened_prs FROM ask_item WHERE opened_prs IS NOT NULL")}
+        repos = {r[0]: (r[1], r[2]) for r in self._conn.execute("SELECT repo, host, owner FROM board_repos")}
+        return snap, rows, items, self._events(), extra, repos
 
     def board(self, days: float = 1) -> dict[str, Any]:
         """The page's Board tab: every item an ask is open in, and those that
@@ -2827,28 +3041,24 @@ class HerdStore:
         now = datetime.now(timezone.utc)
         cutoff = (now - timedelta(days=days)).isoformat()
         with self._mu:
-            self._assign_items()
-            snap = self._thread_snap()
-            rows = self._board_rows("ORDER BY a.created_at")
-            items = {r[0]: {"id": r[0], "title": r[1], "labels": json.loads(r[2] or "[]"), "closed_at": r[3]}
-                     for r in self._conn.execute(
-                         "SELECT id, title, labels, closed_at FROM work_items WHERE merged_into IS NULL")}
+            snap, rows, items, events, extra, repos = self._board_state()
         by_item: dict[str, list[dict[str, Any]]] = {}
-        owner: dict[str, str] = {}
         known = {}
         proj_of = {}
         for r in rows:
             by_item.setdefault(r["item"], []).append(r)
             known[r["id"]] = r["item"]
             proj_of[r["id"]] = r["to_proj"]
-            for p in r["prs"]:
-                owner.setdefault(board.pr_key(p), r["item"])
+        owner, opened = self._pr_owners(rows, extra)
+        deployed = self._deployed(events, {it: [p for a in asks for p in a["prs"]] for it, asks in by_item.items()},
+                                  repos, {it: [p for a in asks for p in (a["from_proj"], a["to_proj"]) if p]
+                                          for it, asks in by_item.items()})
         cards, more = [], False
         for it, asks in by_item.items():
             if it not in items:
                 continue
-            c = board.card(items[it], asks, snap, owner, known)
-            if c["status"] == "live" or board.last_at(asks) >= cutoff:
+            c = board.card(items[it], asks, snap, owner, known, events.get(it), opened, deployed)
+            if c["status"] == "live" or c["needs"] or (c["last"] or 0) >= board.ms(cutoff):
                 cards.append(c)
             else:
                 more = True
@@ -2859,8 +3069,13 @@ class HerdStore:
             if r["how"] == "relay" and r["ref"]:
                 r["src_proj"] = proj_of.get(r["ref"])
         open_rows = [r for r in rows if r["status"] in ASK_OPEN]
+        # A need under no item -- a report from a lead with no asks -- is the
+        # user's all the same.
+        loose = [board._event(e) for e, st in
+                 ((e, board.need_states(events.get(None, [])).get(e["id"])) for e in events.get(None, []))
+                 if st == "open"]
         return {
-            "items": cards, "waits": board.waits(open_rows, snap), "edges": board.edges(recent),
+            "items": cards, "waits": board.waits(open_rows, snap), "edges": board.edges(recent), "needs": loose,
             # `xproj', not `cross': Emacs reads a key `cross' as a card's flag.
             "counts": {"asks": len(recent),
                        "xproj": sum(1 for r in recent if r["from_proj"] and r["to_proj"] and r["from_proj"] != r["to_proj"]),
@@ -2874,15 +3089,23 @@ class HerdStore:
         "One item whole: its card and its timeline (board.timeline), by its id or an ask's."
         with self._mu:
             it = self._resolve_item(ref)
-            snap = self._thread_snap()
-            rows = self._board_rows("WHERE i.item = ? ORDER BY a.created_at", (it,))
-            row = self._conn.execute("SELECT id, title, labels, closed_at FROM work_items WHERE id = ?", (it,)).fetchone()
-            known = {r[0]: r[1] for r in self._conn.execute("SELECT ask, item FROM ask_item")}
-        item = {"id": row[0], "title": row[1], "labels": json.loads(row[2] or "[]"), "closed_at": row[3]}
+            snap, all_rows, items, events, extra, repos = self._board_state()
+            row = self._conn.execute("SELECT id, title, labels, closed_at, closed_by FROM work_items WHERE id = ?",
+                                     (it,)).fetchone()
+        rows = [r for r in all_rows if r["item"] == it]
+        known = {r["id"]: r["item"] for r in all_rows}
+        item = {"id": row[0], "title": row[1], "labels": json.loads(row[2] or "[]"), "closed_at": row[3], "closed_by": row[4]}
         if not rows:
             raise ValueError(f"item {it} has no asks left: the herd keeps asks {HISTORY_SECONDS // 86400} days")
-        out = board.card(item, rows, snap, known=known)
-        out["events"] = board.timeline(rows)
+        owner, opened = self._pr_owners(all_rows, extra)
+        by_item: dict[str, list[dict[str, Any]]] = {}
+        for r in all_rows:
+            by_item.setdefault(r["item"], []).append(r)
+        deployed = self._deployed(events, {i: [p for a in asks for p in a["prs"]] for i, asks in by_item.items()},
+                                  repos, {i: [p for a in asks for p in (a["from_proj"], a["to_proj"]) if p]
+                                          for i, asks in by_item.items()})
+        out = board.card(item, rows, snap, owner, known, events.get(it), opened, deployed)
+        out["events"] = board.timeline(rows, events.get(it), {k: o for k, o in opened.items() if o["item"] == it}, item)
         out["asksOf"] = [{"ask": r["id"], "from": r["from_name"], "to": board.taker(r), "status": r["status"],
                           "how": r["how"], "pinned": bool(r["pinned"]), "at": board.ms(r["created_at"]),
                           "head": board.head(r["body"], 90)} for r in rows]
@@ -4878,6 +5101,10 @@ class HerdStore:
             self._conn.commit()
         if closed and later:
             self._trace_soon(closed)
+        # A lead's words that end its turn may end with its fixed lines --
+        # "需要 Jing：...", "部署：..." -- which the Board keeps (board.py).
+        if last and state in ("done", "waiting", "idle", "auto"):
+            self.note_report_lines(session, last)
         return {"session": session, "state": state, "closed_ask": closed}
 
     def _not_its_own(self, session: str, cli: str | None, pid: int | None,
@@ -5535,6 +5762,8 @@ class HerdStore:
         # with none -- and those merged into one of them.
         self._conn.execute("DELETE FROM ask_item WHERE ask NOT IN (SELECT id FROM asks)")
         self._conn.execute("DELETE FROM ask_hints WHERE ask NOT IN (SELECT id FROM asks)")
+        self._conn.execute("DELETE FROM item_events WHERE at < ? AND (item IS NULL OR item NOT IN "
+                           "(SELECT item FROM ask_item))", (cutoff,))
         for _ in range(3):
             self._conn.execute(
                 "DELETE FROM work_items WHERE id NOT IN (SELECT item FROM ask_item) "

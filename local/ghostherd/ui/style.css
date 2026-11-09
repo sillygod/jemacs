@@ -1989,9 +1989,12 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 .boardpage .st-jing { --c: var(--minus); }
 .boardpage .st-tail { --c: #56d364; }
 .boardpage .st-quiet { --c: var(--muted); }
+.boardpage .st-orphan { --c: var(--warn); }
 .boardpage .st-done { --c: #3d444d; }
 .boardpage .s-opn { --c: var(--accent); } .boardpage .s-mrg { --c: var(--meta); }
 .boardpage .s-off { --c: #484f58; } .boardpage .s-unk { --c: var(--warn); }
+.boardpage .s-dep { --c: var(--plus); }
+.boardpage .warn { color: var(--warn); }
 
 /* 1. The tiles. */
 .bdstrip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 4px; }
@@ -2100,6 +2103,10 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 .boardpage .bdtl .ft { color: var(--muted); font-family: var(--mono); font-size: 11px; }
 .boardpage .bk-ask { --kc: var(--accent); } .boardpage .bk-handoff { --kc: #d2a8ff; } .boardpage .bk-answer { --kc: var(--plus); }
 .boardpage .bk-failed { --kc: var(--minus); } .boardpage .bk-cancelled { --kc: #6e7681; }
+.boardpage .bk-need { --kc: var(--minus); } .boardpage .bk-deploy { --kc: var(--plus); } .boardpage .bk-open { --kc: var(--accent); }
+.boardpage .bk-merge { --kc: #bc8cff; } .boardpage .bk-closed { --kc: #56d364; }
+.boardpage .bdtl li.past .tx { color: var(--muted); }
+.boardpage .bdtl .nst { margin-left: 6px; font-size: 10.5px; color: var(--muted); border: 1px dashed var(--line); border-radius: 999px; padding: 0 6px; }
 .boardpage .bk-cancelled .tx { color: var(--muted); }
 
 /* 4. The PRs, by repository. */
@@ -2153,4 +2160,26 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
   .boardpage .prt td:nth-child(5) { grid-column: 1 / -1; grid-row: 3; }
   .boardpage .prt td.pat { grid-column: 4; grid-row: 1; text-align: right; }
   .boardpage .prt tr.rg th { border-bottom: 1px solid var(--line); }
+}
+
+/* Phase 2: the leads' fixed lines -- what waits on Jing, with Handled, and
+   what was deployed -- and an item nobody has. */
+.boardpage .bdneed { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding: 1px 0; }
+.boardpage .bdneed + .bdneed { border-top: 1px dashed var(--line); margin-top: 2px; padding-top: 3px; }
+.boardpage .bdneed .ntext { font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
+.boardpage .nmeta { color: var(--muted); font-size: 11px; font-family: var(--mono); }
+.boardpage .bddone { margin-left: auto; font-size: 11.5px; color: var(--plus); border: 1px solid rgba(63,185,80,.5); border-radius: 5px;
+  background: none; padding: 1px 8px; cursor: pointer; white-space: nowrap; }
+.boardpage .bddone:hover { border-color: var(--plus); }
+.boardpage .bddone:disabled { opacity: .5; cursor: default; }
+.boardpage .bddep { display: flex; gap: 8px; margin-top: 5px; font-size: 12.5px; }
+.boardpage .bddep .bl { --c: var(--plus); }
+.boardpage .bddep > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.boardpage .ji.line { border-left-color: var(--minus); }
+.boardpage .ji .bddone { margin-top: 4px; }
+.boardpage .jl + .wl-h, .boardpage .phase2 + .wl-h { margin-top: 10px; }
+.boardpage .wl-h { font-size: 11.5px; color: var(--muted); margin: 8px 0 4px; font-weight: 600; }
+.boardpage .wl-h.red { color: var(--minus); }
+@media (max-width: 640px) {
+  .boardpage .bddone { min-height: 30px; padding: 2px 12px; }
 }

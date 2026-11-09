@@ -36,7 +36,9 @@ def _items(h, days=1):
 
 
 def _item_of(h, ask_id):
+    "The item ASK_ID is in, the asks not placed yet placed first."
     with h._mu:
+        h._assign_items()
         return h._item_of(ask_id)
 
 
@@ -358,3 +360,188 @@ def test_rpc_methods_and_agents(tmp_path, monkeypatch):
     from jsonrpc_handler import AGENT_METHODS
     assert {"herd_items", "herd_board_item", "herd_item_edit"} <= AGENT_METHODS
     assert "herd_board" not in AGENT_METHODS
+
+
+# ---- Phase 2: a lead's fixed lines, who opened a PR, a request that went nowhere ----
+
+
+def test_fixed_lines_either_colon_markdown_and_none():
+    text = ("Done.\n"
+            "需要 Jing：跑 rotate.sh\n"
+            "- **需要Jing:** merge shop #412\n"
+            "部署: shop #412 → production\n"
+            "需要 Jing（c1a2b3）：看一下 billing\n"
+            "這行提到需要 Jing 但不是固定行\n"
+            "需要 Jing：無\n")
+    got = [(x["kind"], x["text"], x["ref"], x["none"]) for x in board.fixed_lines(text)]
+    assert got == [("need", "跑 rotate.sh", None, False), ("need", "merge shop #412", None, False),
+                   ("deploy", "shop #412 → production", None, False), ("need", "看一下 billing", "c1a2b3", False),
+                   ("need", "無", None, True)]
+    assert board.fixed_lines("nothing here") == []
+
+
+def test_opened_prs_by_words_beside_the_number():
+    repos = {"shop": ("bitbucket", "acme")}
+    assert board.opened_prs("#412 開好了：https://bitbucket.org/acme/shop/pull-requests/412", repos) == [
+        ("bitbucket", "acme", "shop", 412)]
+    assert board.opened_prs("Opened shop #413 for review", repos) == [("bitbucket", "acme", "shop", 413)]
+    # Named, not opened: a review, a merge.
+    assert board.opened_prs("Reviewed shop #412; merge it after shop #400", repos) == []
+
+
+def _lead_answer(h, text, item=None):
+    "lead-b answers a handoff from lead-a with TEXT; returns the handoff."
+    out = h.handoff("/src/b", "Please look at it", from_name="lead-a", item=item)
+    _deliver_all(h)
+    h.reply(out["id"], text, from_name="lead-b")
+    return out
+
+
+def test_a_leads_lines_in_its_answer_are_its_items_events(tmp_path):
+    h = _store(tmp_path)
+    out = _lead_answer(h, "Rotated staging.\n需要 Jing：在維護時段跑 rotate.sh\n部署：staging 三個 namespace")
+    c = _items(h)[_item_of(h, out["id"])]
+    assert [(n["text"], n["agent"], n["ask"]) for n in c["needs"]] == [("在維護時段跑 rotate.sh", "lead-b", out["id"])]
+    assert [d["text"] for d in c["deploys"]] == ["staging 三個 namespace"]
+    tl = [(e["kind"], e["head"], e.get("state")) for e in h.board_item(out["id"])["events"] if e["key"]]
+    assert ("need", "在維護時段跑 rotate.sh", "open") in tl and ("deploy", "staging 三個 namespace", None) in tl
+    # A worker's line is not the user's to read.
+    a = h.ask("agy-a2", "check it", from_name="lead-a")
+    _deliver_all(h)
+    h.reply(a["id"], "需要 Jing：給我 token", from_name="agy-a2")
+    assert _items(h)[_item_of(h, a["id"])]["needs"] == []
+
+
+def test_how_a_need_ends(tmp_path):
+    """Replaced by the lead's next need lines in the item; ended by
+    "需要 Jing：無"; handled by the user; and the item closed."""
+    h = _store(tmp_path)
+    out = _lead_answer(h, "需要 Jing：A\n需要 Jing：B")
+    it = _item_of(h, out["id"])
+    assert [n["text"] for n in _items(h)[it]["needs"]] == ["A", "B"]
+    # The lead again, in the item: what it says now is what is needed.
+    _lead_answer(h, "需要 Jing：B, still", item=it)
+    assert [n["text"] for n in _items(h)[it]["needs"]] == ["B, still"]
+    _lead_answer(h, "需要 Jing：無", item=it)
+    assert _items(h)[it]["needs"] == []
+    _lead_answer(h, "需要 Jing：C", item=it)
+    need = _items(h)[it]["needs"][0]
+    assert h.open_needs()["needs"][0]["text"] == "C"
+    assert h.need_close(need["id"]) == {"id": need["id"], "closed": True}
+    assert _items(h)[it]["needs"] == [] and h.open_needs()["needs"] == []
+    _lead_answer(h, "需要 Jing：D", item=it)
+    h.item_edit("close", it, by="lead-a")
+    assert _items(h)[it]["needs"] == []
+
+
+def test_a_leads_report_lines_go_to_the_item_it_was_at(tmp_path):
+    """The words that end a lead's turn: their lines go to the item of the
+    ask it was answering, or the one a line names; read twice, kept once."""
+    h = _store(tmp_path)
+    out = h.handoff("/src/b", "Rotate the key", from_name="lead-a")
+    _deliver_all(h)
+    other = h.ask("agy-a2", "Unrelated work", from_name="lead-a")
+    h.board()
+    msg = "Working on it.\n需要 Jing：approve the maintenance window"
+    h.report("lead-b", state="idle", last=msg)
+    h.report("lead-b", state="idle", last=msg)
+    c = _items(h)[_item_of(h, out["id"])]
+    assert [n["text"] for n in c["needs"]] == ["approve the maintenance window"]
+    # A line naming another item goes there.
+    oi = _item_of(h, other["id"])
+    h.report("lead-b", state="idle", last=f"部署（{oi}）：billing v2 to staging")
+    assert [d["text"] for d in _items(h)[oi]["deploys"]] == ["billing v2 to staging"]
+    # A worker's report is not read for lines.
+    assert h.note_report_lines("agy-a2", "需要 Jing：x") == 0
+
+
+def test_a_pr_is_the_items_whose_answer_said_it_was_opened(tmp_path):
+    """Asked for before it had a number: the answer that says it was opened
+    owns it, not the first ask to name it."""
+    h = _store(tmp_path)
+    review = h.ask("agy-a2", "Look at https://bitbucket.org/acme/shop/pull-requests/40", from_name="lead-a")
+    _deliver_all(h)
+    h.reply(review["id"], "Looks fine", from_name="agy-a2")
+    work = h.ask("agy-a2", "Fix the cart and open a PR", from_name="lead-a")
+    _deliver_all(h)
+    h.reply(work["id"], "Opened https://bitbucket.org/acme/shop/pull-requests/41", from_name="agy-a2")
+    later = h.ask("agy-a2", "Review shop #41 and shop #40 together", from_name="lead-a")
+    items = _items(h)
+    iw, il = _item_of(h, work["id"]), _item_of(h, later["id"])
+    pr41 = {p["id"]: p for p in items[iw]["prs"]}[41]
+    assert pr41["own"] and pr41["opened"]["ask"] == work["id"]
+    assert {p["id"]: p["own"] for p in items[il]["prs"]} == {41: False, 40: False}
+    tl = [(e["kind"], e["head"]) for e in h.board_item(work["id"])["events"] if e["kind"] == "open"]
+    assert tl == [("open", "shop #41 開好")]
+
+
+def test_a_deploy_line_marks_its_prs_deployed(tmp_path):
+    h = _store(tmp_path)
+    work = h.ask("agy-a2", "Fix it", from_name="lead-a")
+    _deliver_all(h)
+    h.reply(work["id"], "Opened https://bitbucket.org/acme/shop/pull-requests/41", from_name="agy-a2")
+    it = _item_of(h, work["id"]) or (h.board() and _item_of(h, work["id"]))
+    _lead_answer(h, "部署：#41 到 production 三站", item=it)
+    pr = _items(h)[it]["prs"][0]
+    assert pr["deployed"]["text"] == "#41 到 production 三站"
+
+
+def test_a_request_that_went_nowhere(tmp_path):
+    """The last ask cancelled, failed, or its taker stopped without
+    answering, nothing open: the card says so (Emacs flags it 沒人接)."""
+    h = _store(tmp_path)
+    a = h.ask("agy-a2", "Do the thing", from_name="lead-a")
+    _deliver_all(h)
+    h.cancel(a["id"])
+    c = _items(h)[_item_of(h, a["id"])]
+    assert c["unanswered"]["ask"] == a["id"] and c["unanswered"]["status"] == "cancelled"
+    b = h.ask("agy-a2", "Again", from_name="lead-a", item=a["id"])
+    assert _items(h)[_item_of(h, a["id"])]["unanswered"] is None
+    _deliver_all(h)
+    h.reply(b["id"], "done", from_name="agy-a2")
+    assert _items(h)[_item_of(h, a["id"])]["unanswered"] is None
+
+
+def test_an_old_item_with_a_need_open_stays_on_the_board(tmp_path):
+    h = _store(tmp_path)
+    out = _lead_answer(h, "需要 Jing：decide on the vendor")
+    h.board()  # its lines read as it came
+    _backdate(h, out["id"], 3 * 24 * 60)
+    with h._mu:
+        h._conn.execute("UPDATE item_events SET at = ?", ((datetime.now(timezone.utc) - timedelta(days=3)).isoformat(),))
+        h._conn.commit()
+    assert _item_of(h, out["id"]) in _items(h, 1)
+
+
+def test_a_need_under_no_item(tmp_path):
+    h = _store(tmp_path)
+    h.report("lead-c", state="idle", last="需要 Jing：tell me which region")
+    out = h.board()
+    assert [n["text"] for n in out["needs"]] == ["tell me which region"]
+    assert h.open_needs()["needs"][0]["item"] == ""
+
+
+def test_the_lines_the_leads_are_taught_are_the_lines_read():
+    """The lead role (ghostherd-lead.el) teaches the two fixed lines as they
+    are to be written: each, as taught, is read back as its kind."""
+    role = (Path(__file__).resolve().parents[2] / "ghostherd-lead.el").read_text(encoding="utf-8")
+    role = role[role.index("(defconst ghostherd--lead-role"):]
+    taught = [ln for ln in role.splitlines() if ln.strip().startswith(("需要 Jing：", "部署："))]
+    assert len(taught) == 2
+    kinds = [board.fixed_lines(ln)[0]["kind"] for ln in taught]
+    assert kinds == ["need", "deploy"]
+    assert board.fixed_lines("需要 Jing：無")[0]["none"]
+
+
+def test_lines_from_before_the_board_kept_them_are_not_needs_now(tmp_path):
+    """A reply answered before the Board kept lines -- read again when it
+    grew them -- is not taken for a need open now."""
+    h = _store(tmp_path)
+    out = _lead_answer(h, "需要 Jing：an old request")
+    with h._mu:
+        h._conn.execute("UPDATE meta SET v = ? WHERE k = 'board_events_since'",
+                        ((datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),))
+        h._conn.execute("DELETE FROM item_events")
+        h._conn.execute("UPDATE ask_item SET replied = 0")
+        h._conn.commit()
+    assert _items(h)[_item_of(h, out["id"])]["needs"] == []
