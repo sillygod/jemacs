@@ -5311,7 +5311,11 @@ when what it said is stale: through the work chips' own lookup and cache
 \(`ghostherd-memory-page--task-ask'), by its rules."
   (let ((last (make-hash-table :test #'equal)))
     (dolist (c cards)
-      (dolist (tk (plist-get c :tickets))
+      ;; A sidecar from before cards named their tickets: its CU- labels.
+      (dolist (tk (or (plist-get c :tickets)
+                      (delq nil (mapcar (lambda (l) (and (stringp l) (string-prefix-p "CU-" l)
+                                                         (list :id (substring l 3) :last (plist-get c :last))))
+                                        (plist-get c :labels)))))
         (let ((id (plist-get tk :id)))
           (when (and (stringp id) (string-match-p "\\`[0-9a-z]+\\'" id))
             (puthash id (max (or (gethash id last) 0) (or (plist-get tk :last) 0)) last)))))

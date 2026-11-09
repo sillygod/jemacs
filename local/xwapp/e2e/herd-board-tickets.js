@@ -116,6 +116,12 @@ async function shoot(page, width, file) {
         await shoot(page, 1360, path.join(SHOTS, "tickets-desk.png"));
       }
       check("desk: nothing asks ClickUp from the page", !intents.some((i) => /clickup|task/.test(i.op)));
+      // From a sidecar before cards named their tickets: their CU- labels.
+      await page.evaluate((p) => GM.boardPatch(Object.assign({}, p, { v: 30,
+        cards: p.cards.map((c) => { const o = Object.assign({}, c); delete o.tickets; return o; }) })), FULL);
+      await sleep(120);
+      check("desk: a sidecar that names no tickets: the cards' CU- labels",
+        (await page.$$eval(".bdtks .bdtk", (rs) => rs.map((r) => r.getAttribute("data-t")))).length === 5);
       check("desk: no page errors", !errors.length, errors);
       await ctx.close();
     }

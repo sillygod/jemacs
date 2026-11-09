@@ -7476,7 +7476,12 @@
   function bdInProj(c) { return !board.proj || (c.projects || []).includes(board.proj); }
   // Narrowed to a ticket -- or to the items with none: with a project too,
   // both hold (a ticket spans projects; one project's part of it).
-  function bdTkIds(c) { return (c.tickets || []).map((t) => t.id); }
+  // A card's tickets: as the sidecar names them, each with when last named;
+  // from one before it did, its CU- labels, named when the item last moved.
+  function bdTks(c) {
+    return c.tickets || (c.labels || []).filter((l) => /^CU-[0-9a-z]+$/.test(l)).map((l) => ({ id: l.slice(3), last: c.last }));
+  }
+  function bdTkIds(c) { return bdTks(c).map((t) => t.id); }
   function bdInTicket(c) {
     if (!board.ticket) return true;
     const ids = bdTkIds(c);
@@ -8058,7 +8063,7 @@
 
   function bdTicketRows(cards) {
     const by = {};
-    cards.forEach((c) => (c.tickets || []).forEach((t) => {
+    cards.forEach((c) => bdTks(c).forEach((t) => {
       const r = by[t.id] || (by[t.id] = { id: t.id, cards: [], last: 0 });
       if (!r.cards.includes(c)) r.cards.push(c);
       r.last = Math.max(r.last, t.last || 0);

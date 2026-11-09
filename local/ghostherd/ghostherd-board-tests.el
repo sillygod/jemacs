@@ -434,6 +434,11 @@ the most lately named first, `ghostherd-board--tickets-max' at most."
           ;; The last look failed: what it knew, said unsure, the miss its error.
           (should (equal (list (plist-get d :type) (plist-get d :unsure) (plist-get d :error) (plist-get d :done))
                          '("closed" t "HTTP 500" t))))
+        ;; A sidecar from before cards named them: their CU- labels.
+        (should (equal (mapcar (lambda (k) (plist-get k :id))
+                               (cl-letf (((symbol-function 'ghostherd-memory-page--chore) #'ignore))
+                                 (ghostherd-board--tickets (list (ghostherd-board-test--card "w9" "quiet" :labels '("CU-86q1" "deploy"))))))
+                       '("86q1")))
         (let ((ghostherd-board--tickets-max 1))
           (should (equal (mapcar (lambda (k) (plist-get k :id))
                                  (cl-letf (((symbol-function 'ghostherd-memory-page--chore) #'ignore))
