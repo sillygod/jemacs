@@ -2244,7 +2244,33 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 .bdg-svg .nd.sel ellipse { stroke: var(--accent); stroke-width: 2.6; fill: rgba(121,192,255,.12); }
 .bdg-svg .nd.dim { opacity: .45; }
 .boardpage .bdfilter { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted);
-  border: 1px solid rgba(121,192,255,.35); background: rgba(121,192,255,.06); border-radius: 8px; padding: 6px 10px; margin-bottom: 10px; }
+  border: 1px solid rgba(121,192,255,.35); background: rgba(121,192,255,.06); border-radius: 8px; padding: 6px 10px; }
+
+/* On top: the stretch the page is of -- 24 hours or 7 days -- and the
+   project or ticket it is narrowed to, one row; then what needs you. */
+.boardpage .bdtop { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.boardpage .bddays { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; flex: none; }
+.boardpage .bdday { background: none; border: 0; padding: 0 14px; min-height: 34px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.boardpage .bdday + .bdday { border-left: 1px solid var(--line); }
+.boardpage .bdday.on { background: rgba(121,192,255,.15); color: var(--accent); font-weight: 600; }
+.boardpage .bdtile .tlr { margin-left: 6px; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px; }
+.boardpage .bdtile .tlr.ing { border-style: dashed; }
+.boardpage .bd-need { margin-bottom: 14px; }
+.boardpage .bd-need > .section:first-child { margin-top: 0; }
+.boardpage .bdneednone { margin: 0 2px 4px; font-size: 12.5px; color: var(--muted); }
+.boardpage .bdneeds { display: flex; flex-direction: column; gap: 8px; max-width: 860px; }
+.boardpage .bd-need .ibtoast { margin-bottom: 8px; }
+.boardpage .bdneedorph { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.boardpage .bdneedorph .bdacts { margin-top: 0; }
+.boardpage .bdneeds .ibcard.open .blk { font-size: 13px; }
+.boardpage .bdneeds .ibopts { gap: 8px; }
+@media (pointer: coarse) {
+  .boardpage .bdday { min-height: 40px; padding: 0 18px; font-size: 14px; }
+}
+@media (max-width: 640px) {
+  .boardpage .bdneeds .ibbtn, .boardpage .bdneeds .iboptbtn,
+  .boardpage .bdneeds .ibreply .ibacts button.ghost.small { flex: 1 1 44%; }
+}
 .boardpage .bdfilter b { color: var(--text); font-family: var(--mono); }
 .boardpage .bdonly span { margin-left: 4px; }
 .boardpage .bdacts { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }

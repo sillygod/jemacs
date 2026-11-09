@@ -3,18 +3,23 @@
 // missed asks for the whole again; the map, the open asks nested under the
 // one they were made answering; work going on open, work at rest folded; a
 // timeline asked for when opened, its FYI and 收到 folded away; the PRs by
-// repository; what waits on Jing, to the Inbox.  The phone: one column, no
+// repository; what needs Jing on top, handled there (herd-board-need.js
+// has it all).  The phone: one column, no
 // sideways scroll at 390 px.  Fixture data (board-fixture.js), Emacs played
 // by the test.  BOARD_SHOTS=DIR saves board-desk.png and board-phone.png.
 const path = require("path");
 const { webkit } = require("playwright");
 const { phonePage, sleep } = require("./herdlib");
-const { FULL, CARDS, TIMELINE } = require("./board-fixture");
+const { FULL, CARDS, TIMELINE, JING } = require("./board-fixture");
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
 const DESK = { viewport: { width: 1360, height: 980 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false };
 const SHOTS = process.env.BOARD_SHOTS || "";
 const ops = (intents, op) => intents.filter((i) => i.op === op);
+// The fixture's waits from the Inbox, as the Inbox sends them.
+const INBOX = JING.filter((j) => !j.line).map((j) => ({ id: j.id, kind: j.kind, group: "need", tag: j.tag,
+  tone: j.kind === "blocked" ? "warn" : "accent", agent: j.agent, cli: "claude", project: "~/src/" + j.project + "/", title: j.title,
+  preview: j.preview, at: j.at, read: false, whyLabel: "", body: j.preview, options: [{ n: 1, label: "Yes" }], replyVia: "lead" }));
 // The page scrolls in #app, not as a document: the whole board is shot in
 // a window as tall as it.
 async function shoot(page, width, file) {
@@ -39,17 +44,19 @@ async function shoot(page, width, file) {
         ops(intents, "board-watch")[0].days === 1, ops(intents, "board-watch"));
       check("desk: until Emacs answers, it says it is reading", (await page.textContent(".bdbody")).includes("讀取"));
       await page.evaluate((p) => GM.boardPatch(p), FULL);
+      // The Inbox's push, as Emacs sends it to the Board too: its two of the fixture's.
+      await page.evaluate((items) => GM.renderInbox({ count: items.length, items }), INBOX);
       await sleep(150);
 
       const tiles = await page.$$eval(".bdtile", (ts) => ts.map((t) => ({ big: t.querySelector(".big").textContent, sub: t.querySelector(".sub").textContent })));
-      check("desk: the tiles count items, open waits, waits on Jing and PRs",
+      check("desk: the tiles count items, open waits, what needs you and PRs",
         tiles.map((t) => t.big).join() === "17,4,4,6", tiles.map((t) => t.big));
       check("desk: the items tile says what the asks were", /34 則 ask：跨專案 9、FYI 4、轉述 1、撤回／失敗 2/.test(tiles[0].sub), tiles[0].sub);
       check("desk: the waits tile names the cross-project pairs and the oldest", /跨專案 2：shop → billing、infra → ops-helm/.test(tiles[1].sub) &&
         /專案內 2/.test(tiles[1].sub) && /最久的開了 20 分/.test(tiles[1].sub), tiles[1].sub);
       check("desk: the board tab's red count: items nobody has, and those waiting on Jing by a lead's line", (await page.textContent("#board-n")) === "2");
-      check("desk: the Jing tile counts the leads' lines and the Inbox's, and the items nobody has",
-        /lead 寫的「需要 Jing」2 件/.test(tiles[2].sub) && /Inbox 等你處理 2 件/.test(tiles[2].sub) && /沒人接 1 項/.test(tiles[2].sub), tiles[2].sub);
+      check("desk: the 要你處理 tile counts what stops an agent and what else needs Jing (the item nobody has rides on its line)",
+        /會卡住 agent 2/.test(tiles[2].sub) && /需要 Jing 2/.test(tiles[2].sub), tiles[2].sub);
 
       const order = await page.$$eval(".bdarea .wi", (ws) => ws.map((w) => w.id.slice(5) + ":" + w.querySelector(".pill").textContent + (w.classList.contains("folded") ? ":f" : "")));
       check("desk: on top what needs Jing's eye -- live, waiting on Jing, nobody's, a PR open -- then the items at rest of some size, folded",
@@ -100,7 +107,7 @@ async function shoot(page, width, file) {
       check("desk: open asks across projects first, a handoff dashed-arrowed", waits[0].startsWith("lead-shop⇢lead-billing") && waits[1].startsWith("lead-infra⇢lead-ops-helm"), waits);
       const chain = await page.$eval(".bdwaits .wait .chain", (c) => c.textContent);
       check("desk: the ask made answering one is nested under it", /└ lead-billing → taxaudit/.test(chain), chain);
-      check("desk: the first two waits on Jing under them", (await page.$$(".bdwaits .wj")).length === 2);
+      check("desk: the open asks do not repeat what needs Jing: it is on top", (await page.$$(".bdwaits .wj")).length === 0);
 
       // Fold and unfold; a timeline asked for when opened.
       await page.click('#bd-w-a3b4c5 .wh');
@@ -149,8 +156,10 @@ async function shoot(page, width, file) {
       await sleep(60);
       check("desk: Handled tells Emacs which need", ops(intents, "board-need-done").map((i) => i.id).join() === "11",
         ops(intents, "board-need-done"));
-      const jl = await page.$$eval(".bd-jing .ji", (ls) => ls.map((l) => (l.classList.contains("line") ? "line:" : "inbox:") + l.querySelector(".bdjline").textContent.slice(0, 6)));
-      check("desk: what waits on Jing: the leads' lines first, the Inbox's after", jl.join("|") === "line:在今晚的維護|line:三個方案選一|inbox:rotate|inbox:Permis", jl);
+      const jl = await page.$$eval(".bdneeds .ibcard", (ls) => ls.map((l) => l.getAttribute("data-id")));
+      check("desk: what needs Jing, on top: what stops an agent first, then the leads' lines", jl.join("|") ===
+        "blocked:pushfix|question:lead-infra:1|need:11|need:12", jl);
+      check("desk: no 等 Jing section at the foot any more", !(await page.$("#bd-jing")) && !(await page.$(".bd-foot")));
 
       // Filters.
       await page.click('[data-act="bd:filter"][data-f="busy"]');
@@ -166,8 +175,8 @@ async function shoot(page, width, file) {
       check("desk: every PR once, by repository", repos.join("|") === "acme/billing 2|acme/ops-helm 2|acme/shop 2", repos);
       const row57 = await page.$$eval(".prt tbody tr:not(.rg)", (rs) => rs.map((r) => r.textContent).find((t) => t.startsWith("#57")));
       check("desk: a PR's item is the one that owns it, with how many more name it", /b1c2d3/.test(row57) && /＋1 項提到/.test(row57), row57);
-      check("desk: 7 days on asking, kept", (await page.$('[data-act="bd:days"][data-days="7"]')) !== null);
-      await page.click('[data-act="bd:days"]');
+      check("desk: 7 days on asking, on top", (await page.$('.bd-top [data-act="bd:days"][data-days="7"]')) !== null);
+      await page.click('[data-act="bd:days"][data-days="7"]');
       await sleep(60);
       check("desk: asks Emacs for 7 days", ops(intents, "board-days").map((i) => i.days).join() === "7");
 
@@ -182,18 +191,14 @@ async function shoot(page, width, file) {
         agent: "lead-infra", cli: "", project: "", title: "在今晚的維護時段跑 rotate.sh", at: Date.now() - 60e3, whyLabel: "A lead's 需要 Jing line",
         body: "在今晚的維護時段跑 rotate.sh", preview: "在今晚的維護時段跑 rotate.sh", state: "", read: false, override: null, event: 11, item: "b1c2d3" }] }));
 
-      // Waits on Jing go to the Inbox.
-      await page.click('.ji [data-act="bd:inbox"]');
+      // Handled on the Board, as the Inbox handles it: the card opened in place.
+      await page.click('.bdneeds [data-act="ib:pick"][data-id="need:11"]');
       await sleep(80);
-      check("desk: what waits on Jing is handled in the Inbox", ops(intents, "inbox-watch").length >= 1 &&
-        ops(intents, "board-unwatch").length === 1 && (await page.getAttribute("#app", "data-view")) === "inbox");
+      await page.click('.bdneeds [data-act="ib:need-done"]');
       await sleep(80);
-      if (!(await page.$('[data-act="ib:need-done"]'))) await page.click('[data-act="ib:pick"][data-id="need:11"]');
-      await sleep(80);
-      await page.click('[data-act="ib:need-done"]');
-      await sleep(80);
-      check("desk: a need is handled from the Inbox", ops(intents, "board-need-done").length === 2 && ops(intents, "board-need-done")[1].id === 11,
-        ops(intents, "board-need-done"));
+      check("desk: a need is handled on the Board, as in the Inbox", ops(intents, "board-need-done").length === 2 &&
+        ops(intents, "board-need-done")[1].id === 11 && (await page.getAttribute("#app", "data-view")) === "board" &&
+        !(await page.$('.bdneeds [data-id="need:11"]')), ops(intents, "board-need-done"));
       check("desk: no page errors", !errors.length, errors);
       await ctx.close();
     }

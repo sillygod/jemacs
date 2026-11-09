@@ -4587,6 +4587,10 @@ NEEDS and asks."
     (_ (equal (plist-get it :group) "need"))))
 
 (defvar ghostherd-inbox--watching nil)
+(defvar ghostherd-inbox--needs-only nil
+  "Non-nil while the page shows only what needs the user -- the Board's
+要你處理 -- so only those items are pushed, the count still of them all:
+on a phone's link the updates are bytes it does not show, and churn.")
 (defvar ghostherd-inbox--timer nil)
 (defvar ghostherd-inbox--sig nil "Signature of the last Inbox push, to skip an unchanged one.")
 (defconst ghostherd-inbox--every 3 "Seconds between Inbox refreshes.")
@@ -4606,17 +4610,20 @@ done ones, and push the rest with the Needs-you count (the tab badge)."
                     items))
            (live (seq-remove (lambda (it) (plist-get it :done)) merged))
            (count (length (seq-filter #'ghostherd-inbox--need-p live)))
-           (sig (ghostherd-memory-page--sig (list count (mapcar (lambda (it)
-                                                    (list (plist-get it :id) (plist-get it :read)
-                                                          (plist-get it :override) (plist-get it :preview)))
-                                                  live)))))
+           (live (if ghostherd-inbox--needs-only (seq-filter #'ghostherd-inbox--need-p live) live))
+           (sig (ghostherd-memory-page--sig (list count ghostherd-inbox--needs-only
+                                                  (mapcar (lambda (it)
+                                                            (list (plist-get it :id) (plist-get it :read)
+                                                                  (plist-get it :override) (plist-get it :preview)))
+                                                          live)))))
       (unless (equal sig ghostherd-inbox--sig)
         (setq ghostherd-inbox--sig sig)
         (ghostherd-memory-page--js
          "renderInbox"
-         (list :items (ghostherd-memory-page--vec
-                       (mapcar (lambda (it) (ghostherd-memory-page--plist-no-done it)) live))
-               :count count))))))
+         (append (list :items (ghostherd-memory-page--vec
+                               (mapcar (lambda (it) (ghostherd-memory-page--plist-no-done it)) live))
+                       :count count)
+                 (and ghostherd-inbox--needs-only (list :needsOnly t))))))))
 
 (defun ghostherd-memory-page--plist-no-done (it)
   "IT without the internal :done flag (the page only sees live items)."
@@ -4660,8 +4667,10 @@ the user's state (or none) and push."
        (lambda (_e)
          (when ghostherd-inbox--watching (ghostherd-inbox--push items nil)))))))
 
-(defun ghostherd-inbox--watch ()
-  (setq ghostherd-inbox--watching t ghostherd-inbox--sig nil)
+(defun ghostherd-inbox--watch (&optional needs-only)
+  "Push the Inbox while the page shows it: every item, or with NEEDS-ONLY
+only those that need the user (`ghostherd-inbox--needs-only')."
+  (setq ghostherd-inbox--watching t ghostherd-inbox--sig nil ghostherd-inbox--needs-only needs-only)
   (unless (timerp ghostherd-inbox--timer)
     (setq ghostherd-inbox--timer
           (run-at-time 0 ghostherd-inbox--every #'ghostherd-inbox--tick)))
@@ -4669,7 +4678,8 @@ the user's state (or none) and push."
 
 (defun ghostherd-inbox--unwatch ()
   (when (timerp ghostherd-inbox--timer) (cancel-timer ghostherd-inbox--timer))
-  (setq ghostherd-inbox--timer nil ghostherd-inbox--watching nil ghostherd-inbox--sig nil))
+  (setq ghostherd-inbox--timer nil ghostherd-inbox--watching nil ghostherd-inbox--sig nil
+        ghostherd-inbox--needs-only nil))
 
 (defun ghostherd-memory-page--inbox-set (intent)
   "Mark an Inbox item read / done, or override its group; then refresh.
@@ -4735,7 +4745,7 @@ A lead's need (`need:N') done is handled: closed on the Board too."
         ("board-timeline" (ghostherd-board--timeline intent))
         ("board-need-done" (ghostherd-board--need-done intent))
         ("board-peek" (ghostherd-board--peek intent))
-        ("inbox-watch" (ghostherd-inbox--watch))
+        ("inbox-watch" (ghostherd-inbox--watch (ghostherd-memory-page--truthy (alist-get 'needs intent))))
         ("inbox-unwatch" (ghostherd-inbox--unwatch))
         ("inbox-set" (ghostherd-memory-page--inbox-set intent))
         ("inbox-detail" (ghostherd-inbox--detail intent))
@@ -5454,9 +5464,14 @@ changed."
 
 (defun ghostherd-board--watch (&optional intent)
   "Look at the board while the tab is shown; send it whole first.  INTENT
-says how far back (`days') the page lists quiet and done items."
+says how far back (`days') the page lists quiet and done items, and with
+`inbox' to watch the Inbox too -- only what needs the user, its push
+first: the page draws 要你處理 from it, before the board -- one intent for
+both, as a phone's page sends its intents one at a time, a round trip each."
   (let ((days (alist-get 'days intent)))
     (when (numberp days) (setq ghostherd-board--days (max 0.04 (min 7 days)))))
+  (when (ghostherd-memory-page--truthy (alist-get 'inbox intent))
+    (ghostherd-inbox--watch t))
   (setq ghostherd-board--watching t ghostherd-board--sent nil ghostherd-board--inflight nil)
   (unless (timerp ghostherd-board--timer)
     (setq ghostherd-board--timer

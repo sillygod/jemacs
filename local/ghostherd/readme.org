@@ -2816,9 +2816,32 @@ words are Traditional Chinese.
   *收尾* (its asks answered, a PR of its own still open, by the forge),
   *等 Jing* (a lead's need open in it, or the Inbox has something of
   yours from an agent in it) and *沒人接* (below).
-- Across the top, four tiles: the items by status with what their asks
-  were (cross-project, FYI, relays, cancelled or failed); the open asks
-  with the oldest; what waits on you; the PRs by state.
+- On top, =24 小時 | 7 天=: the stretch the whole page is of --- the
+  items, their asks, the PRs and tickets they name, the map's
+  cross-project asks --- kept in your browser; with the project or
+  ticket it is narrowed to, in the same row.
+- Then *要你處理*, one list of what needs your hand, each handled right
+  there: the Inbox's Needs-you (an agent at a menu, a guarded call, a
+  proposal, a question, a sign-in, a failed ask...), the leads' 需要 Jing
+  lines, and the items nobody has (沒人接) --- each once: a lead's line is
+  the Inbox's =need:N= item, and an item nobody has whose line is listed
+  rides on that line, marked so, with its =交給 lead=.  What stops an
+  agent until you act first, then what else needs you, then what nobody
+  has, the newest first in each.  A tap opens one in place, as the
+  Inbox's phone cards do, with the Inbox's own buttons (approve or
+  reject, an option, a reply, Mark read, 已處理): the same as in the
+  Inbox, and gone from it too.  An item nobody has opens to why, its
+  =交給 lead= and the way to its card.  It is drawn from the Inbox's
+  push --- watched while the Board is shown, only what needs you then,
+  asked for in the board's own intent --- before the board itself has
+  come: on a phone's slow link (15 KB/s, 300 ms) 0.77 s from the tap,
+  the board at 2.3 s as before, with a board that takes Emacs 1.5 s
+  (=herd-board-open.js=).  With nothing in it, a quiet line.  Narrowed
+  as the page is.  The Inbox tab stays, its count too.
+- Four tiles, each saying its stretch (=24 小時內= or =現在=): the items
+  by status with what their asks were (cross-project, FYI, relays,
+  cancelled or failed); the open asks with the oldest; 要你處理, by kind,
+  a tap to it; the PRs by state.
 - *現在*: a map of the projects --- the open asks between them blue,
   what waits on you red, the asks inside a project as a count under it
   --- or of the window's cross-project asks, a line's width its count,
@@ -2867,7 +2890,7 @@ words are Traditional Chinese.
   ClickUp: open or custom in ClickUp while every PR its items name is
   merged or deployed and none of them is live; done or closed while one
   is live, 等 Jing or 沒人接.  None while its state is not known for sure.
-- *等 Jing*: first the leads' own lines.  A lead (or primary) ends an
+- *需要 Jing*, in 要你處理: the leads' own lines.  A lead (or primary) ends an
   answer or a report with a line of its own for each that applies ---
   =需要 Jing：what the user must do= and =部署：what went where=, either
   colon, the item's id in brackets after the word when it covers more
@@ -2878,9 +2901,9 @@ words are Traditional Chinese.
   or in the Inbox, where each shows as a 需要 Jing item --- when its lead
   writes need lines in that item again (what is still needed it says
   again; =需要 Jing：無= ends them all), or when the item is closed.
-  Then, the fallback, the Inbox's Needs-you items, each put on the item
-  its agent was last in (a guess, said so).  A 部署 line marks the PRs
-  it names *已部署* on their chips.
+  A card waiting on you otherwise names the Inbox's Needs-you items of
+  the agent last in it (a guess, said so), opened in 要你處理 on a tap.
+  A 部署 line marks the PRs it names *已部署* on their chips.
 - *沒人接*: an item quiet for =ghostherd-board-orphan-hours= (4) with a
   need still open, or whose last ask failed, was cancelled or was left
   unanswered (its taker stopped without one), and nothing open.  The
@@ -2922,7 +2945,7 @@ From the Board:
   two cannot disagree.
 
 It lists every item an ask is open in, and the quiet and done ones of
-the last day (seven on asking, kept in your browser); the herd keeps
+the last day (seven on asking, on top, kept in your browser); the herd keeps
 asks seven days, and an item whose asks are all gone goes with them.
 Emacs sends it only while the tab is shown, every five seconds, in
 parts: the whole once, then only the cards that changed and the ids
