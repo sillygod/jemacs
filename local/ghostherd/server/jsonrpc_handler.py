@@ -61,6 +61,9 @@ AGENT_METHODS = frozenset({
     "herd_report", "herd_guard_denied", "herd_guard_used", "herd_lint_denied",
     "herd_remember", "herd_recall", "herd_forget", "herd_promote_propose", "herd_search",
     "herd_start", "herd_stop", "herd_relay", "herd_screens", "herd_command_reply",
+    # The Board's work items, as `herd item' lists, shows and changes them:
+    # a lead's (the herd refuses a worker's change).
+    "herd_items", "herd_board_item", "herd_item_edit",
     # What tasks cost, as numbers: `herd cost' from a lead at a review --
     # its task list, the user's words in it, only its own project's.
     "herd_costs",
@@ -99,6 +102,16 @@ def _restated(hit: dict, key: str) -> str:
             f"  {update.ljust(width)}   to update `{name}' with this text "
             f"(its current text is kept in its history)\n"
             f"  {'--new'.ljust(width)}   to keep both, as separate facts")
+
+
+def _opt_str(params: dict, key: str) -> str | None:
+    "PARAMS' KEY, a string or left out, or why not."
+    v = params.get(key)
+    if v is None:
+        return None
+    if not isinstance(v, str) or len(v) > 64:
+        raise ValueError(f"{key} must be an id")
+    return v.strip() or None
 
 
 AWAIT_MAX = 55.0
@@ -162,6 +175,10 @@ class JsonRpcHandler:
             "herd_asks": self._herd_asks,
             "herd_threads": self._herd_threads,
             "herd_thread": self._herd_thread,
+            "herd_board": self._herd_board,
+            "herd_board_item": self._herd_board_item,
+            "herd_items": self._herd_items,
+            "herd_item_edit": self._herd_item_edit,
             "herd_report": self._herd_report,
             "herd_link": self._herd_link,
             "herd_reports": self._herd_reports,
@@ -386,6 +403,8 @@ class JsonRpcHandler:
             from_name=params.get("from"),
             wait=bool(params.get("wait")),
             rounds=params.get("rounds"),
+            item=_opt_str(params, "item"),
+            relay_of=_opt_str(params, "relay_of"),
         )
 
     def _herd_handoff(self, params: dict) -> dict:
@@ -403,6 +422,8 @@ class JsonRpcHandler:
             from_name=params.get("from"),
             wait=bool(params.get("wait")),
             rounds=params.get("rounds"),
+            item=_opt_str(params, "item"),
+            relay_of=_opt_str(params, "relay_of"),
         )
 
     def _herd_guard_denied(self, params: dict) -> dict:
@@ -576,6 +597,48 @@ class JsonRpcHandler:
         if not isinstance(sort, str):
             raise ValueError("sort must be a string")
         return get_herd().threads(limit, project=project, sort=sort)
+
+    def _herd_board(self, params: dict) -> dict:
+        """The page's Board tab: the work items -- those live, and those that
+        moved in the last DAYS -- who waits on whom, the asks between projects."""
+        try:
+            days = float(params.get("days") or 1)
+        except (TypeError, ValueError):
+            raise ValueError("days must be a number") from None
+        return get_herd().board(days)
+
+    def _herd_board_item(self, params: dict) -> dict:
+        "One work item whole, with its timeline: by its id or an ask's."
+        ref = _opt_str(params, "id")
+        if not ref:
+            raise ValueError("give the item's id, or an ask's")
+        return get_herd().board_item(ref)
+
+    def _herd_items(self, params: dict) -> dict:
+        "`herd item list': the items, compact."
+        try:
+            days = float(params.get("days") or 1)
+        except (TypeError, ValueError):
+            raise ValueError("days must be a number") from None
+        return get_herd().items(days)
+
+    def _herd_item_edit(self, params: dict) -> dict:
+        "`herd item rename|merge|split|move|label|close|reopen': a lead's change."
+        op = params.get("op")
+        if op not in ("rename", "merge", "split", "move", "label", "close", "reopen"):
+            raise ValueError("op is rename, merge, split, move, label, close or reopen")
+        def strs(key):
+            v = params.get(key) or []
+            if not isinstance(v, list) or not all(isinstance(x, str) and len(x) <= 200 for x in v) or len(v) > 100:
+                raise ValueError(f"{key} must be a list of strings")
+            return v
+        title = params.get("title")
+        if title is not None and (not isinstance(title, str) or len(title) > 300):
+            raise ValueError("title must be a string, 300 characters at most")
+        return get_herd().item_edit(
+            op, ref=_opt_str(params, "id") or "", by=_opt_str(params, "by") or "", title=title,
+            into=_opt_str(params, "into") or "", asks=strs("asks"), labels=strs("labels"),
+            remove=bool(params.get("remove")))
 
     def _herd_thread(self, params: dict) -> dict:
         "One thread, whole: by its id, an ask in it, or an agent's latest."

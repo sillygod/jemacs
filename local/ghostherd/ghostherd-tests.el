@@ -37,6 +37,7 @@
 (require 'ghostherd-memory-tests)
 (require 'ghostherd-usage-tests)
 (require 'ghostherd-memory-page-tests)
+(require 'ghostherd-board-tests)
 
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

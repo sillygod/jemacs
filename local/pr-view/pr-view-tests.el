@@ -810,6 +810,8 @@ cites; a missing one, or a repo on no forge, says why."
     (should (string-suffix-p "/repositories/w/r/pullrequests/371" asked))
     (should (equal (list (alist-get 'id got) (alist-get 'state got) (alist-get 'source got) (alist-get 'url got))
                    '(371 "MERGED" "fix/retry" "b371")))
+    ;; Where it goes: the herd page's Board shows it beside the number.
+    (should (equal (alist-get 'destination got) "main"))
     (when (require 'clickup-view nil t)
       (should (equal (alist-get 'tasks got) '("86abc1def"))))
     (pr-view-tests--on-branch "git@github.com:me/r.git" "feat/x"

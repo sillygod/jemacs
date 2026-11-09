@@ -1956,3 +1956,201 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 .trace, .thtrace { display: block; margin-top: 6px; color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
 .trace.rough, .thtrace.rough { color: var(--warn, #d29922); }
 .tracedetail, .thtracedetail { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+
+/* ---- Board: the herd's work, item by item ---------------------------------
+   Four tiles across the top (the work, what is open, what waits on Jing, the
+   PRs); now -- a map of who waits on whom between projects, the open asks
+   beside it; one card per work item, work going on open and work at rest
+   folded; every PR by repository; what waits on Jing.  Everything scoped
+   under .boardpage: its words (.wi, .tile, .pill ...) are the sketch's. */
+.page.boardpage { max-width: 1240px; padding: 14px 16px 48px; }
+.boardpage .section { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em;
+  margin: 26px 0 8px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; scroll-margin-top: 8px; }
+.boardpage .section .cnt { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 12px; }
+.boardpage .section.red { color: var(--minus); }
+.boardpage .red { color: var(--minus); }
+.boardpage button { font: inherit; color: inherit; }
+.boardpage .bdempty { color: var(--muted); font-size: 12.5px; margin: 6px 2px; }
+.boardpage .bdilink { font-family: var(--mono); font-size: 11px; color: var(--accent); border: 1px solid var(--line);
+  border-radius: 4px; padding: 0 5px; white-space: nowrap; background: none; cursor: pointer; line-height: 16px; }
+.boardpage .bdilink:hover { border-color: var(--accent); }
+.boardpage .bdmore { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 2px 0; font-size: 12px; }
+.boardpage .bdmore.ghost { border: 1px solid var(--line); border-radius: 5px; padding: 5px 10px; margin-top: 10px; }
+.boardpage .ref { font-family: var(--mono); font-size: 10.5px; color: #6e7681; background: none; border: 0; padding: 0; cursor: pointer; }
+.boardpage .ref:hover { color: var(--accent); }
+.boardpage .bdchip { color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 12px;
+  cursor: pointer; background: none; }
+.boardpage .bdchip.on { color: var(--text); border-color: var(--accent); background: rgba(121,192,255,.08); }
+.boardpage .tag { font-size: 10.5px; border-radius: 999px; padding: 0 7px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.boardpage .tag.t-jing { color: var(--minus); border-color: rgba(248,81,73,.5); }
+
+/* Status colours: items, then PR states. */
+.boardpage .st-live { --c: var(--accent); }
+.boardpage .st-jing { --c: var(--minus); }
+.boardpage .st-tail { --c: #56d364; }
+.boardpage .st-quiet { --c: var(--muted); }
+.boardpage .st-done { --c: #3d444d; }
+.boardpage .s-opn { --c: var(--accent); } .boardpage .s-mrg { --c: var(--meta); }
+.boardpage .s-off { --c: #484f58; } .boardpage .s-unk { --c: var(--warn); }
+
+/* 1. The tiles. */
+.bdstrip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 4px; }
+.bdtile { display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch; text-align: left; border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  padding: 10px 12px; min-width: 0; cursor: pointer; }
+.bdtile:hover { border-color: var(--accent); }
+.bdtile.t-jing { border-color: rgba(248,81,73,.5); background: linear-gradient(rgba(248,81,73,.07), rgba(248,81,73,.07)), var(--panel); }
+.bdtile .tl1 { font-size: 12px; color: var(--muted); }
+.bdtile .big { font-size: 28px; font-weight: 600; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.bdtile.t-jing .big { color: var(--minus); }
+.bdtile .sub { font-size: 12px; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
+.bdtile .sbar { display: flex; gap: 2px; height: 6px; margin: 6px 0; }
+.bdtile .sbar:empty { display: none; }
+.bdtile .bdseg { background: var(--c); border-radius: 2px; min-width: 4px; }
+.bdtile .legend { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 11.5px; color: var(--muted); }
+.bdtile .bdlg i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; background: var(--c); margin-right: 4px; }
+
+/* 2. Now: the map and the open asks. */
+.bdnow { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+.bdnow .gcard, .bdwaits { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 8px 10px 10px; min-width: 0; }
+.bdnow .gtabs { display: flex; gap: 6px; margin-bottom: 4px; flex-wrap: wrap; }
+.bdnow .gscroll { overflow-x: auto; }
+.bdg-svg { display: block; width: 100%; height: auto; }
+.bdg-svg path { fill: none; }
+.bdg-svg .nd ellipse { fill: var(--bg); stroke: var(--line); stroke-width: 1.3; }
+.bdg-svg .nd-act ellipse { stroke: var(--accent); }
+.bdg-svg .nd-idle ellipse { stroke: #30363d; }
+.bdg-svg .nd-idle .nl { fill: var(--muted); }
+.bdg-svg .nd-jing ellipse { fill: rgba(248,81,73,.14); stroke: var(--minus); stroke-width: 1.8; }
+.bdg-svg .nd-jing .nl { fill: var(--minus); font-weight: 700; }
+.bdg-svg .nl { fill: var(--text); font-size: 13px; font-family: var(--mono); }
+.bdg-svg .bdg { fill: var(--muted); font-size: 10.5px; }
+.bdg-svg .e-now { stroke: var(--accent); }
+.bdg-svg .e-jing { stroke: var(--minus); }
+.bdg-svg .e-all { stroke: #6e7681; opacity: .85; }
+.bdg-svg .e-relay { stroke: var(--warn); }
+.bdg-svg .el { font-size: 11px; fill: var(--text); paint-order: stroke; stroke: var(--panel); stroke-width: 4px; stroke-linejoin: round; }
+.bdnow .gkey { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+.bdnow .gkey i { display: inline-block; width: 16px; height: 0; border-top: 2px solid; vertical-align: 3px; margin-right: 5px; }
+.bdnow .gkey i.k-now { border-color: var(--accent); } .bdnow .gkey i.k-jing { border-color: var(--minus); }
+.bdnow .gkey i.k-all { border-color: #6e7681; } .bdnow .gkey i.k-relay { border-color: var(--warn); border-top-style: dashed; }
+.bdwaits { padding: 6px 12px 10px; }
+.bdwaits .wl-h { font-size: 11.5px; color: var(--muted); margin: 8px 0 2px; font-weight: 600; }
+.bdwaits .wl-h.red { color: var(--minus); }
+.bdwaits .wait { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.bdwaits .wait:last-child { border-bottom: 0; }
+.bdwaits .wrow { display: flex; align-items: baseline; gap: 6px; font-family: var(--mono); font-size: 12px; flex-wrap: wrap;
+  width: 100%; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; }
+.bdwaits .wrow:hover .who { text-decoration: underline; }
+.bdwaits .wrow .age { margin-left: auto; color: var(--muted); font-size: 11px; font-family: inherit; }
+.bdwaits .arr { color: var(--accent); }
+.bdwaits .wj .arr { color: var(--minus); }
+.bdwaits .what { margin-top: 2px; overflow-wrap: anywhere; }
+.bdwaits .chain { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; background: none; border: 0; text-align: left;
+  cursor: pointer; width: 100%; overflow-wrap: anywhere; }
+.bdwaits .chain .age { font-size: 11px; }
+
+/* 3. The cards. */
+.boardpage .chips { display: flex; gap: 6px; margin: 2px 0 8px; flex-wrap: wrap; }
+.boardpage .cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
+.boardpage .wi { border: 1px solid var(--line); border-left: 3px solid var(--c); border-radius: 8px; background: var(--bg);
+  padding: 9px 12px 8px; min-width: 0; scroll-margin-top: 60px; }
+.boardpage .wi.hl { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.boardpage .wi.folded { padding-bottom: 7px; }
+.boardpage .wi.st-quiet.folded, .boardpage .wi.st-done.folded { opacity: .85; }
+.boardpage .wh { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); width: 100%;
+  background: none; border: 0; padding: 0; cursor: pointer; text-align: left; flex-wrap: wrap; }
+.boardpage .wh .key { font-family: var(--mono); font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+.boardpage .wh .pill { font-size: 11px; font-weight: 600; color: var(--c); border: 1px solid var(--c); border-radius: 999px; padding: 0 8px; }
+.boardpage .st-done .wh .pill { color: var(--muted); border-color: #3d444d; }
+.boardpage .wh .n { margin-left: auto; white-space: nowrap; }
+.boardpage .wi h3 { font-size: 14px; font-weight: 600; margin: 5px 0 4px; line-height: 1.4; overflow-wrap: anywhere; }
+.boardpage .wi.folded h3 { font-size: 13px; margin-bottom: 2px; }
+.boardpage .meta { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; font-size: 11.5px; min-width: 0; }
+.boardpage .tk { font-family: var(--mono); color: var(--meta); border: 1px solid rgba(163,113,247,.45); border-radius: 4px; padding: 0 5px; font-size: 11px; }
+.boardpage .pj { color: var(--text); background: var(--chip); border-radius: 4px; padding: 0 6px; font-family: var(--mono); font-size: 11px; }
+.boardpage .ag { color: var(--muted); font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; min-width: 0; }
+.boardpage .prl { display: flex; flex-wrap: wrap; gap: 5px; margin: 7px 0 2px; }
+.boardpage .bdpr { display: inline-flex; align-items: baseline; gap: 6px; border: 1px solid var(--c); border-radius: 5px; padding: 1px 7px;
+  font-size: 11.5px; white-space: nowrap; color: inherit; text-decoration: none; max-width: 100%; }
+.boardpage .bdpr.notown { border-style: dashed; }
+.boardpage .bdpr .prn { font-family: var(--mono); color: var(--text); }
+.boardpage .bdpr .prs { color: var(--c); font-weight: 600; }
+.boardpage .bdpr .at { color: var(--muted); font-family: var(--mono); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; }
+.boardpage .s-off.bdpr .prn { color: var(--muted); text-decoration: line-through; }
+.boardpage .nopr { color: #6e7681; font-size: 11.5px; }
+.boardpage .blk { display: flex; gap: 8px; margin-top: 6px; font-size: 12.5px; line-height: 1.5; }
+.boardpage .blk > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.boardpage .bl { flex: none; font-size: 11px; color: var(--c); border: 1px solid var(--c); border-radius: 4px; padding: 0 5px; height: 18px; line-height: 16px; margin-top: 1px; }
+.boardpage .st-done .bl, .boardpage .st-quiet .bl { color: var(--muted); border-color: #3d444d; }
+.boardpage .bdjl { background: none; border: 0; padding: 0; cursor: pointer; text-align: left; color: var(--text); }
+.boardpage .bdjl:hover { text-decoration: underline; }
+.boardpage .guess { color: #6e7681; font-size: 11.5px; }
+.boardpage .bdlinks { margin-top: 5px; font-size: 11.5px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.boardpage .bdtl { margin-top: 6px; }
+.boardpage .bdtlb { color: var(--muted); font-size: 12px; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+.boardpage .bdtlb:hover { color: var(--text); }
+.boardpage .bdtl .fold { color: #6e7681; }
+.boardpage .bdtl ol { list-style: none; margin: 6px 0 2px; padding: 0 0 0 4px; border-left: 1px solid var(--line); }
+.boardpage .bdtl li { display: grid; grid-template-columns: 52px 44px minmax(0, 1fr); gap: 6px; font-size: 12px; padding: 2px 0 2px 8px; position: relative; }
+.boardpage .bdtl li::before { content: ""; position: absolute; left: -4px; top: 8px; width: 7px; height: 7px; border-radius: 50%; background: var(--kc); }
+.boardpage .bdtl li.folded { opacity: .6; }
+.boardpage .bdtl .tt { font-family: var(--mono); color: var(--muted); font-size: 11px; }
+.boardpage .bdtl .kk { font-size: 11px; color: var(--kc); }
+.boardpage .bdtl .tx { overflow-wrap: anywhere; }
+.boardpage .bdtl .ft { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+.boardpage .bk-ask { --kc: var(--accent); } .boardpage .bk-handoff { --kc: #d2a8ff; } .boardpage .bk-answer { --kc: var(--plus); }
+.boardpage .bk-failed { --kc: var(--minus); } .boardpage .bk-cancelled { --kc: #6e7681; }
+.boardpage .bk-cancelled .tx { color: var(--muted); }
+
+/* 4. The PRs, by repository. */
+.boardpage .tblw { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.boardpage .prt { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.boardpage .prt th, .boardpage .prt td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.boardpage .prt thead th { font-size: 11.5px; color: var(--muted); font-weight: 600; background: var(--panel); }
+.boardpage .prt tr.rg th { background: var(--panel); font-family: var(--mono); font-size: 12px; color: var(--text); padding-top: 7px; }
+.boardpage .prt tr.rg .cnt { color: var(--muted); font-weight: 400; }
+.boardpage .prt a { color: inherit; }
+.boardpage .pnum { font-family: var(--mono); white-space: nowrap; }
+.boardpage .pto { font-family: var(--mono); color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+.boardpage .pt { overflow-wrap: anywhere; }
+.boardpage .prt .bdst { color: var(--c); font-weight: 600; white-space: nowrap; }
+.boardpage .pit { color: var(--muted); font-size: 11.5px; }
+.boardpage .pat { font-family: var(--mono); color: var(--muted); white-space: nowrap; font-size: 11.5px; }
+.boardpage .prt tbody tr:not(.rg):hover { background: var(--row-hover); }
+
+/* 5. What waits on Jing. */
+.boardpage .phase2 { font-size: 12px; color: var(--muted); border: 1px dashed rgba(248,81,73,.5); border-radius: 6px; padding: 6px 10px; margin-bottom: 8px; }
+.boardpage .phase2 code { font-family: var(--mono); font-size: 12px; background: var(--code); padding: 0 4px; border-radius: 3px; }
+.boardpage .jl { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.boardpage .ji { border: 1px solid rgba(248,81,73,.45); border-left: 3px solid var(--minus); border-radius: 8px; padding: 7px 10px; background: var(--bg); min-width: 0; }
+.boardpage .jh { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+.boardpage .jh .who { font-family: var(--mono); }
+.boardpage .jh .since { color: var(--muted); font-size: 11.5px; }
+.boardpage .bdjline { margin-top: 4px; overflow-wrap: anywhere; }
+.boardpage .bdwhy { color: var(--muted); font-size: 11.5px; margin-top: 2px; overflow-wrap: anywhere; }
+
+@media (max-width: 1000px) {
+  .bdstrip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bdnow { grid-template-columns: minmax(0, 1fr); }
+}
+/* The phone: one column, bigger targets, the table a block a row. */
+@media (max-width: 640px) {
+  .page.boardpage { padding: 10px 12px 40px; }
+  .bdstrip { gap: 8px; }
+  .bdtile { padding: 8px 10px; }
+  .bdtile .big { font-size: 24px; }
+  .boardpage .cards, .boardpage .jl { grid-template-columns: minmax(0, 1fr); }
+  .boardpage .bdchip { min-height: 30px; line-height: 24px; }
+  .boardpage .wh { min-height: 28px; }
+  .boardpage .wh .n { font-size: 11px; margin-left: 0; width: 100%; }
+  .boardpage .bdtl li { grid-template-columns: 44px 38px minmax(0, 1fr); }
+  .boardpage .bdtlb { min-height: 30px; }
+  .boardpage .prt thead { display: none; }
+  .boardpage .prt, .boardpage .prt tbody, .boardpage .prt tr, .boardpage .prt td, .boardpage .prt th { display: block; }
+  .boardpage .prt tr:not(.rg) { display: grid; grid-template-columns: auto auto 1fr auto; gap: 2px 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  .boardpage .prt td { border: 0; padding: 0; }
+  .boardpage .prt td.pt { grid-column: 1 / -1; grid-row: 2; }
+  .boardpage .prt td:nth-child(5) { grid-column: 1 / -1; grid-row: 3; }
+  .boardpage .prt td.pat { grid-column: 4; grid-row: 1; text-align: right; }
+  .boardpage .prt tr.rg th { border-bottom: 1px solid var(--line); }
+}
