@@ -2838,6 +2838,82 @@
     return !!body && body.scrollHeight - body.scrollTop - body.clientHeight >= 40;
   }
 
+  // Where the reader is in a conversation, BODY (a column's or the chat's),
+  // read up from its end: the entry at the top of the screen -- by its
+  // signature, which of those it is from the end (two can share one), and
+  // how far from the top it shows.  WebKit has no scroll anchoring
+  // (overflow-anchor): what a redraw puts above pushes it down unless the
+  // page puts it back -- `placeAnchor', whatever came above or below.
+  function anchorOf(body) {
+    const list = drawn.get(body);
+    if (!list || !body.isConnected) return null;
+    const top = body.getBoundingClientRect().top;
+    for (const el of body.querySelectorAll(":scope > [data-i]")) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom <= top + 1) continue;
+      const i = +el.getAttribute("data-i"), e = list[i];
+      if (!e) return null;
+      const sig = sigOf(e);
+      let nth = 0;
+      for (let k = list.length - 1; k > i; k--) if (sigOf(list[k]) === sig) nth++;
+      return { sig, nth, y: r.top - top };
+    }
+    return null;
+  }
+  function placeAnchor(body, a, entries) {
+    if (!a) return false;
+    let i = -1;
+    for (let k = entries.length - 1, nth = 0; k >= 0; k--) {
+      if (sigOf(entries[k]) !== a.sig) continue;
+      if (nth++ === a.nth) { i = k; break; }
+    }
+    const el = i >= 0 && body.querySelector(':scope > [data-i="' + i + '"]');
+    if (!el) return false;
+    body.scrollTop += el.getBoundingClientRect().top - body.getBoundingClientRect().top - a.y;
+    return true;
+  }
+
+  // A hand on a conversation: a finger on the screen, the fling after it,
+  // a wheel.  iOS moves the scroller itself meanwhile, and a scrollTop the
+  // page sets then is lost -- what a redraw put above would show instead
+  // of what was read, the oldest of it after a few parts.  So a redraw
+  // read up from the end waits (`handHold') until the hand has let go and
+  // the scroll has settled (HAND_SETTLE without a scroll event).
+  // A tap is no hand on it: only a finger that scrolled, and its fling
+  // after while its scroll events go on, or a wheel.  A finger whose end
+  // never came (a gesture the system took) is let go of after HAND_STUCK.
+  const HAND_SETTLE = 200, HAND_STUCK = 5000;
+  const hand = { down: false, scrolled: false, fling: false, at: 0 };
+  const handHeld = new Map();
+  let handTimer = null;
+  function handMoving() {
+    const quiet = Date.now() - hand.at;
+    return (hand.down && quiet < HAND_STUCK) || (hand.fling && quiet < HAND_SETTLE);
+  }
+  function handHold(key, redraw) {
+    handHeld.set(key, redraw);
+    if (handTimer) return;
+    const tick = () => {
+      handTimer = null;
+      if (handMoving()) { handTimer = setTimeout(tick, HAND_SETTLE); return; }
+      const all = [...handHeld.values()];
+      handHeld.clear();
+      all.forEach((f) => f());
+    };
+    handTimer = setTimeout(tick, HAND_SETTLE);
+  }
+  addEventListener("touchstart", () => { hand.down = true; hand.scrolled = false; hand.at = Date.now(); }, { passive: true, capture: true });
+  ["touchend", "touchcancel"].forEach((t) => addEventListener(t, (e) => {
+    hand.down = !!(e.touches && e.touches.length);
+    if (!hand.down) { hand.fling = hand.scrolled; hand.at = Date.now(); }
+  }, { passive: true, capture: true }));
+  addEventListener("wheel", () => { hand.fling = true; hand.at = Date.now(); }, { passive: true, capture: true });
+  // The fling goes on as long as its scroll events do.
+  addEventListener("scroll", () => {
+    if (hand.down) hand.scrolled = true;
+    if (handMoving()) hand.at = Date.now();
+  }, { passive: true, capture: true });
+
   // What Emacs should send for the room: each column's conversation and
   // the screens shown instead, or the chat.  The poll reads only the recent
   // tail (default limit); `load earlier' pages are fetched on their own.
@@ -2912,6 +2988,18 @@
       held.entries = (held.entries || []).slice(0, keep).concat(p.entries || []);
     }
     return held;
+  }
+
+  // A whole again -- a part was missed (room-resend) -- comes its newest
+  // first: drawn at once, it would take away what you read up there, and
+  // the older parts after it would put you back nowhere in particular.
+  // Read up, the page keeps what it drew until the rest has come (HELD's
+  // `hold'), then draws it all, the entry you read where it was.  At its
+  // end, as ever.  Whether this part P waits so.
+  function holdWhole(held, p, body) {
+    if (p.base == null) held.hold = held.rest > 0 && !!body && body.hasAttribute("data-drawn") && scrolledUp(body);
+    else if (held.hold && !(held.rest > 0 && scrolledUp(body))) held.hold = false;
+    return !!held.hold;
   }
 
   // While a conversation's rest is on its way, a part of the room comes
@@ -3406,17 +3494,24 @@
       renderAwayBody(findKey(a.name), body);
       return renderColJump(a.name);
     }
-    body.removeAttribute("data-away");
+    const wasAway = body.hasAttribute("data-away");
     const first = !body.hasAttribute("data-drawn");
     const prevLen = (drawn.get(body) || []).length;
     const entries = (herdNow.convs[a.name] && herdNow.convs[a.name].entries) || [];
     const grewEarlier = herdNow.earlierPending.has(a.name) && entries.length > prevLen;
     const oldHeight = body.scrollHeight, keep = body.scrollTop;
     const atBottom = oldHeight - keep - body.clientHeight < 40;
+    // Read up from its end: with a hand on it, the redraw waits; else the
+    // entry at the top of the screen is put back where it was.
+    const reading = !first && !atBottom && !wasAway;
+    if (reading && handMoving()) return handHold("col:" + a.name, () => renderRoomBody(a));
+    const anchor = reading ? anchorOf(body) : null;
+    body.removeAttribute("data-away");
     body.innerHTML = roomBodyHtml(a);
     drawn.set(body, entries);
     body.setAttribute("data-drawn", "1");
     if (first || atBottom) body.scrollTop = body.scrollHeight;
+    else if (placeAnchor(body, anchor, entries)) herdNow.earlierPending.delete(a.name);
     else if (grewEarlier) {
       body.scrollTop = keep + (body.scrollHeight - oldHeight);
       herdNow.earlierPending.delete(a.name);
@@ -3617,7 +3712,7 @@
       renderAwayBody("chat", body);
       return renderChatJump();
     }
-    body.removeAttribute("data-away");
+    const wasAway = body.hasAttribute("data-away");
     const c = herdNow.chat;
     const first = !body.hasAttribute("data-drawn");
     const prevLen = (drawn.get(body) || []).length;
@@ -3625,6 +3720,12 @@
     const grewEarlier = herdNow.chatEarlierPending && entries.length > prevLen;
     const oldHeight = body.scrollHeight, keep = body.scrollTop;
     const atBottom = oldHeight - keep - body.clientHeight < 40;
+    // As a column's (`renderRoomBody'): read up, held in place, or waiting
+    // while a hand moves it.
+    const reading = !first && !atBottom && !wasAway;
+    if (reading && handMoving()) return handHold("chat", renderChatBody);
+    const anchor = reading ? anchorOf(body) : null;
+    body.removeAttribute("data-away");
     const out = (c && [...(c.absent || []), ...(c.missing || [])]) || [];
     body.innerHTML = isPrimaryRoom() && !roomAgents().length
       ? '<p class="rnote">Primary is not running.  Write to it below: it starts -- or resumes its last ' +
@@ -3641,6 +3742,7 @@
     drawn.set(body, entries);
     body.setAttribute("data-drawn", "1");
     if (first || atBottom) body.scrollTop = body.scrollHeight;
+    else if (placeAnchor(body, anchor, entries)) herdNow.chatEarlierPending = false;
     else if (grewEarlier) {
       body.scrollTop = keep + (body.scrollHeight - oldHeight);
       herdNow.chatEarlierPending = false;
@@ -8496,6 +8598,9 @@
         if (chat) {
           herdNow.chat = Object.assign(chat, meta);
           const body = app.querySelector(".chat .cbody");
+          // A whole again (a part was missed) while you read up: what you
+          // read stays drawn until all of it has come (`holdWhole').
+          if (holdWhole(chat, p, body)) changed = false;
           // As a column's: read at its end, the rest drawn once it has come.
           if (chat.grew) {
             chat.grew = false;
@@ -8775,6 +8880,7 @@
           conv.path = p.path || conv.path;
           conv.cli = p.cli || conv.cli;
           const col = roomColumn(p.name), body = col && col.querySelector(".rbody");
+          if (holdWhole(conv, p, body)) changed = false;
           // The rest come: prepended, the reader held where they are --
           // a Load earlier pressed meanwhile is answered by it.  Read at
           // its end, what comes above is out of sight: drawn once, with
