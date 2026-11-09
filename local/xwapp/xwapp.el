@@ -2319,9 +2319,21 @@ the page may be gone."
       (xwapp--untimer app :flush)
       (xwapp--timer app :gone xwapp--gone-after #'xwapp--gone))))
 
+(defvar xwapp-let-go-functions nil
+  "Functions called with APP each time its page is let go: another page
+takes it -- a browser tab's hello, Emacs's own page opened -- or it went
+\(no `next' for `xwapp--gone-after').  What an app does for that page
+alone -- what it watches and sends it -- it stops here: Emacs's own page
+killed as a tab takes over runs no on-kill.  The page that has APP next
+asks again for what it shows: a new one as it loads, one come back where
+it is through XW.bridge's `back', which a page let go and taken again --
+the same tab after a phone's sleep -- always is.  Each is called on its
+own, its error said, not raised.")
+
 (defun xwapp--let-go (app)
   "Let APP's browser page go: told so if it is waiting, forgotten anyway.
-Only another page, in a tab or in Emacs, takes it from one that waits."
+Only another page, in a tab or in Emacs, takes it from one that waits.
+What the app did for it stops (`xwapp-let-go-functions')."
   ;; Not :unhold: a kick for the page's device may have just begun,
   ;; its page saying hello -- let go now, the hello's own.
   (dolist (key '(:hold :flush :gone :forget))
@@ -2333,7 +2345,10 @@ Only another page, in a tab or in Emacs, takes it from one that waits."
     (dolist (key '(:waiting :page :outbox :keyed :later :when-sent :seen :restored :sending))
       (xwapp--put app key nil))
     (when proc
-      (xwapp--refuse proc "taken"))))
+      (xwapp--refuse proc "taken")))
+  (run-hook-wrapped 'xwapp-let-go-functions
+                    (lambda (fn a) (with-demoted-errors "xwapp: let-go: %S" (funcall fn a)) nil)
+                    app))
 
 (defun xwapp--gone (app)
   "APP's browser page has stopped asking: it was closed.  What Emacs

@@ -2614,7 +2614,15 @@ are the other tabs (below, and "What happened while you were away").
   =next= carried when it was big.  The page's snapshots --- the Agents
   tab's herd, the Inbox, an agent's screen, the badges --- go as the
   last of their kind (xwapp's README): behind a slow =next= only the
-  newest of each waits, so a slow one does not make the next slower.  At the desk the room
+  newest of each waits, so a slow one does not make the next slower.
+- The page changes hands --- your phone's tab takes it from Emacs's own
+  page, Emacs's page opens again, or the page goes --- and everything
+  Emacs watched for the page that had it stops: the Board and its
+  badge's looks, the Inbox, Threads, a room and its sub-agent, the
+  Agents tab, a store's facts, an import's progress
+  (=ghostherd-memory-page--let-go=, on xwapp's =xwapp-let-go-functions=).
+  The page that has it next asks for what it shows; the same tab after
+  a phone's sleep does so by itself.  At the desk the room
   comes whole at once, then changes alone.
 - /Chat/ in the room's header shows it as one conversation instead:
   who said what to whom --- your prompts, the asks and answers between

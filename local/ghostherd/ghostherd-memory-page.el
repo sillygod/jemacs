@@ -94,9 +94,7 @@ last ready said: it is sent their count alone until then.  See
                 :on-kill (lambda ()
                            (setq ghostherd-memory-page--pending nil
                                  ghostherd-memory-page--importing nil)
-                           (ghostherd-memory-page--unwatch)
-                           (ghostherd-memory-page--herd-unwatch)
-                           (ghostherd-memory-page--memory-unwatch))
+                           (ghostherd-memory-page--let-go ghostherd-memory-page--app))
                 :reopen #'ghostherd-memory-page-reopen)
   "The page, buffer and intent channel; see `xwapp'.")
 
@@ -164,6 +162,35 @@ top-level call) still serves them; saying it again costs nothing."
 
 (ghostherd-memory-page--serve-files)
 
+
+;; The page changes hands.
+;;
+;; What Emacs watches and sends is the page's that asked: the Board, the
+;; Inbox, Threads, a room and its sub-agent, the Agents tab, a store's
+;; facts, an import's progress.  When another page takes it -- your
+;; phone's tab says hello while Emacs's own page shows the Board, and
+;; that page is killed with no on-kill -- or the page goes, every one of
+;; them stops (xwapp's `xwapp-let-go-functions'): the page that has it
+;; next asks again for what it shows.  A tab come back after a phone's
+;; sleep does so by itself (app.js `comeBack').  What Emacs was told to
+;; show first (`ghostherd-memory-page--pending') stays: it is for the
+;; page coming, as `ghostherd-memory-page--open' sets it.
+
+(defun ghostherd-memory-page--let-go (app)
+  "APP's page was let go -- another took it, or it went: what was watched
+and sent for it stops, if APP is the herd page."
+  (when (and (xwapp-p app) (eq app ghostherd-memory-page--app))
+    (ghostherd-memory-page--unwatch)
+    (ghostherd-memory-page--herd-unwatch)
+    (ghostherd-memory-page--memory-unwatch)
+    (ghostherd-memory-page--room-close)
+    (ghostherd-inbox--unwatch)
+    (ghostherd-threads--unwatch)
+    (ghostherd-threads--close)
+    (ghostherd-board--unwatch)
+    (ghostherd-board--peek-stop)))
+
+(add-hook 'xwapp-let-go-functions #'ghostherd-memory-page--let-go)
 
 ;;; Helpers
 
@@ -5498,6 +5525,13 @@ patches carry it."
                                                                  :orphan (or (plist-get r :orphan) 0))))
        (list :days ghostherd-board--days :orphan_hours ghostherd-board-orphan-hours)
        #'ignore))))
+
+(defun ghostherd-board--peek-stop ()
+  "No more looks at the badge's counts: the page that asked is gone.  The
+next asks again (board-peek)."
+  (dolist (timer (list ghostherd-board--peek-timer ghostherd-board--peek-soon))
+    (when (timerp timer) (cancel-timer timer)))
+  (setq ghostherd-board--peek-timer nil ghostherd-board--peek-soon nil))
 
 (defun ghostherd-board--on-log (_entry)
   "News in the herd -- a state changed, an ask went or came back: the

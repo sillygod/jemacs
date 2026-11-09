@@ -39,6 +39,11 @@
 (require 'ghostherd)
 (require 'ghostherd-memory-page)
 (setq ghostherd-log-file nil)
+;; A phone let go soon, as wake.el has it (herd-handover.js): E2E_GONE
+;; seconds with no `next', a held one answered every 2 s.
+(when (getenv "E2E_GONE")
+  (setq xwapp--gone-after (string-to-number (getenv "E2E_GONE"))
+        xwapp--hold 2))
 
 (defun e2e-note (obj)
   (write-region (concat (json-encode (list :at (float-time) :what obj)) "\n")
@@ -187,6 +192,21 @@ older ones precede it."
       (setq i (1+ i)))
     (list :hits (nreverse hits) :total (length hits) :entries (length all))))
 
+(defvar e2e-board-n 0 "How many times the Board was read: its card says so.")
+(defun e2e-board ()
+  "The Board, played as the sidecar's reply reads (arrays lists, false
+nil): one item at work, its title new each read -- so every look has a
+change to send a page that watches it."
+  (let ((now (* 1000 (float-time))))
+    (list :items (list (list :id "w1" :title (format "Build the fox page (look %d)" (cl-incf e2e-board-n))
+                             :named t :status "live" :labels nil :asks 1 :open 1 :fyi 0 :acks 0 :relays 0 :failed 0
+                             :first (- now 60000) :last now :agents (list "lead-fox" "rd-api") :projects (list "fox")
+                             :cross nil :prs nil :links nil :needs nil :deploys nil :tickets nil
+                             :block (list :kind "open" :ask "aaaa0001" :from "lead-fox" :to "rd-api"
+                                          :since (- now 60000) :status "delivered" :working t :head "Build the fox page")))
+          :waits nil :edges nil :needs nil
+          :counts (list :asks 1 :xproj 0 :fyi 0 :relays 0 :failed 0) :days 1 :more nil :at now)))
+
 (defun e2e-sidecar (method callback &optional params _error-callback)
   "Answer METHOD as the sidecar would, a few milliseconds later."
   (e2e-note (list :rpc method :limit (plist-get params :limit)))
@@ -197,6 +217,12 @@ older ones precede it."
                   ("herd_inbox_state" (list :state nil))
                   ("herd_pending_proposals" (list :proposals nil))
                   ("herd_threads" (list :live 0 :threads nil))
+                  ("herd_board" (e2e-board))
+                  ("herd_board_counts" (list :jing 0 :orphan 0))
+                  ("herd_needs" (list :needs nil))
+                  ("herd_sub_conversation"
+                   (let ((f (ghostherd-memory-page--sub-file (plist-get params :path) (plist-get params :sub))))
+                     (list :entries (and (file-exists-p f) (e2e-read f)))))
                   (_ nil))))
     (run-at-time 0.015 nil (lambda () (funcall callback result)))
     nil))
@@ -224,6 +250,18 @@ older ones precede it."
                                                         :bytes (string-bytes c)))
                                                 (reverse (xwapp--get app :outbox))))
                                 :later (length (xwapp--get app :later)))))))
+
+;; What Emacs watches for the page, noted as a page takes it over and as
+;; it goes (herd-handover.js): each per-page watch, on or off.
+(defun e2e-watches (why)
+  (e2e-note (list :watches why
+                  :page (or (xwapp--get ghostherd-memory-page--app :page) "")
+                  :board (and ghostherd-board--watching t) :inbox (and ghostherd-inbox--watching t)
+                  :threads (and ghostherd-threads--watching t) :room (or ghostherd-memory-page--room "")
+                  :sub (and ghostherd-memory-page--sub t) :herd (and (timerp ghostherd-memory-page--herd-timer) t)
+                  :peek (and (timerp ghostherd-board--peek-timer) t))))
+(advice-add 'xwapp--hello :after (lambda (&rest _) (e2e-watches "hello")))
+(advice-add 'xwapp--gone-now :after (lambda (&rest _) (e2e-watches "gone")))
 
 ;; The page's timings: kept in E2E_DIR, and each record noted in
 ;; timings.jsonl, as JSON.
