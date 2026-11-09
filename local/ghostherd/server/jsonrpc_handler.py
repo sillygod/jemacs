@@ -178,6 +178,8 @@ class JsonRpcHandler:
             "herd_board": self._herd_board,
             "herd_board_item": self._herd_board_item,
             "herd_items": self._herd_items,
+            "herd_needs": self._herd_needs,
+            "herd_board_need_close": self._herd_board_need_close,
             "herd_item_edit": self._herd_item_edit,
             "herd_report": self._herd_report,
             "herd_link": self._herd_link,
@@ -613,6 +615,18 @@ class JsonRpcHandler:
         if not ref:
             raise ValueError("give the item's id, or an ask's")
         return get_herd().board_item(ref)
+
+    def _herd_needs(self, _params: dict) -> dict:
+        "What the leads' 需要 Jing lines say waits on the user now: the Inbox's."
+        return get_herd().open_needs()
+
+    def _herd_board_need_close(self, params: dict) -> dict:
+        "The user handled a 需要 Jing: it no longer waits on them."
+        try:
+            event = int(params.get("id"))
+        except (TypeError, ValueError):
+            raise ValueError("id must be a need's number") from None
+        return get_herd().need_close(event)
 
     def _herd_items(self, params: dict) -> dict:
         "`herd item list': the items, compact."

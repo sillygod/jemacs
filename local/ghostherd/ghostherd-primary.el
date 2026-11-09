@@ -88,7 +88,11 @@ user it waits.  Brief it for a lead who knows nothing of your
 conversation: what the user wants and why, what is known (files,
 tickets, links, commits), what done looks like, and that the user waits.
 Work that spans projects is a handoff to each, with its part, and says
-what each depends on.  Not sure where something belongs: look first
+what each depends on.  A handoff that goes on with work on the Board,
+say so: --item ID (an item's id or an ask's); one that passes on an
+answer: --relay-of ASK.  End a report with a line of its own for each
+that applies: \"需要 Jing：what the user must do\" (\"需要 Jing：無\" once
+nothing is), \"部署：what went where\".  Not sure where something belongs: look first
 (list, recall); still unsure, ask the user rather than guess.
 
 You do not ask any project's agents yourself -- the herd refuses it:

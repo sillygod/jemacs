@@ -801,7 +801,7 @@ cites; a missing one, or a repo on no forge, says why."
                  (lambda (url _headers cb &rest _)
                    (setq asked url)
                    (funcall cb (json-encode '((id . 371) (title . "Retry CU-86abc1def") (state . "MERGED")
-                                               (description . "")
+                                               (description . "") (updated_on . "2026-11-09T01:02:03+00:00")
                                                (source . ((branch . ((name . "fix/retry")))))
                                                (destination . ((branch . ((name . "main")))))
                                                (links . ((html . ((href . "b371")))))))
@@ -812,6 +812,8 @@ cites; a missing one, or a repo on no forge, says why."
                    '(371 "MERGED" "fix/retry" "b371")))
     ;; Where it goes: the herd page's Board shows it beside the number.
     (should (equal (alist-get 'destination got) "main"))
+    ;; Bitbucket says no merge time: a merged one's last update stands for it.
+    (should (equal (alist-get 'merged_at got) "2026-11-09T01:02:03+00:00"))
     (when (require 'clickup-view nil t)
       (should (equal (alist-get 'tasks got) '("86abc1def"))))
     (pr-view-tests--on-branch "git@github.com:me/r.git" "feat/x"

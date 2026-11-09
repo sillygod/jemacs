@@ -2253,8 +2253,9 @@ the newest.  As `pr-view-branch-pr' gives it, or nil."
 (defun pr-view--brief (host raw)
   "HOST's pull request RAW, a list row or its detail, as another package
 gets it: id, title, state, draft, url, source, destination (the branch
-it goes into), and the ClickUp tasks its title, branch and description
-cite."
+it goes into), when it was merged (GitHub's merged_at; Bitbucket says
+none, so its last update once merged -- the merge, as a rule), and the
+ClickUp tasks its title, branch and description cite."
   (let* ((it (if (eq (plist-get host :kind) 'github) (pr-view--gh-item raw) (pr-view--bb-item raw)))
          (description (or (alist-get 'description raw) (alist-get 'body raw) "")))
     `((id . ,(alist-get 'id it))
@@ -2264,6 +2265,9 @@ cite."
       (url . ,(alist-get 'url it))
       (source . ,(alist-get 'source it))
       (destination . ,(alist-get 'destination it))
+      (merged_at . ,(or (alist-get 'merged_at raw)
+                        (and (equal (alist-get 'state it) "MERGED")
+                             (let ((u (alist-get 'updated_on it))) (and (stringp u) (not (string-empty-p u)) u)))))
       (tasks . ,(and (require 'clickup-view nil t)
                      (clickup-view-task-refs
                       (string-join (list (alist-get 'title it) (alist-get 'source it) description)
