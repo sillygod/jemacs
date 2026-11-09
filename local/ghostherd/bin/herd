@@ -24,7 +24,7 @@ Usage:
   herd hooks install|uninstall|status [--dry-run]
   herd hooks list [--json] [--project DIR]...
   herd cost [--days N] [--project P] [--tasks] [--json]
-  herd item [list [--days N] [--json] | show ID | rename ID [TITLE] | merge ID INTO
+  herd item [list [--days N] [--json] | show ID [--json] | rename ID TITLE | merge ID INTO
              | split ASK... [--title T] | move ID ASK... | label ID LABEL... [--remove]
              | close ID | reopen ID]
 
@@ -63,11 +63,14 @@ in its answer to its lead, which hands it off.
 `item' is the herd page's Board: the work items, each the asks of one
 piece of work.  The herd puts each ask in one as it sees it -- with the ask
 it was made answering, a relay with the answer it passes on, else in one
-of its own -- and a lead puts right what it got wrong: `rename' (no TITLE
-gives back the name it had), `merge' ID into INTO, `split' asks -- each
+of its own -- and a lead puts right what it got wrong: `rename',
+`merge' ID into INTO, `split' asks -- each
 with the asks made answering it -- out into an item of their own, `move'
 asks into item ID, `label' (a ticket, a deploy), `close' once done --
-the herd never takes an item for done by its quiet -- and `reopen'.  ID
+the herd never takes an item for done by its quiet -- and `reopen'.
+`rename' takes the title as words after ID or as --title; "" gives the
+item back the name its first ask gives it.  An option an action does not
+take is refused, not dropped.  ID
 is an item's id, or an ask's for the item it is in.  An ask you make for
 an item you know, say so: `ask --item ID'; one that passes on the answer
 to another ask, `ask --relay-of ASK'.  What a lead moved stays put.  Only
@@ -548,6 +551,12 @@ def _ago(ms):
     return "%dm" % (s // 60) if s < 3600 else "%dh" % (s // 3600) if s < 86400 else "%dd" % (s // 86400)
 
 
+# The options of `herd item', and the actions that take each: given to
+# another, one is refused rather than dropped -- a --title rename once
+# ignored went out as no title, and put the item's name back.
+ITEM_OPTIONS = {"title": ("rename", "split"), "remove": ("label",), "days": ("list",), "json": ("list", "show")}
+
+
 def cmd_item(args):
     """The Board's work items: list, show, and a lead's changes to them."""
     act, rest = args.action, args.args
@@ -556,8 +565,13 @@ def cmd_item(args):
         if len(rest) < n:
             raise HerdError("usage: herd item " + usage)
 
+    for opt, takers in ITEM_OPTIONS.items():
+        if getattr(args, opt) not in (None, False) and act not in takers:
+            raise HerdError("item %s takes no --%s (only %s does); nothing changed"
+                            % (act, opt, " and ".join(takers)))
+
     if act == "list":
-        out = rpc("herd_items", {"days": args.days})
+        out = rpc("herd_items", {"days": args.days if args.days is not None else 1})
         if args.json:
             print(json.dumps(out, indent=2, ensure_ascii=False))
             return 0
@@ -587,8 +601,13 @@ def cmd_item(args):
         return 0
     params = {"op": act, "by": me()}
     if act == "rename":
-        need(1, "rename ID [TITLE]")
-        params.update(id=rest[0], title=" ".join(rest[1:]))
+        need(1, "rename ID TITLE  (or --title TITLE; \"\" gives back the name its first ask gives)")
+        if args.title is not None and len(rest) > 1:
+            raise HerdError("give the title once -- as words after ID, or as --title -- not both; nothing changed")
+        if args.title is None and len(rest) < 2:
+            raise HerdError("rename %s to what? give a title (words or --title); \"\" gives it back "
+                            "the name its first ask gives; nothing changed" % rest[0])
+        params.update(id=rest[0], title=args.title if args.title is not None else " ".join(rest[1:]))
     elif act == "merge":
         need(2, "merge ID INTO")
         params.update(id=rest[0], into=rest[1])
@@ -610,9 +629,11 @@ def cmd_item(args):
     elif act in ("split", "move"):
         say("%s %d asks into item %s: %s" % ("split" if act == "split" else "moved", len(out["moved"]),
                                             out["item"], " ".join(out["moved"])))
+    elif act == "rename":
+        say("item %s renamed: %s" % (out["item"], params["title"].strip())
+            if params["title"].strip() else "item %s: back to the name its first ask gives" % out["item"])
     else:
-        say("item %s: %s" % (out["item"], {"rename": "renamed", "label": "labels changed",
-                                          "close": "closed", "reopen": "reopened"}[act]))
+        say("item %s: %s" % (out["item"], {"label": "labels changed", "close": "closed", "reopen": "reopened"}[act]))
     print(out["item"])
     return 0
 
@@ -1848,8 +1869,8 @@ def main(argv=None):
     p.add_argument("action", nargs="?", default="list",
                    choices=("list", "show", "rename", "merge", "split", "move", "label", "close", "reopen"))
     p.add_argument("args", nargs="*", metavar="ARG")
-    p.add_argument("--days", type=float, default=1, help="list: quiet and done items of the last N days too (1; 7 at most)")
-    p.add_argument("--title", help="split: the new item's name")
+    p.add_argument("--days", type=float, help="list: quiet and done items of the last N days too (1; 7 at most)")
+    p.add_argument("--title", help="rename: the item's new name; split: the new item's")
     p.add_argument("--remove", action="store_true", help="label: take the labels off")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_item)
