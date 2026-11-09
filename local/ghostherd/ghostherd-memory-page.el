@@ -4698,7 +4698,7 @@ A lead's need (`need:N') done is handled: closed on the Board too."
         ("board-days" (ghostherd-board--set-days intent))
         ("board-timeline" (ghostherd-board--timeline intent))
         ("board-need-done" (ghostherd-board--need-done intent))
-        ("board-peek" (ghostherd-board--peek))
+        ("board-peek" (ghostherd-board--peek intent))
         ("inbox-watch" (ghostherd-inbox--watch))
         ("inbox-unwatch" (ghostherd-inbox--unwatch))
         ("inbox-set" (ghostherd-memory-page--inbox-set intent))
@@ -5118,7 +5118,9 @@ that has not opened the tab."
 ;; keeps, and -- the fallback -- the Inbox's Needs-you items, by agent, put
 ;; on the item that agent was last in.  An item quiet for
 ;; `ghostherd-board-orphan-hours' with a need still open, or whose last
-;; ask went nowhere, is `沒人接' (orphan).
+;; ask went nowhere, is `沒人接' (orphan) -- the sidecar says which, by the
+;; rule its badge counts by (herd_board_counts), so the tab's count is the
+;; same open or closed.
 ;;
 ;; Sent only while the tab is shown, and in parts: the page holds the
 ;; board as a version, each card by its id; a tick sends the cards that
@@ -5149,7 +5151,7 @@ on): a hash table, or nil for nothing yet.")
   "When a look began and has not answered: one at a time.")
 
 (defconst ghostherd-board--bools '(:named :cross :working :own :unsure :draft :relay :auto :pinned :more :read :guess :full
-                                   :line :key :done :loading)
+                                   :line :key :done :loading :orphan)
   "Keys that are true or false: the reply reads JSON false as nil.")
 (defconst ghostherd-board--lists
   '(:items :labels :agents :projects :prs :links :waits :edges :events :asksOf :cards :drop :jing :jingOf
@@ -5224,10 +5226,14 @@ likely about.  A guess, said so on the page."
 (defun ghostherd-board--orphan-p (c now)
   "Non-nil when card C, at NOW (seconds), is nobody's: not live, not done,
 quiet past `ghostherd-board-orphan-hours', with a request still open -- a
-lead's need not handled, or its last ask went nowhere."
-  (and (not (member (plist-get c :status) '("live" "done")))
-       (or (plist-get c :needs) (plist-get c :unanswered))
-       (> (- now (/ (or (plist-get c :last) 0) 1000.0)) (* 3600 ghostherd-board-orphan-hours))))
+lead's need not handled, or its last ask went nowhere.  As the sidecar
+marks it (`orphan', board.urgent: what the badge counts with the tab
+closed); a sidecar from before that says nothing, and the rule is here."
+  (if (plist-member c :orphan)
+      (and (plist-get c :orphan) t)
+    (and (not (member (plist-get c :status) '("live" "done")))
+         (or (plist-get c :needs) (plist-get c :unanswered))
+         (> (- now (/ (or (plist-get c :last) 0) 1000.0)) (* 3600 ghostherd-board-orphan-hours)))))
 
 (defun ghostherd-board--cards (result needs)
   "RESULT's cards, as the page shows them: each pull request with what the
@@ -5404,7 +5410,7 @@ changed."
             "herd_inbox_state" (lambda (st) (funcall go (plist-get st :state)))
             (list :ids (ghostherd-memory-page--vec ids))
             (lambda (_e) (funcall go nil))))))
-     (list :days ghostherd-board--days)
+     (list :days ghostherd-board--days :orphan_hours ghostherd-board-orphan-hours)
      (lambda (e)
        (setq ghostherd-board--inflight nil)
        (when ghostherd-board--watching
@@ -5460,11 +5466,15 @@ closes it, and the board -- and the Inbox -- are looked at again."
 (defvar ghostherd-board--peek-soon nil "The look the news asked for, waiting its turn.")
 (defvar ghostherd-board--peek-timer nil "The look with no news, every `--peek-fallback'.")
 
-(defun ghostherd-board--peek ()
+(defun ghostherd-board--peek (&optional intent)
   "The Board tab's badge for a page that has not the tab open: how many
 items wait on the user, and how many nobody has (`herd_board_counts', the
-events and the asks' few columns -- never the board).  The tab open, its
+events and the asks' few columns -- never the board) -- of those the Board
+would show: its window, `ghostherd-board--days', the page's own choice,
+which INTENT's `days' brings from a page just opened.  The tab open, its
 patches carry it."
+  (let ((days (alist-get 'days intent)))
+    (when (numberp days) (setq ghostherd-board--days (max 0.04 (min 7 days)))))
   (if (not (xwapp-live-p ghostherd-memory-page--app))
       (progn (when (timerp ghostherd-board--peek-timer) (cancel-timer ghostherd-board--peek-timer))
              (setq ghostherd-board--peek-timer nil))
@@ -5477,7 +5487,7 @@ patches carry it."
        "herd_board_counts"
        (lambda (r) (ghostherd-memory-page--js "boardBadge" (list :jing (or (plist-get r :jing) 0)
                                                                  :orphan (or (plist-get r :orphan) 0))))
-       (list :orphan_hours ghostherd-board-orphan-hours)
+       (list :days ghostherd-board--days :orphan_hours ghostherd-board-orphan-hours)
        #'ignore))))
 
 (defun ghostherd-board--on-log (_entry)

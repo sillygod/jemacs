@@ -104,6 +104,23 @@ def _restated(hit: dict, key: str) -> str:
             f"  {'--new'.ljust(width)}   to keep both, as separate facts")
 
 
+def _board_days(params: dict) -> float:
+    "The Board's window, `days' in PARAMS: 1 when not given."
+    try:
+        return float(params.get("days") or 1)
+    except (TypeError, ValueError):
+        raise ValueError("days must be a number") from None
+
+
+def _orphan_hours(params: dict) -> float:
+    "Hours quiet before an item is nobody's, `orphan_hours' in PARAMS: 4 when not given."
+    v = params.get("orphan_hours")
+    try:
+        return float(v if v is not None else 4)
+    except (TypeError, ValueError):
+        raise ValueError("orphan_hours must be a number") from None
+
+
 def _opt_str(params: dict, key: str) -> str | None:
     "PARAMS' KEY, a string or left out, or why not."
     v = params.get(key)
@@ -603,12 +620,9 @@ class JsonRpcHandler:
 
     def _herd_board(self, params: dict) -> dict:
         """The page's Board tab: the work items -- those live, and those that
-        moved in the last DAYS -- who waits on whom, the asks between projects."""
-        try:
-            days = float(params.get("days") or 1)
-        except (TypeError, ValueError):
-            raise ValueError("days must be a number") from None
-        return get_herd().board(days)
+        moved in the last DAYS -- who waits on whom, the asks between projects;
+        an item quiet past ORPHAN_HOURS with a request open is nobody's."""
+        return get_herd().board(_board_days(params), _orphan_hours(params))
 
     def _herd_board_item(self, params: dict) -> dict:
         "One work item whole, with its timeline: by its id or an ask's."
@@ -618,12 +632,9 @@ class JsonRpcHandler:
         return get_herd().board_item(ref)
 
     def _herd_board_counts(self, params: dict) -> dict:
-        "The Board tab's badge: items waiting on the user, items nobody has."
-        try:
-            hours = float(params.get("orphan_hours") if params.get("orphan_hours") is not None else 4)
-        except (TypeError, ValueError):
-            raise ValueError("orphan_hours must be a number") from None
-        return get_herd().board_counts(hours)
+        """The Board tab's badge: items waiting on the user, items nobody has --
+        of those the Board would show, its window of DAYS as the page chose."""
+        return get_herd().board_counts(_board_days(params), _orphan_hours(params))
 
     def _herd_needs(self, _params: dict) -> dict:
         "What the leads' 需要 Jing lines say waits on the user now: the Inbox's."

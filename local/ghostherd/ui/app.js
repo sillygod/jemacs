@@ -987,7 +987,7 @@
     if (view === "docs") emit("docs");
     emit("ready", { lazy: true });
     emit("threads-peek");
-    emit("board-peek");
+    emit("board-peek", { days: board.days });
   }
 
   function filtersHtml() {
@@ -7512,9 +7512,10 @@
   function bdCross(w) { return w.kind === "handoff" || (w.fromProj && w.toProj && w.fromProj !== w.toProj); }
 
   // The tab's red count: items nobody has (沒人接), and those waiting on Jing
-  // by a lead's 需要 Jing line.  The tab open, from its own cards; closed,
-  // from what Emacs looked at (boardBadge: herd_board_counts, on news, never
-  // the board itself).
+  // by a lead's 需要 Jing line -- of those the Board shows, in its window
+  // (board.days).  The tab open, from its own cards; closed, from what Emacs
+  // looked at (boardBadge: herd_board_counts with the same window and the
+  // sidecar's same rules, on news, never the board itself).
   function boardBadge() {
     const b = $("board-n");
     if (!b) return;
@@ -8983,7 +8984,8 @@
   // brings the sessions with it (`needSessions').
   restore();
   emit("ready", { lazy: true });
-  // The Threads tab's badge, before the tab is opened; the Board's.
+  // The Threads tab's badge, before the tab is opened; the Board's -- of
+  // what the Board would show, in the window this page chose.
   emit("threads-peek");
-  emit("board-peek");
+  emit("board-peek", { days: board.days });
 })();

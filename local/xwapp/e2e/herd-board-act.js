@@ -31,12 +31,27 @@ async function boardOpen(page, intents, patch) {
 (async () => {
   const browser = await webkit.launch();
   try {
+    // ---- The badge's window: the Board's own -------------------------
+    {
+      const intents = [];
+      const { ctx, page, errors } = await phonePage(browser, { intents, context: DESK });
+      await page.evaluate(() => localStorage.setItem("ghostherd.board.days", "7"));
+      await page.reload();
+      await page.waitForFunction(() => window.GM && window.XW);
+      await sleep(100);
+      const peeks = ops(intents, "board-peek");
+      check("desk: a page that keeps a week's window asks the badge for a week", peeks.length === 2 && peeks[1].days === 7, peeks);
+      check("desk: no page errors (window)", !errors.length, errors);
+      await ctx.close();
+    }
     // ---- The desk ------------------------------------------------------
     {
       const intents = [];
       const { ctx, page, errors } = await phonePage(browser, { intents, context: DESK });
       await sleep(100);
       check("desk: the page asks for the Board's badge as it starts", ops(intents, "board-peek").length === 1);
+      check("desk: of what the Board would show: the window it keeps, a day", ops(intents, "board-peek")[0].days === 1,
+        ops(intents, "board-peek"));
       await page.evaluate(() => GM.boardBadge({ jing: 2, orphan: 1 }));
       const badge = await page.$eval("#board-n", (b) => ({ t: b.textContent, red: b.classList.contains("red") && b.classList.contains("badge") }));
       check("desk: with the tab closed, the tab shows Emacs's count in red", badge.t === "3" && badge.red, badge);

@@ -2940,42 +2940,40 @@ class HerdStore:
             self._conn.commit()
         return {"id": int(event), "closed": cur.rowcount == 1}
 
-    def board_counts(self, orphan_hours: float = 4) -> dict[str, Any]:
-        """How many items wait on the user (a lead's need open, not live)
-        and how many nobody has (quiet past ORPHAN_HOURS with a need open or
-        its last ask gone nowhere): the Board tab's badge, for a page that
-        has not the tab open.  The asks' few columns and the events alone --
-        no cards, no text."""
-        now = datetime.now(timezone.utc)
-        cutoff = (now - timedelta(hours=max(0.0, float(orphan_hours)))).isoformat()
+    def board_counts(self, days: float = 1, orphan_hours: float = 4) -> dict[str, Any]:
+        """How many items the Board would show waiting on the user (a lead's
+        need open) and how many nobody has (沒人接): the Board tab's badge,
+        for a page that has not the tab open.  The Board's own window of
+        DAYS and its own rules -- `board.shown', `board.urgent', the same
+        `board' marks its cards with -- on the asks' few columns and the
+        events alone: no cards, no text."""
+        since, orphan_since = board.windows(self._board_days(days), orphan_hours)
         with self._mu:
             self._assign_items()
             events = self._events()
-            closed = {r[0]: r[1] for r in self._conn.execute(
+            items = {r[0]: {"id": r[0], "closed_at": r[1]} for r in self._conn.execute(
                 "SELECT id, closed_at FROM work_items WHERE merged_into IS NULL")}
-            rows = self._conn.execute(
-                "SELECT i.item, a.status, a.auto, a.created_at, COALESCE(a.answered_at, a.delivered_at, a.created_at) "
-                "FROM asks a JOIN ask_item i ON i.ask = a.id").fetchall()
-        by: dict[str, list[tuple]] = {}
+            cur = self._conn.execute(
+                "SELECT i.item, a.status, a.auto, a.created_at, a.delivered_at, a.answered_at "
+                "FROM asks a JOIN ask_item i ON i.ask = a.id")
+            names = [d[0] for d in cur.description]
+            rows = [dict(zip(names, r)) for r in cur.fetchall()]
+        by: dict[str, list[dict[str, Any]]] = {}
         for r in rows:
-            by.setdefault(r[0], []).append(r)
-        jing = orphan = 0
-        for item, asks in by.items():
-            if item not in closed or any(a[1] in ASK_OPEN for a in asks):
+            by.setdefault(r["item"], []).append(r)
+        out = {"jing": 0, "orphan": 0}
+        for it, asks in by.items():
+            if it not in items:
                 continue
-            if closed[item] and all(a[3] <= closed[item] for a in asks):
-                continue
-            evs = events.get(item, [])
-            states = board.need_states(evs, closed[item])
-            need = any(st == "open" for st in states.values())
-            latest = max(asks, key=lambda a: a[3])
-            gone = latest[1] in ("failed", "cancelled") or (latest[1] == "answered" and latest[2])
-            last = max([a[4] for a in asks] + [e["at"] for e in evs])
-            if (need or gone) and last < cutoff:
-                orphan += 1
-            elif need:
-                jing += 1
-        return {"jing": jing, "orphan": orphan}
+            st = board.standing(items[it], asks, events.get(it, []))
+            if board.shown(st, since) and (u := board.urgent(st, orphan_since)):
+                out[u] += 1
+        return out
+
+    @staticmethod
+    def _board_days(days: float) -> float:
+        "The Board's window, DAYS as the page may choose it: an hour to a week."
+        return max(0.04, min(7.0, float(days)))
 
     def open_needs(self) -> dict[str, Any]:
         """What the leads' lines say waits on the user now, newest first --
@@ -3068,15 +3066,18 @@ class HerdStore:
         repos = {r[0]: (r[1], r[2]) for r in self._conn.execute("SELECT repo, host, owner FROM board_repos")}
         return snap, rows, items, self._events(), extra, repos
 
-    def board(self, days: float = 1) -> dict[str, Any]:
+    def board(self, days: float = 1, orphan_hours: float = 4) -> dict[str, Any]:
         """The page's Board tab: every item an ask is open in, and those that
-        moved in the last DAYS -- each a card (board.card); every open ask,
-        who waits on whom; the asks between projects in that window, by
+        moved in the last DAYS -- each a card (board.card, the items
+        `board.shown' lists), `orphan' when nobody has it, quiet past
+        ORPHAN_HOURS (`board.urgent': what the badge counts too); every open
+        ask, who waits on whom; the asks between projects in that window, by
         which way; and what the window holds.  `more' says older quiet or
         done items are left out."""
-        days = max(0.04, min(7.0, float(days)))
+        days = self._board_days(days)
         now = datetime.now(timezone.utc)
         cutoff = (now - timedelta(days=days)).isoformat()
+        since, orphan_since = board.windows(days, orphan_hours, now)
         with self._mu:
             snap, rows, items, events, extra, repos = self._board_state()
         by_item: dict[str, list[dict[str, Any]]] = {}
@@ -3095,7 +3096,8 @@ class HerdStore:
             if it not in items:
                 continue
             c = board.card(items[it], asks, snap, owner, known, events.get(it), opened, deployed)
-            if c["status"] == "live" or c["needs"] or (c["last"] or 0) >= board.ms(cutoff):
+            if board.shown(c, since):
+                c["orphan"] = board.urgent(c, orphan_since) == "orphan"
                 cards.append(c)
             else:
                 more = True
