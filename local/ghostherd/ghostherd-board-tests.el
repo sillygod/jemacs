@@ -404,5 +404,78 @@ item turns 沒人接 by time alone).  With the Board open, none is asked."
           (should-not timers)
           (should-not requests))))))
 
+;;; Tickets: what ClickUp says of them, by the work chips' lookup and rules
+
+(ert-deftest ghostherd-test-board-tickets-through-the-work-chips-lookup ()
+  "The Board's tickets: each the cards carry, once, looked up as a chore
+through the work chips' own lookup, its state from their cache -- title,
+status, colour, the status's type -- unsure when the last look failed;
+the most lately named first, `ghostherd-board--tickets-max' at most."
+  (ghostherd-board-test--with
+    (let ((ghostherd-memory-page--task-briefs (make-hash-table :test 'equal)) (asked nil)
+          (brief (lambda (name st type) `((id . "x") (name . ,name) (status . ((name . ,st) (color . "#123456") (type . ,type)))
+                                          (url . "https://app.clickup.com/t/x")))))
+      (puthash "86a" (list :at (float-time) :brief (funcall brief "Login" "in progress" "custom")) ghostherd-memory-page--task-briefs)
+      (puthash "86d" (list :at (float-time) :brief (funcall brief "Old" "complete" "closed") :miss "HTTP 500")
+               ghostherd-memory-page--task-briefs)
+      (let ((board (ghostherd-board-test--reply
+                    (ghostherd-board-test--card "w1" "live" :tickets (list (list :id "86a" :last 300) (list :id "86d" :last 100)))
+                    (ghostherd-board-test--card "w2" "quiet" :tickets (list (list :id "86a" :last 200) (list :id "bad id" :last 900))))))
+        (setq reply (lambda (m _p) (pcase m ("herd_board" board) (_ nil))))
+        (cl-letf (((symbol-function 'ghostherd-memory-page--chore) (lambda (fn &rest args) (push (cons fn args) asked))))
+          (ghostherd-memory-page--handle '((op . "board-watch"))))
+        (should (equal (sort (mapcar #'cadr asked) #'string<) '("86a" "86d")))
+        (should (eq (car (car asked)) 'ghostherd-memory-page--task-ask))
+        (let* ((tickets (append (plist-get (ghostherd-test--call calls "boardPatch") :tickets) nil))
+               (a (car tickets)) (d (cadr tickets)))
+          (should (equal (mapcar (lambda (k) (plist-get k :id)) tickets) '("86a" "86d")))
+          (should (equal (list (plist-get a :name) (plist-get a :status) (plist-get a :type) (plist-get a :unsure))
+                         '("Login" "in progress" "custom" :json-false)))
+          ;; The last look failed: what it knew, said unsure, the miss its error.
+          (should (equal (list (plist-get d :type) (plist-get d :unsure) (plist-get d :error) (plist-get d :done))
+                         '("closed" t "HTTP 500" t))))
+        (let ((ghostherd-board--tickets-max 1))
+          (should (equal (mapcar (lambda (k) (plist-get k :id))
+                                 (cl-letf (((symbol-function 'ghostherd-memory-page--chore) #'ignore))
+                                   (ghostherd-board--tickets (plist-get board :items))))
+                         '("86a"))))))))
+
+(ert-deftest ghostherd-test-task-lookups-keep-what-they-knew ()
+  "A task's look, as a PR's: a failed one keeps the state it knew and notes
+the miss; a done or closed task is kept longer than an open one; one in
+flight is not asked again until it answers or hangs past its time."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let ((ghostherd-memory-page--task-briefs (make-hash-table :test 'equal)) (asks 0) (answer nil))
+    (cl-letf (((symbol-function 'clickup-view-task-brief) (lambda (_id cb) (cl-incf asks) (when answer (funcall cb answer))))
+              ((symbol-function 'ghostherd-memory-page--have) (lambda (&rest _) t))
+              ((symbol-function 'ghostherd-memory-page--work-changed) #'ignore))
+      (setq answer '((id . "86a") (name . "Login") (status . ((name . "to do") (type . "open")))))
+      (ghostherd-memory-page--task-ask "86a")
+      (should (= asks 1))
+      ;; Fresh: not asked.  Stale: asked; failing, it keeps what it knew.
+      (ghostherd-memory-page--task-ask "86a")
+      (should (= asks 1))
+      (puthash "86a" (plist-put (gethash "86a" ghostherd-memory-page--task-briefs) :at (- (float-time) 400))
+               ghostherd-memory-page--task-briefs)
+      (setq answer '((id . "86a") (error . "HTTP 500")))
+      (ghostherd-memory-page--task-ask "86a")
+      (should (= asks 2))
+      (let ((e (gethash "86a" ghostherd-memory-page--task-briefs)))
+        (should (equal (alist-get 'name (plist-get e :brief)) "Login"))
+        (should (equal (plist-get e :miss) "HTTP 500"))
+        (should (equal (plist-get (ghostherd-memory-page--task "86a") :error) "HTTP 500")))
+      ;; Done in ClickUp: kept past the open one's time.
+      (puthash "86d" (list :at (- (float-time) 400) :brief '((status . ((type . "done"))))) ghostherd-memory-page--task-briefs)
+      (ghostherd-memory-page--task-ask "86d")
+      (should (= asks 2))
+      ;; In flight: not asked again; hung past its time: asked.
+      (setq answer nil)
+      (puthash "86x" (list :pending (float-time)) ghostherd-memory-page--task-briefs)
+      (ghostherd-memory-page--task-ask "86x")
+      (should (= asks 2))
+      (puthash "86x" (list :pending (- (float-time) 500)) ghostherd-memory-page--task-briefs)
+      (ghostherd-memory-page--task-ask "86x")
+      (should (= asks 3)))))
+
 (provide 'ghostherd-board-tests)
 ;;; ghostherd-board-tests.el ends here

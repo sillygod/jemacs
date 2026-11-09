@@ -2820,6 +2820,23 @@ words are Traditional Chinese.
   the PR chips' own lookup and cache.  A PR is the item's whose ask's
   answer said it was opened (=開好=, =opened= ... beside its number), else
   whose answer named it first, else whose ask did.
+- *所有單號*, after the PRs: one row per ticket the shown items carry --
+  its id (opening it as the work chips do), what ClickUp says of it
+  (title, status; =?= when it could not be read, or its last state marked
+  unsure when the last look failed), its items by status (=3 件：進行中
+  1、收尾 1、完成 1=), their PRs, its projects, when an ask last named it.
+  Looked up through the work chips' own lookup and cache
+  (=clickup-view-task-brief=, =ghostherd-memory-page--task-briefs=), by
+  the PR chips' rules: a failed look keeps what it knew, a done or closed
+  ticket is kept an hour, a look that hangs is asked again.  A tap opens
+  a row to its items' cards; =只看這張=, or a ticket label on a card,
+  narrows the Board to it (=只看 CU-xxx ✕=) -- with a project too, both
+  hold.  A last row counts the items with no ticket, and where; a tap
+  narrows to them.  Hints where ClickUp and the work disagree, by the
+  status's type (never its name), display only -- nothing is written to
+  ClickUp: open or custom in ClickUp while every PR its items name is
+  merged or deployed and none of them is live; done or closed while one
+  is live, 等 Jing or 沒人接.  None while its state is not known for sure.
 - *等 Jing*: first the leads' own lines.  A lead (or primary) ends an
   answer or a report with a line of its own for each that applies ---
   =需要 Jing：what the user must do= and =部署：what went where=, either

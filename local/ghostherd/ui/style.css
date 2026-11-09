@@ -2237,3 +2237,40 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
   .room .rhead:has(> .rback) { flex-wrap: wrap; row-gap: 6px; }
   .room .rhead .rback { order: 0; flex: 1 0 100%; text-align: left; white-space: nowrap; min-height: 34px; margin: 0; }
 }
+
+/* The tickets: one row each, its items a tap away; a hint where ClickUp and
+   the work disagree. */
+.boardpage .bdtks { display: flex; flex-direction: column; gap: 6px; }
+.boardpage .bdtk { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); min-width: 0; }
+.boardpage .bdtk.mis { border-color: rgba(210,153,34,.55); }
+.boardpage .bdtkh { display: flex; align-items: center; gap: 8px; padding: 8px 12px 2px; cursor: pointer; flex-wrap: wrap; min-width: 0; }
+.boardpage .bdtkid { font-family: var(--mono); font-size: 12px; color: var(--meta); text-decoration: none; white-space: nowrap; }
+.boardpage .bdtkid:hover { text-decoration: underline; }
+.boardpage .bdtkst { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text); border: 1px solid var(--line);
+  border-radius: 999px; padding: 0 8px; white-space: nowrap; }
+.boardpage .bdtkst i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.boardpage .bdtkst.unk { color: var(--warn); border-style: dashed; }
+.boardpage .bdtkname { flex: 1 1 12em; min-width: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.boardpage .bdtkh .chev { color: var(--muted); margin-left: auto; }
+.boardpage .bdtkm { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 2px 12px 8px; font-size: 12px; color: var(--muted); }
+.boardpage .bdtkn { color: var(--text); }
+.boardpage .bdtkprs { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.boardpage .bdtkprs .bdpr { font-size: 11px; padding: 0 6px; }
+.boardpage .bdtkp { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.boardpage .bdtkat { font-family: var(--mono); font-size: 11px; }
+.boardpage .bdtkm .bdact { margin-left: auto; font-size: 11.5px; padding: 1px 8px; }
+.boardpage .bdtkmis { margin: 0 12px 8px; font-size: 12px; color: var(--warn); border-left: 2px solid var(--warn); padding-left: 8px; }
+.boardpage .bdtk > .cards { padding: 0 8px 8px; }
+.boardpage .bdtknone { display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 6px; padding: 9px 12px; text-align: left;
+  cursor: pointer; color: var(--muted); font-size: 12.5px; }
+.boardpage .bdtknone .bdtkid { color: var(--text); font-family: inherit; font-weight: 600; }
+.boardpage .bdtknone .chev { margin-left: auto; font-size: 11.5px; color: var(--accent); flex: none; white-space: nowrap; }
+.boardpage .bdtknone .bdtkid { flex: none; }
+.boardpage .bdtknone.sel { border-color: var(--accent); }
+.boardpage button.tk { background: none; cursor: pointer; }
+.boardpage button.tk:hover, .boardpage button.tk.sel { background: rgba(163,113,247,.15); }
+@media (max-width: 640px) {
+  .boardpage .bdtkh { padding: 10px 12px 2px; min-height: 40px; }
+  .boardpage .bdtkm .bdact { min-height: 30px; }
+  .boardpage .bdtknone { min-height: 44px; }
+}

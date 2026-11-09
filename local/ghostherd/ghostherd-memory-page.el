@@ -1216,15 +1216,35 @@ so it is asked afresh rather than waited on."
   (when (timerp ghostherd-memory-page--herd-timer)
     (ghostherd-memory-page--send-herd)))
 
+(defun ghostherd-memory-page--task-done-p (brief)
+  "Non-nil when task BRIEF's status is of a done or closed type, as
+ClickUp types it -- not as it names it."
+  (member (alist-get 'type (alist-get 'status brief)) '("done" "closed")))
+
 (defun ghostherd-memory-page--task-ask (id)
-  "Look up task ID with clickup-view, unless what it said is fresh."
-  (let ((had (gethash id ghostherd-memory-page--task-briefs)))
-    (when (and (ghostherd-memory-page--stale-p had)
+  "Look up task ID with clickup-view, unless what it said is fresh: as
+the PR chips are (`ghostherd-memory-page--pr-brief-ask').  A done or
+closed one is kept longer -- it rarely moves; a look that fails keeps
+the last known state and notes the miss (`:miss'), so the chip says it
+is unsure rather than lose what it knew; one that never answers is
+abandoned after `--pending-ttl' and asked again."
+  (let* ((had (gethash id ghostherd-memory-page--task-briefs))
+         (ttl (if (ghostherd-memory-page--task-done-p (plist-get had :brief))
+                  ghostherd-memory-page--closed-ttl
+                ghostherd-memory-page--work-ttl)))
+    (when (and (not (ghostherd-memory-page--pending-p had))
+               (or (null (plist-get had :at)) (> (- (float-time) (plist-get had :at)) ttl))
                (ghostherd-memory-page--have 'clickup-view-task-brief 'clickup-view))
       (puthash id (plist-put (copy-sequence had) :pending (float-time)) ghostherd-memory-page--task-briefs)
       (clickup-view-task-brief
        id (lambda (brief)
-            (puthash id (list :at (float-time) :brief brief) ghostherd-memory-page--task-briefs)
+            (let ((err (alist-get 'error brief))
+                  (prev (plist-get (gethash id ghostherd-memory-page--task-briefs) :brief)))
+              (puthash id
+                       (if (and err prev (not (alist-get 'error prev)))
+                           (list :at (float-time) :brief prev :miss err)
+                         (list :at (float-time) :brief brief))
+                       ghostherd-memory-page--task-briefs))
             (ghostherd-memory-page--work-changed))))))
 
 (defun ghostherd-memory-page--pr-ask (co)
@@ -1933,9 +1953,14 @@ has not changed."
           :status (ghostherd-memory-page--str (alist-get 'name status))
           :color (ghostherd-memory-page--str (alist-get 'color status))
           :url (ghostherd-memory-page--str (alist-get 'url brief))
-          :error (ghostherd-memory-page--str (alist-get 'error brief))
+          :error (ghostherd-memory-page--str (or (plist-get entry :miss) (alist-get 'error brief)))
           :done (if (member (alist-get 'type status) '("closed" "done")) t :json-false)
           :loading (if (and (null brief) entry) t :json-false))))
+
+(defun ghostherd-memory-page--task-unsure-p (entry)
+  "Non-nil when task ENTRY's state cannot be trusted now: its last look
+failed, or one has hung past `--pending-ttl' (`--pr-unsure-p')."
+  (ghostherd-memory-page--pr-unsure-p entry))
 
 (defun ghostherd-memory-page--work (co)
   "Checkout CO as the page shows it: its branch, PR and tasks."
@@ -5124,11 +5149,11 @@ on): a hash table, or nil for nothing yet.")
   "When a look began and has not answered: one at a time.")
 
 (defconst ghostherd-board--bools '(:named :cross :working :own :unsure :draft :relay :auto :pinned :more :read :guess :full
-                                   :line :key)
+                                   :line :key :done :loading)
   "Keys that are true or false: the reply reads JSON false as nil.")
 (defconst ghostherd-board--lists
   '(:items :labels :agents :projects :prs :links :waits :edges :events :asksOf :cards :drop :jing :jingOf
-    :needs :deploys)
+    :needs :deploys :tickets)
   "Keys that are arrays: the reply reads [] as nil.")
 
 (defconst ghostherd-board--need-kinds
@@ -5275,6 +5300,33 @@ from CARDS."
                 (list :replyVia (plist-get n :replyVia) :projectDir (or (plist-get n :project) "")))))
            needs)))
 
+(defconst ghostherd-board--tickets-max 40
+  "Most tickets the Board looks up in ClickUp, the most lately named first.")
+
+(defun ghostherd-board--tickets (cards)
+  "The tickets CARDS carry, as the Board shows them: each its id, what
+ClickUp says of it -- title, status, its colour and its type (open,
+custom, done, closed), its address -- or why not, and a look asked for
+when what it said is stale: through the work chips' own lookup and cache
+\(`ghostherd-memory-page--task-ask'), by its rules."
+  (let ((last (make-hash-table :test #'equal)))
+    (dolist (c cards)
+      (dolist (tk (plist-get c :tickets))
+        (let ((id (plist-get tk :id)))
+          (when (and (stringp id) (string-match-p "\\`[0-9a-z]+\\'" id))
+            (puthash id (max (or (gethash id last) 0) (or (plist-get tk :last) 0)) last)))))
+    (let (ids)
+      (maphash (lambda (k v) (push (cons k v) ids)) last)
+      (setq ids (mapcar #'car (seq-take (sort ids (lambda (a b) (> (cdr a) (cdr b)))) ghostherd-board--tickets-max)))
+      (mapcar (lambda (id)
+                (ghostherd-memory-page--chore #'ghostherd-memory-page--task-ask id)
+                (let* ((entry (gethash id ghostherd-memory-page--task-briefs))
+                       (status (alist-get 'status (plist-get entry :brief))))
+                  (append (ghostherd-memory-page--task id)
+                          (list :type (ghostherd-memory-page--str (alist-get 'type status))
+                                :unsure (and (ghostherd-memory-page--task-unsure-p entry) t)))))
+              (sort ids #'string<)))))
+
 (defun ghostherd-board--agents ()
   "The herd's agents as the Board names them: each its name, the project
 its room is under -- as the Agents tab has it -- and its role.  A name on
@@ -5302,9 +5354,12 @@ Each part is kept as sent (`ghostherd-board--sent')."
     (maphash (lambda (k _) (when (and (consp k) (not (gethash k now))) (push (cdr k) drop))) sent)
     (dolist (part (list (cons 'waits (plist-get result :waits))
                         (cons 'jing (ghostherd-board--jing result needs (plist-get result :items)))
+                        (cons 'tickets (ghostherd-board--tickets (plist-get result :items)))
                         (cons 'meta (list :counts (plist-get result :counts) :edges (plist-get result :edges)
                                           :days (plist-get result :days) :more (plist-get result :more)
-                                          :agents (ghostherd-board--agents)))))
+                                          :agents (ghostherd-board--agents)
+                                          ;; A ticket opens in clickup-view's own page there, as the work chips do.
+                                          :openTask (ghostherd-memory-page--opens-elsewhere 'clickup-view--app)))))
       (puthash (car part) (cdr part) now)
       (unless (and (not full) (equal (gethash (car part) sent) (cdr part)))
         (setq patch (append patch (list (intern (format ":%s" (car part))) (cdr part))))))

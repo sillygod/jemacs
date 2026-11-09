@@ -7409,7 +7409,10 @@
                 // The project the Board is narrowed to ("" for all), the badge's
                 // counts Emacs looked at while the tab was closed, where the page
                 // was when a name took it to a room, the inline replies.
-                proj: "", peek: null, back: null, replying: "", replyText: {} };
+                proj: "", peek: null, back: null, replying: "", replyText: {},
+                // The ticket the Board is narrowed to ("" none, "none" the items
+                // with none), what ClickUp says of each ticket, the rows opened.
+                ticket: "", tickets: [], openTkt: new Set() };
   let boardWatching = false;
   let boardTimer = 0;
 
@@ -7471,13 +7474,25 @@
   }
   // Narrowed to a project: its cards, the asks to or from it, what waits on Jing in it.
   function bdInProj(c) { return !board.proj || (c.projects || []).includes(board.proj); }
+  // Narrowed to a ticket -- or to the items with none: with a project too,
+  // both hold (a ticket spans projects; one project's part of it).
+  function bdTkIds(c) { return (c.tickets || []).map((t) => t.id); }
+  function bdInTicket(c) {
+    if (!board.ticket) return true;
+    const ids = bdTkIds(c);
+    return board.ticket === "none" ? !ids.length : ids.includes(board.ticket);
+  }
+  function bdInFilter(c) { return bdInProj(c) && bdInTicket(c); }
+  function bdItemIn(id) { const c = board.cards[id]; return !board.ticket || (c && bdInTicket(c)); }
   function bdWaitsShown() {
-    return board.proj ? board.waits.filter((w) => w.fromProj === board.proj || w.toProj === board.proj) : board.waits;
+    return board.waits.filter((w) => (!board.proj || w.fromProj === board.proj || w.toProj === board.proj) && bdItemIn(w.item));
   }
   function bdJingShown() {
-    if (!board.proj) return board.jing;
-    return board.jing.filter((j) => j.project === board.proj || ((board.cards[j.item] || {}).projects || []).includes(board.proj));
+    return board.jing.filter((j) => (!board.proj || j.project === board.proj ||
+      ((board.cards[j.item] || {}).projects || []).includes(board.proj)) && (!board.ticket || bdItemIn(j.item)));
   }
+  function bdTkInfo(id) { return (board.tickets || []).find((t) => t.id === id) || null; }
+  function bdTkName(t) { return t === "none" ? "沒有單號的" : "CU-" + t; }
   function bdLeadOf(proj) {
     return ((board.meta && board.meta.agents) || []).find((a) => a.role === "lead" && leaf(a.project) === proj) || null;
   }
@@ -7924,7 +7939,10 @@
         '<div class="meta">' + projs + (c.prs.length ? '<span class="ag">' + c.prs.length + " 個 PR</span>" : "") +
         (quiet ? '<span class="ag">' + esc(bdBlockLine(c)) + "</span>" : "") + "</div></article>";
     }
-    const labels = (c.labels || []).map((l) => '<span class="tk">' + esc(l) + "</span>").join("");
+    const labels = (c.labels || []).map((l) => /^CU-[0-9a-z]+$/.test(l)
+      ? '<button type="button" class="tk' + (board.ticket === l.slice(3) ? " sel" : "") + '" data-act="bd:tfilter" data-t="' + esc(l.slice(3)) +
+        '" title="只看 ' + esc(l) + '">' + esc(l) + "</button>"
+      : '<span class="tk">' + esc(l) + "</span>").join("");
     const meta = '<div class="meta">' + labels + projs + '<span class="ag">' + c.agents.map((n) => bdAgent(n)).join("、") + "</span></div>";
     const prs = '<div class="prl">' + (c.prs.length ? c.prs.map((p) => bdPrChip(p, c.id)).join("") : '<span class="nopr">沒有 PR</span>') + "</div>";
     const links = c.links && c.links.length ? '<div class="bdlinks">提到：' + c.links.map(bdLink).join(" ") + "</div>" : "";
@@ -7944,9 +7962,15 @@
     cards.forEach((c) => { if (c.status === "quiet") n.quiet++; else if (c.status === "done") n.done++; else n.busy++; });
     const chip = (f, label) => '<button type="button" class="bdchip' + (board.filter === f ? " on" : "") + '" data-act="bd:filter" data-f="' + f + '">' +
       label + " " + n[f] + "</button>";
-    const only = board.proj ? '<button type="button" class="bdchip on bdonly" data-act="bd:pfilter" data-p="' + esc(board.proj) +
-      '" title="不再只看 ' + esc(board.proj) + '">只看 ' + esc(board.proj) + ' <span aria-hidden="true">✕</span></button>' : "";
+    const only = bdOnlyChips();
     return '<div class="bdchips">' + only + chip("all", "全部") + chip("busy", "還有事") + chip("quiet", "安靜") + chip("done", "完成") + "</div>";
+  }
+
+  function bdOnlyChips() {
+    return (board.proj ? '<button type="button" class="bdchip on bdonly" data-act="bd:pfilter" data-p="' + esc(board.proj) +
+      '" title="不再只看 ' + esc(board.proj) + '">只看 ' + esc(board.proj) + ' <span aria-hidden="true">✕</span></button>' : "") +
+      (board.ticket ? '<button type="button" class="bdchip on bdonly bdonlyt" data-act="bd:tfilter" data-t="' + esc(board.ticket) +
+        '" title="不再只看' + esc(bdTkName(board.ticket)) + '">只看 ' + esc(bdTkName(board.ticket)) + ' <span aria-hidden="true">✕</span></button>' : "");
   }
 
   function bdShown(cards) {
@@ -8024,6 +8048,95 @@
         }).join("") + "</tbody>").join("") + "</table></div>";
   }
 
+  // ---- The tickets: one row each, its items a tap away -------------------
+  // A ticket is a label on an item; here each the shown items carry is a row
+  // -- what ClickUp says of it (the work chips' lookup and cache), its items
+  // by status, their PRs, its projects, when an ask last named it -- and
+  // opened, its items' cards: the Board grouped by ticket.  A hint where
+  // ClickUp and the work disagree, display only: nothing is written to
+  // ClickUp.
+
+  function bdTicketRows(cards) {
+    const by = {};
+    cards.forEach((c) => (c.tickets || []).forEach((t) => {
+      const r = by[t.id] || (by[t.id] = { id: t.id, cards: [], last: 0 });
+      if (!r.cards.includes(c)) r.cards.push(c);
+      r.last = Math.max(r.last, t.last || 0);
+    }));
+    return Object.values(by).sort((a, b) => b.last - a.last);
+  }
+
+  // Where ClickUp and the work disagree, by the status's type ClickUp gives
+  // (open, custom, done, closed), never its name; nothing said while its
+  // state is not known for sure.
+  function bdMismatch(r, info) {
+    if (!info || !info.type || info.unsure || info.error) return "";
+    const done = info.type === "done" || info.type === "closed";
+    if (done) {
+      const busy = r.cards.filter((c) => c.status === "live" || c.status === "jing" || c.status === "orphan");
+      if (!busy.length) return "";
+      const n = {};
+      busy.forEach((c) => (n[c.status] = (n[c.status] || 0) + 1));
+      return "ClickUp 已完成，但還有工作項目" + Object.keys(n).map((k) => BD_STATUS[k][0] + " " + n[k]).join("、");
+    }
+    const all = bdAllPrs(r.cards).map((x) => x.pr), own = all.filter((p) => p.own);
+    const prs = own.length ? own : all;
+    const landed = (p) => !p.unsure && p.state !== "DECLINED" && (!!p.deployed || p.state === "MERGED");
+    if (prs.length && prs.every(landed) && !r.cards.some((c) => c.status === "live"))
+      return "ClickUp 還開著，但 PR 都已 merge／部署，也沒有進行中的工作項目";
+    return "";
+  }
+
+  function bdTkLink(id, info) {
+    const app = board.meta && board.meta.openTask === true && XW.elsewhere;
+    const href = app ? "/open/clickup-view#task=" + encodeURIComponent(id) : (info && info.url) || "https://app.clickup.com/t/" + encodeURIComponent(id);
+    return '<a class="bdtkid" href="' + esc(href) + '"' + (app ? ' data-app="clickup-view"' : "") + ' title="在 ClickUp 打開">CU-' + esc(id) + "</a>";
+  }
+
+  function bdTickets(cards) {
+    const rows = bdTicketRows(cards);
+    const none = cards.filter((c) => !bdTkIds(c).length);
+    let mis = 0;
+    const html = rows.map((r) => {
+      const info = bdTkInfo(r.id);
+      const hint = bdMismatch(r, info);
+      if (hint) mis++;
+      const open = board.openTkt.has(r.id);
+      const st = !info || info.loading ? '<span class="bdtkst">…</span>'
+        : info.error && !info.status ? '<span class="bdtkst unk" title="' + esc(info.error) + '">?</span>'
+        : '<span class="bdtkst' + (info.unsure ? " unk" : "") + '" title="' + esc((info.type || "") + (info.unsure ? "（上次沒查到，狀態可能已變）" : "")) + '">' +
+          '<i style="background:' + safeColor(info.color) + '"></i>' + esc(info.status || "?") + (info.unsure ? " ?" : "") + "</span>";
+      const n = {};
+      r.cards.forEach((c) => (n[c.status] = (n[c.status] || 0) + 1));
+      const counts = r.cards.length + " 件：" + Object.keys(BD_STATUS).filter((k) => n[k]).map((k) => BD_STATUS[k][0] + " " + n[k]).join("、");
+      const prs = bdAllPrs(r.cards).sort((a, b) => b.pr.own - a.pr.own);
+      const projs = [];
+      r.cards.forEach((c) => (c.projects || []).forEach((p) => { if (!projs.includes(p)) projs.push(p); }));
+      return '<div class="bdtk' + (hint ? " mis" : "") + (open ? " open" : "") + '" data-t="' + esc(r.id) + '">' +
+        '<div class="bdtkh" data-act="bd:tkopen" data-t="' + esc(r.id) + '" role="button" aria-expanded="' + open + '">' +
+        bdTkLink(r.id, info) + st + '<span class="bdtkname">' + esc((info && info.name) || "") + "</span>" +
+        '<span class="chev" aria-hidden="true">' + (open ? "▾" : "▸") + "</span></div>" +
+        '<div class="bdtkm"><span class="bdtkn">' + esc(counts) + "</span>" +
+        (prs.length ? '<span class="bdtkprs">' + prs.map((x) => bdPrChip(x.pr)).join("") + "</span>" : "") +
+        '<span class="bdtkp">' + projs.map(bdProjTag).join("") + "</span>" +
+        '<span class="bdtkat">最後提到 ' + esc(bdTime(r.last)) + "</span>" +
+        '<button type="button" class="bdact" data-act="bd:tfilter" data-t="' + esc(r.id) + '">' + (board.ticket === r.id ? "不再只看" : "只看這張") + "</button></div>" +
+        (hint ? '<div class="bdtkmis">⚠ ' + esc(hint) + "</div>" : "") +
+        (open ? '<div class="cards">' + r.cards.map(bdCard).join("") + "</div>" : "") + "</div>";
+    }).join("");
+    const noneProjs = [];
+    none.forEach((c) => (c.projects || []).forEach((p) => { if (!noneProjs.includes(p)) noneProjs.push(p); }));
+    const noneRow = none.length || board.ticket === "none"
+      ? '<button type="button" class="bdtk bdtknone' + (board.ticket === "none" ? " sel" : "") + '" data-act="bd:tfilter" data-t="none">' +
+        '<span class="bdtkid">沒有單號</span><span class="bdtkn">' + none.length + " 件" +
+        (noneProjs.length ? " · " + esc(noneProjs.join("、")) : "") + "</span>" +
+        '<span class="chev">' + (board.ticket === "none" ? "✕" : "只看") + "</span></button>" : "";
+    return {
+      head: rows.length + " 個單號" + (mis ? " · 對不上 " + mis : "") + " · 狀態取自 ClickUp",
+      html: (rows.length ? '<div class="bdtks">' + html + "</div>" : '<p class="bdempty">這些工作項目都沒有單號</p>') + noneRow,
+    };
+  }
+
   // ---- What waits on Jing ----------------------------------------------
 
   function bdJing() {
@@ -8068,14 +8181,15 @@
         '<h2 class="section" id="bd-items">工作項目 <span class="cnt">還有事的在前，同一種依最後動靜</span></h2><div class="bd-chips"></div><div class="bdarea"></div>' +
         '<div class="bd-foot"></div>' +
         '<h2 class="section" id="bd-prs">所有 PR <span class="cnt">依 repo 分組 · 狀態取自 Bitbucket</span></h2><div class="bd-prs"></div>' +
+        '<h2 class="section" id="bd-tickets">所有單號 <span class="cnt bd-tn"></span></h2><div class="bd-tickets"></div>' +
         '<h2 class="section red" id="bd-jing">等 Jing <span class="cnt bd-jn"></span></h2><div class="bd-jing"></div>';
       board.html = {};
       board.order = "";
     }
-    const cards = bdCards().filter(bdInProj);
-    bdSet(box, ".bd-filter", board.proj ? '<div class="bdfilter">只看 <b>' + esc(board.proj) + "</b> 的工作項目、等待、PR" +
-      '<button type="button" class="bdchip on bdonly" data-act="bd:pfilter" data-p="' + esc(board.proj) + '" title="不再只看 ' + esc(board.proj) +
-      '">只看 ' + esc(board.proj) + ' <span aria-hidden="true">✕</span></button></div>' : "");
+    const cards = bdCards().filter(bdInFilter);
+    bdSet(box, ".bd-filter", board.proj || board.ticket ? '<div class="bdfilter">只看 ' +
+      [board.proj ? "<b>" + esc(board.proj) + "</b>" : "", board.ticket ? "<b>" + esc(bdTkName(board.ticket)) + "</b>" : ""].filter(Boolean).join(" 裡 ") +
+      " 的工作項目、等待、PR、單號" + bdOnlyChips() + "</div>" : "");
     bdSet(box, ".bd-strip", bdStrip(cards));
     bdSet(box, ".bd-now", bdNow());
     bdSet(box, ".bd-chips", bdItems(cards));
@@ -8127,6 +8241,9 @@
       ? '<button type="button" class="ghost bdmore" data-act="bd:days" data-days="' + (days > 1 ? 1 : 7) + '">' +
         (days > 1 ? "只看 24 小時內安靜／完成的" : "也列出 7 天內安靜／完成的") + "</button>" : "");
     bdSet(box, ".bd-prs", bdPrs(cards));
+    const tk = bdTickets(cards);
+    bdSet(box, ".bd-tn", tk.head);
+    bdSet(box, ".bd-tickets", tk.html);
     const lines = board.jing.filter((j) => j.line).length;
     bdSet(box, ".bd-jn", board.jing.length + " 件 · lead 寫的 " + lines + "、Inbox " + (board.jing.length - lines));
     bdSet(box, ".bd-jing", bdJing());
@@ -8187,6 +8304,14 @@
       bdToRoom(a.project, name);
     } else if (act === "back") {
       closeRoom();
+    } else if (act === "tfilter") {
+      const t = el.getAttribute("data-t") || "";
+      board.ticket = board.ticket === t ? "" : t;
+      renderBoard();
+    } else if (act === "tkopen") {
+      const t = el.getAttribute("data-t") || "";
+      if (board.openTkt.has(t)) board.openTkt.delete(t); else board.openTkt.add(t);
+      renderBoard();
     } else if (act === "pfilter") {
       const p = el.getAttribute("data-p") || "";
       board.proj = board.proj === p ? "" : p;
@@ -8249,6 +8374,7 @@
       (p.drop || []).forEach((id) => delete board.cards[id]);
       if ("waits" in p) board.waits = p.waits || [];
       if ("jing" in p) board.jing = p.jing || [];
+      if ("tickets" in p) board.tickets = p.tickets || [];
       if (p.meta) board.meta = p.meta;
       board.v = p.v;
       board.got = true;

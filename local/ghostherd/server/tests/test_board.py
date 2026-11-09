@@ -272,6 +272,7 @@ def test_reply_names_join_the_item(tmp_path):
     h.reply(a["id"], "Opened https://bitbucket.org/acme/shop/pull-requests/31", from_name="agy-a2")
     c = _items(h)[_item_of(h, a["id"])]
     assert c["labels"] == ["CU-86abc12"]
+    assert [t["id"] for t in c["tickets"]] == ["86abc12"] and c["tickets"][0]["last"]
     assert [(p["repo"], p["id"]) for p in c["prs"]] == [("shop", 31)]
     assert c["status"] == "quiet" and c["block"]["kind"] == "answered"
     # Learned from the link: `shop #32' is that repository's now.
@@ -690,3 +691,11 @@ def test_board_counts_for_the_tabs_badge(tmp_path):
     # Closed by a lead: neither.
     h.item_edit("close", need["id"], by="lead-a")
     assert h.board_counts(4) == {"jing": 0, "orphan": 1}
+
+
+def test_a_leads_ticket_label_is_one_of_its_tickets(tmp_path):
+    h = _store(tmp_path)
+    a = h.ask("agy-a2", "Fix the cart", from_name="lead-a")
+    h.item_edit("label", a["id"], by="lead-a", labels=["CU-86zz9", "deploy"])
+    c = _items(h)[_item_of(h, a["id"])]
+    assert [t["id"] for t in c["tickets"]] == ["86zz9"] and c["labels"] == ["CU-86zz9", "deploy"]

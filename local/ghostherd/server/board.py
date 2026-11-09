@@ -666,8 +666,13 @@ def card(item: dict[str, Any], asks: list[dict[str, Any]], snap: dict[str, dict[
     prs: dict[str, dict[str, Any]] = {}
     labels = list(item.get("labels") or [])
     linked: list[str] = []
+    # Its tickets, each with when an ask last named it -- a lead's label of
+    # one counts as named when the item last moved.
+    named_at: dict[str, float] = {}
     for a in asks:
         at = ms(a["answered_at"] or a["created_at"])
+        for t in a.get("tickets") or []:
+            named_at[t] = max(named_at.get(t, 0) or 0, at or 0)
         for pr in a.get("prs") or []:
             k = pr_key(pr)
             if k not in prs:
@@ -717,6 +722,8 @@ def card(item: dict[str, Any], asks: list[dict[str, Any]], snap: dict[str, dict[
         "prs": sorted(prs.values(), key=lambda p: (not p["own"], p["first"] or 0)), "links": linked,
         "block": block, "closed": ms(item.get("closed_at")) if item.get("closed_at") else None,
         "needs": needs, "deploys": deploys, "unanswered": gone,
+        "tickets": [{"id": t, "last": named_at.get(t) or ms(last)}
+                    for t in dict.fromkeys(list(named_at) + [x[3:] for x in labels if x.startswith("CU-")])],
     }
 
 
