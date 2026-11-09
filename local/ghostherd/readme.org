@@ -2843,6 +2843,31 @@ words are Traditional Chinese.
   or Bitbucket's last update once merged), a request that failed, the
   closing, what is open; every ask and answer on asking.
 
+From the Board:
+- Every agent's name -- a card's people, what it waits on, an open ask's
+  two ends, a timeline's, what waits on you -- opens its project's room
+  at that agent: its column scrolled into view and marked a moment, or,
+  in a chat (the phone's), the box written to it.  The room's =← 回 Board=
+  (and the bar's Back) brings the Board back as it was: where it was
+  scrolled, its folds, filter and project.  A name no longer in the herd
+  says so.  An ask's id still opens its thread in Threads.
+- A project -- its tag on a card, its node in the map -- narrows the
+  Board to it (cards, open asks, folds, PRs, what waits on you); the
+  chip =只看 shop ✕=, or the project again, clears it.
+- A 沒人接 card's =交給 lead= opens its project's lead's room with the
+  lead's box holding =這件沒人接：<title>（工作項目 <id>）= and the need
+  left open or the ask that went nowhere -- you read it and send it; a
+  project with no lead says so, none is started.  A card waiting on you
+  is answered from itself, the Inbox's way for that item (a lead's
+  question through its lead, another agent's to it), and a lead's
+  =需要 Jing= through that lead.
+- The tab's red count is the items nobody has and those waiting on you
+  by a lead's line.  With the tab open, from its cards; closed, Emacs
+  asks the sidecar for two counts (=herd_board_counts=, the events and
+  the asks' few columns, never the board) as the page starts, after news
+  in the herd -- an entry of the herd log, at most every 30 s -- and
+  every 5 min with none (an item turns 沒人接 by time alone).
+
 It lists every item an ask is open in, and the quiet and done ones of
 the last day (seven on asking, kept in your browser); the herd keeps
 asks seven days, and an item whose asks are all gone goes with them.

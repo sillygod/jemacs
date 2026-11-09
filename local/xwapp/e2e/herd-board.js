@@ -47,7 +47,7 @@ async function shoot(page, width, file) {
       check("desk: the items tile says what the asks were", /34 則 ask：跨專案 9、FYI 4、轉述 1、撤回／失敗 2/.test(tiles[0].sub), tiles[0].sub);
       check("desk: the waits tile names the cross-project pairs and the oldest", /跨專案 2：shop → billing、infra → ops-helm/.test(tiles[1].sub) &&
         /專案內 2/.test(tiles[1].sub) && /最久的開了 20 分/.test(tiles[1].sub), tiles[1].sub);
-      check("desk: the board tab shows how many items have something going on", (await page.textContent("#board-n")) === "6");
+      check("desk: the board tab's red count: items nobody has, and those waiting on Jing by a lead's line", (await page.textContent("#board-n")) === "2");
       check("desk: the Jing tile counts the leads' lines and the Inbox's, and the items nobody has",
         /lead 寫的「需要 Jing」2 件/.test(tiles[2].sub) && /Inbox 等你處理 2 件/.test(tiles[2].sub) && /沒人接 1 項/.test(tiles[2].sub), tiles[2].sub);
 

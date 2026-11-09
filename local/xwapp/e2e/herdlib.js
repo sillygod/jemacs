@@ -122,4 +122,4 @@ const USAGE = [
 ];
 const HERD = { agents: AGENTS, asks: [], hooks: { status: {}, list: [] }, usage: USAGE, kinds: ["claude", "agy", "grok"], work: WORK };
 
-module.exports = { phonePage, PHONE, HERD, sleep };
+module.exports = { phonePage, PHONE, HERD, sleep, agent };

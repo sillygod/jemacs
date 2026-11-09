@@ -4,6 +4,7 @@
 // projects, ten items, every status, folded and open.
 const now = Date.now();
 const min = 60e3;
+const P = (leaf) => "~/src/" + leaf + "/";
 const BB = (repo, id) => "https://bitbucket.org/acme/" + repo + "/pull-requests/" + id;
 const pr = (repo, id, state, title, extra) => Object.assign({
   host: "bitbucket", owner: "acme", repo, id, state, title, dest: "master", url: BB(repo, id), draft: false, unsure: false,
@@ -85,7 +86,8 @@ const WAITS = [
 
 const JING = [
   { id: "need:11", event: 11, kind: "need", tag: "需要 Jing", line: true, item: "b1c2d3", itemTitle: "staging 憑證輪換",
-    title: "在今晚的維護時段，照順序逐個 namespace 跑 rotate.sh", agent: "lead-infra", at: now - 35 * min, ask: null },
+    title: "在今晚的維護時段，照順序逐個 namespace 跑 rotate.sh", agent: "lead-infra", at: now - 35 * min, ask: null,
+    replyVia: "lead", projectDir: P("infra") },
   { id: "need:12", event: 12, kind: "need", tag: "需要 Jing", line: true, item: "c6d7e8", itemTitle: "整理 nginx 的 rate limit 設定",
     title: "三個方案選一個：全站、只 API、只登入", agent: "lead-infra", at: now - 420 * min, ask: "7c7c7c7c" },
   { id: "question:lead-infra:1", kind: "question", tag: "Question", agent: "lead-infra", project: "infra",
@@ -94,12 +96,22 @@ const JING = [
     title: "Permission: run xcodebuild test", preview: "Bash: xcodebuild test -scheme App", at: now - 6 * min, item: "d4e5f6", guess: true },
 ];
 
+// The herd as the Board knows it (ghostherd-board--agents): who is in it,
+// the room each is under.  ratefix and runnerx have left it.
+const AGENTS = [
+  ["lead-shop", "shop", "lead"], ["cartfix", "shop"], ["copybot", "shop"], ["docsbot", "shop"],
+  ["lead-billing", "billing", "lead"], ["taxaudit", "billing"],
+  ["lead-infra", "infra", "lead"], ["certrot", "infra"],
+  ["lead-ops-helm", "ops-helm", "lead"], ["helmsync", "ops-helm"],
+  ["lead-mobile", "mobile", "lead"], ["pushfix", "mobile"],
+].map(([name, leaf, role]) => ({ name, project: P(leaf), role: role || "" }));
+
 const META = {
   counts: { asks: 34, xproj: 9, fyi: 4, relays: 1, failed: 2 },
   edges: [{ from: "shop", to: "billing", relay: false, n: 3 }, { from: "billing", to: "shop", relay: false, n: 2 },
           { from: "infra", to: "ops-helm", relay: false, n: 2 }, { from: "ops-helm", to: "infra", relay: false, n: 1 },
           { from: "shop", to: "infra", relay: false, n: 1 }, { from: "billing", to: "mobile", relay: true, n: 1 }],
-  days: 1, more: true,
+  days: 1, more: true, agents: AGENTS,
 };
 
 const FULL = { v: 1, base: 0, full: true, cards: CARDS, drop: [], waits: WAITS, jing: JING, meta: META };
@@ -119,4 +131,4 @@ const TIMELINE = {
   ],
 };
 
-module.exports = { FULL, CARDS, WAITS, JING, META, TIMELINE, now };
+module.exports = { FULL, CARDS, WAITS, JING, META, TIMELINE, AGENTS, P, now };

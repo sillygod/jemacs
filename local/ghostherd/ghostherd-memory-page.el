@@ -4673,6 +4673,7 @@ A lead's need (`need:N') done is handled: closed on the Board too."
         ("board-days" (ghostherd-board--set-days intent))
         ("board-timeline" (ghostherd-board--timeline intent))
         ("board-need-done" (ghostherd-board--need-done intent))
+        ("board-peek" (ghostherd-board--peek))
         ("inbox-watch" (ghostherd-inbox--watch))
         ("inbox-unwatch" (ghostherd-inbox--unwatch))
         ("inbox-set" (ghostherd-memory-page--inbox-set intent))
@@ -5247,21 +5248,43 @@ Inbox's NEEDS, each with the item it is likely about -- a guess, said so --
 from CARDS."
   (append
    (sort (mapcan (lambda (c)
-                   (mapcar (lambda (n) (append (list :id (format "need:%s" (plist-get n :id)) :event (plist-get n :id)
-                                                     :kind "need" :tag "需要 Jing" :line t :item (plist-get c :id)
-                                                     :itemTitle (plist-get c :title) :title (plist-get n :text)
-                                                     :agent (plist-get n :agent) :at (plist-get n :at) :ask (plist-get n :ask))))
+                   (mapcar (lambda (n)
+                             (let ((s (ghostherd-get (plist-get n :agent))))
+                               (append (list :id (format "need:%s" (plist-get n :id)) :event (plist-get n :id)
+                                             :kind "need" :tag "需要 Jing" :line t :item (plist-get c :id)
+                                             :itemTitle (plist-get c :title) :title (plist-get n :text)
+                                             :agent (plist-get n :agent) :at (plist-get n :at) :ask (plist-get n :ask))
+                                       ;; Answered as the Inbox answers a lead's question: through
+                                       ;; its project's lead, or primary.
+                                       (when s
+                                         (list :replyVia (if (equal (ghostherd-session-role s) "primary") "primary" "lead")
+                                               :projectDir (or (ghostherd--project-name (ghostherd-session-project s)) ""))))))
                            (plist-get c :needs)))
                  (append (plist-get result :items)
                          (list (list :id "" :title "" :needs (plist-get result :needs)))))
          (lambda (a b) (> (or (plist-get a :at) 0) (or (plist-get b :at) 0))))
    (mapcar (lambda (n)
-             (list :id (plist-get n :id) :kind (plist-get n :kind) :tag (plist-get n :tag)
-                   :agent (plist-get n :agent) :project (file-name-nondirectory
-                                                         (directory-file-name (or (plist-get n :project) "")))
-                   :title (plist-get n :title) :preview (plist-get n :preview) :at (plist-get n :at)
-                   :item (ghostherd-board--item-for (plist-get n :agent) cards) :guess t))
+             (append
+              (list :id (plist-get n :id) :kind (plist-get n :kind) :tag (plist-get n :tag)
+                    :agent (plist-get n :agent) :project (file-name-nondirectory
+                                                          (directory-file-name (or (plist-get n :project) "")))
+                    :title (plist-get n :title) :preview (plist-get n :preview) :at (plist-get n :at)
+                    :item (ghostherd-board--item-for (plist-get n :agent) cards) :guess t)
+              ;; Its Inbox item's way to answer, where it has one (a question).
+              (when (plist-get n :replyVia)
+                (list :replyVia (plist-get n :replyVia) :projectDir (or (plist-get n :project) "")))))
            needs)))
+
+(defun ghostherd-board--agents ()
+  "The herd's agents as the Board names them: each its name, the project
+its room is under -- as the Agents tab has it -- and its role.  A name on
+the Board not among them has left the herd: it says so, with no room."
+  (mapcar (lambda (s)
+            (list :name (ghostherd-session-name s)
+                  :project (or (ghostherd--project-name (ghostherd-session-project s)) "")
+                  :role (or (ghostherd-session-role s) "")))
+          (sort (copy-sequence (ghostherd-sessions))
+                (lambda (a b) (string< (ghostherd-session-name a) (ghostherd-session-name b))))))
 
 (defun ghostherd-board--patch (result needs)
   "The parts of the board built from RESULT (herd_board) and NEEDS that the
@@ -5280,7 +5303,8 @@ Each part is kept as sent (`ghostherd-board--sent')."
     (dolist (part (list (cons 'waits (plist-get result :waits))
                         (cons 'jing (ghostherd-board--jing result needs (plist-get result :items)))
                         (cons 'meta (list :counts (plist-get result :counts) :edges (plist-get result :edges)
-                                          :days (plist-get result :days) :more (plist-get result :more)))))
+                                          :days (plist-get result :days) :more (plist-get result :more)
+                                          :agents (ghostherd-board--agents)))))
       (puthash (car part) (cdr part) now)
       (unless (and (not full) (equal (gethash (car part) sent) (cdr part)))
         (setq patch (append patch (list (intern (format ":%s" (car part))) (cdr part))))))
@@ -5368,6 +5392,46 @@ closes it, and the board -- and the Inbox -- are looked at again."
          (when ghostherd-inbox--watching (ghostherd-inbox--tick)))
        (list :id id)
        (ghostherd-memory-page--fail "Handled")))))
+
+(defconst ghostherd-board--peek-every 30
+  "Seconds at least between two looks at the badge's counts after news.")
+(defconst ghostherd-board--peek-fallback 300
+  "Seconds between looks with no news: an item turns 沒人接 by time alone.")
+(defvar ghostherd-board--peek-at 0 "When the badge's counts were last asked for.")
+(defvar ghostherd-board--peek-soon nil "The look the news asked for, waiting its turn.")
+(defvar ghostherd-board--peek-timer nil "The look with no news, every `--peek-fallback'.")
+
+(defun ghostherd-board--peek ()
+  "The Board tab's badge for a page that has not the tab open: how many
+items wait on the user, and how many nobody has (`herd_board_counts', the
+events and the asks' few columns -- never the board).  The tab open, its
+patches carry it."
+  (if (not (xwapp-live-p ghostherd-memory-page--app))
+      (progn (when (timerp ghostherd-board--peek-timer) (cancel-timer ghostherd-board--peek-timer))
+             (setq ghostherd-board--peek-timer nil))
+    (unless (timerp ghostherd-board--peek-timer)
+      (setq ghostherd-board--peek-timer
+            (run-at-time ghostherd-board--peek-fallback ghostherd-board--peek-fallback #'ghostherd-board--peek)))
+    (unless ghostherd-board--watching
+      (setq ghostherd-board--peek-at (float-time))
+      (ghostherd-memory-request-async
+       "herd_board_counts"
+       (lambda (r) (ghostherd-memory-page--js "boardBadge" (list :jing (or (plist-get r :jing) 0)
+                                                                 :orphan (or (plist-get r :orphan) 0))))
+       (list :orphan_hours ghostherd-board-orphan-hours)
+       #'ignore))))
+
+(defun ghostherd-board--on-log (_entry)
+  "News in the herd -- a state changed, an ask went or came back: the
+badge's counts may have moved.  Looked at once, `--peek-every' after the
+last look at most, and only for a page that has not the Board open."
+  (when (and (not ghostherd-board--watching) (not (timerp ghostherd-board--peek-soon))
+             (xwapp-live-p ghostherd-memory-page--app))
+    (setq ghostherd-board--peek-soon
+          (run-at-time (max 2 (- ghostherd-board--peek-every (- (float-time) ghostherd-board--peek-at)))
+                       nil (lambda () (setq ghostherd-board--peek-soon nil) (ghostherd-board--peek))))))
+
+(add-hook 'ghostherd-log-functions #'ghostherd-board--on-log)
 
 (defun ghostherd-board--timeline (intent)
   "Send the item INTENT names whole: its timeline, its asks."

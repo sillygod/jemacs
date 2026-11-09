@@ -899,8 +899,12 @@
     if (boardWatching && view !== "board") {
       boardWatching = false;
       clearInterval(boardTimer);
+      const cs = Object.values(board.cards);
+      board.peek = { orphan: cs.filter((c) => c.status === "orphan").length,
+                     jing: cs.filter((c) => c.status === "jing" && (c.needs || []).length).length };
       emit("board-unwatch");
     }
+    boardBadge();
     inboxBadge();
     threadsBadge();
     document.querySelectorAll(".tab").forEach((b) => {
@@ -983,6 +987,7 @@
     if (view === "docs") emit("docs");
     emit("ready", { lazy: true });
     emit("threads-peek");
+    emit("board-peek");
   }
 
   function filtersHtml() {
@@ -2948,6 +2953,7 @@
     herdNow.room = null;
     if (herdNow.subView) { herdNow.subView = null; herdNow.subConv = null; emit("sub-unwatch", {}); }
     emit("room-close");
+    if (herdNow.fromBoard) { herdNow.fromBoard = false; return bdBack(); }
     showAgents();
   }
 
@@ -4344,7 +4350,9 @@
       const views = [["columns", "Columns"], ["chat", "Chat"]].map(([v, label]) =>
         '<button type="button" class="ghost small' + (herdNow.roomView === v ? " on" : "") + '" data-act="a:room-view" data-view="' + v + '">' +
         label + "</button>").join("");
-      app.innerHTML = '<div class="room' + (primary ? " proom" : "") + '"><div class="rhead"><span class="pname" title="' + esc(project) + '">' +
+      app.innerHTML = '<div class="room' + (primary ? " proom" : "") + '"><div class="rhead">' +
+        (herdNow.fromBoard ? '<button type="button" class="ghost small rback" data-act="bd:back" title="回到 Board，原來的位置">← 回 Board</button>' : "") +
+        '<span class="pname" title="' + esc(project) + '">' +
         (primary ? "Primary" : esc(leaf(project))) + "</span>" +
         '<span class="ppath">' + (primary ? "the herd-wide lead · routes work across projects" : esc(project)) +
         '</span><span class="rsum"></span><span class="rview">' + (primary ? "" : views) +
@@ -4384,6 +4392,7 @@
       }
       if (foot) suggestIn(foot, foot.getAttribute("data-name"), chatHint(foot.getAttribute("data-name")));
       renderChatMeter();
+      bdLand(true);
       return;
     }
     agents.forEach((a) => {
@@ -4403,6 +4412,7 @@
       renderColJump(a.name);
     });
     fitChips(agents.map((a) => roomColumn(a.name)).filter(Boolean));
+    bdLand(false);
   }
 
   function onAgentAction(act, el) {
@@ -5973,6 +5983,11 @@
       "</div></div>";
   }
 
+  app.addEventListener("input", (ev) => {
+    const ta = ev.target instanceof Element && ev.target.closest(".bdreply textarea");
+    if (ta) board.replyText[ta.getAttribute("data-jid")] = ta.value;
+  });
+
   app.addEventListener("click", (ev) => {
     const t = ev.target instanceof Element ? ev.target : null;
     if (!t) return;
@@ -6202,6 +6217,7 @@
     b.addEventListener("click", () => {
       lastOpened = null;
       src = null;
+      herdNow.fromBoard = false;
       const which = b.getAttribute("data-tab");
       if (which === "inbox") showInbox();
       else if (which === "board") showBoard();
@@ -7389,7 +7405,11 @@
 
   let board = { got: false, v: 0, cards: {}, waits: [], jing: [], meta: { counts: {}, edges: [], days: 1, more: false },
                 error: "", filter: "all", graph: "now", fold: new Map(), tlOpen: new Set(), tlAll: new Set(), tl: {},
-                days: boardDaysKept(), html: {}, order: "", flash: "", goto: "", openProj: new Set() };
+                days: boardDaysKept(), html: {}, order: "", flash: "", goto: "", openProj: new Set(),
+                // The project the Board is narrowed to ("" for all), the badge's
+                // counts Emacs looked at while the tab was closed, where the page
+                // was when a name took it to a room, the inline replies.
+                proj: "", peek: null, back: null, replying: "", replyText: {} };
   let boardWatching = false;
   let boardTimer = 0;
 
@@ -7435,6 +7455,34 @@
     return id ? '<button type="button" class="bdilink" data-act="bd:goto" data-id="' + esc(id) + '" title="到這個工作項目">' + esc(id) + "</button>" : "";
   }
   function bdPrKey(p) { return p.host + ":" + p.owner + "/" + p.repo + "#" + p.id; }
+
+  // An agent's name: a way to its room, at its column (or, in a chat, the
+  // box written to it).  One that left the herd says so instead.
+  function bdAgentInfo(name) { return ((board.meta && board.meta.agents) || []).find((a) => a.name === name) || null; }
+  function bdAgent(name, cls) {
+    if (!name) return "";
+    if (name === "user" || name === "Jing" || /^lead of /.test(name)) return '<span class="bdnm' + (cls ? " " + cls : "") + '">' + esc(name === "user" ? "你" : name) + "</span>";
+    const a = bdAgentInfo(name);
+    return '<button type="button" class="bdname' + (a ? "" : " gone") + (cls ? " " + cls : "") + '" data-act="bd:agent" data-name="' + esc(name) +
+      '" title="' + (a ? "到 " + esc(name) + " 的 room" : esc(name) + " 已不在 herd 裡") + '">' + esc(name) + "</button>";
+  }
+  function bdProjTag(p) {
+    return '<button type="button" class="pj' + (board.proj === p ? " sel" : "") + '" data-act="bd:pfilter" data-p="' + esc(p) + '" title="只看 ' + esc(p) + '">' + esc(p) + "</button>";
+  }
+  // Narrowed to a project: its cards, the asks to or from it, what waits on Jing in it.
+  function bdInProj(c) { return !board.proj || (c.projects || []).includes(board.proj); }
+  function bdWaitsShown() {
+    return board.proj ? board.waits.filter((w) => w.fromProj === board.proj || w.toProj === board.proj) : board.waits;
+  }
+  function bdJingShown() {
+    if (!board.proj) return board.jing;
+    return board.jing.filter((j) => j.project === board.proj || ((board.cards[j.item] || {}).projects || []).includes(board.proj));
+  }
+  function bdLeadOf(proj) {
+    return ((board.meta && board.meta.agents) || []).find((a) => a.role === "lead" && leaf(a.project) === proj) || null;
+  }
+  // The badge: items nobody has, and those waiting on Jing by a lead's line.
+  function bdUrgent(c) { return c.status === "orphan" || (c.status === "jing" && (c.needs || []).length > 0); }
   function bdPrState(p) {
     // A 部署 line naming it says more than the forge's MERGED.
     if (p.deployed && p.state !== "DECLINED") return ["已部署", "dep"];
@@ -7443,11 +7491,18 @@
   }
   function bdCross(w) { return w.kind === "handoff" || (w.fromProj && w.toProj && w.fromProj !== w.toProj); }
 
+  // The tab's red count: items nobody has (沒人接), and those waiting on Jing
+  // by a lead's 需要 Jing line.  The tab open, from its own cards; closed,
+  // from what Emacs looked at (boardBadge: herd_board_counts, on news, never
+  // the board itself).
   function boardBadge() {
     const b = $("board-n");
     if (!b) return;
-    const n = Object.values(board.cards).filter((c) => !BD_STATUS[c.status] || !BD_STATUS[c.status][2]).length;
-    b.textContent = board.got && n ? String(n) : "";
+    const n = board.got && boardWatching ? Object.values(board.cards).filter(bdUrgent).length
+      : board.peek ? (board.peek.jing || 0) + (board.peek.orphan || 0) : 0;
+    b.textContent = n ? String(n) : "";
+    b.className = "count" + (n ? " badge red" : "");
+    b.title = n ? "沒人接或等 Jing 的工作項目" : "";
   }
 
   function showBoard() {
@@ -7479,9 +7534,12 @@
       '<div class="big">' + cards.length + "</div>" +
       '<div class="sbar">' + order.map((s) => seg("st-" + s, n[s])).join("") + "</div>" +
       '<div class="legend">' + order.map((s) => lg("st-" + s, BD_STATUS[s][0], n[s])).join("") + "</div>" +
-      '<div class="sub">' + days + "內 " + (k.asks || 0) + " 則 ask：跨專案 " + (k.xproj || 0) + "、FYI " + (k.fyi || 0) +
-      "、轉述 " + (k.relays || 0) + "、撤回／失敗 " + (k.failed || 0) + "</div></button>";
-    const w = board.waits, cross = w.filter(bdCross), inner = w.filter((x) => !bdCross(x));
+      '<div class="sub">' + (board.proj
+        // Narrowed: the herd's counts are every project's; its own cards' asks instead.
+        ? esc(board.proj) + " 的工作項目共 " + cards.reduce((s, c) => s + (c.asks || 0), 0) + " 則 ask"
+        : days + "內 " + (k.asks || 0) + " 則 ask：跨專案 " + (k.xproj || 0) + "、FYI " + (k.fyi || 0) +
+          "、轉述 " + (k.relays || 0) + "、撤回／失敗 " + (k.failed || 0)) + "</div></button>";
+    const w = bdWaitsShown(), cross = w.filter(bdCross), inner = w.filter((x) => !bdCross(x));
     const oldest = w.reduce((a, b) => (!a || (b.since || 0) < (a.since || 0) ? b : a), null);
     const pairs = (list, f) => {
       const c = {};
@@ -7493,10 +7551,10 @@
       '<div class="sub">' + (w.length ? "跨專案 " + cross.length + (cross.length ? "：" + esc(pairs(cross, (x) => (x.fromProj || x.from) + " → " + (x.toProj || x.to))) : "") +
         "<br>專案內 " + inner.length + (inner.length ? "：" + esc(pairs(inner, (x) => x.fromProj || x.from)) : "") +
         "<br>最久的開了 " + esc(bdAge(oldest.since)) + "（" + esc(bdTime(oldest.since)) + "）" : "沒有開著的 ask") + "</div></button>";
-    const lines = board.jing.filter((j) => j.line).length, orphans = n.orphan || 0;
+    const jg = bdJingShown(), lines = jg.filter((j) => j.line).length, orphans = n.orphan || 0;
     const t3 = '<button type="button" class="bdtile t-jing" data-act="bd:jump" data-to="jing"><div class="tl1">等 Jing</div>' +
-      '<div class="big">' + board.jing.length + "</div>" +
-      '<div class="sub">' + (board.jing.length ? "lead 寫的「需要 Jing」" + lines + " 件<br>Inbox 等你處理 " + (board.jing.length - lines) + " 件"
+      '<div class="big">' + jg.length + "</div>" +
+      '<div class="sub">' + (jg.length ? "lead 寫的「需要 Jing」" + lines + " 件<br>Inbox 等你處理 " + (jg.length - lines) + " 件"
         : "沒有等你的事") + (orphans ? '<br><b class="warn">沒人接 ' + orphans + " 項</b>" : "") + "</div></button>";
     const prs = bdAllPrs(cards);
     const ps = {};
@@ -7617,7 +7675,9 @@
     Object.keys(pos).forEach((n) => {
       const [x, y] = pos[n];
       const k = n === "Jing" ? "jing" : busy.has(n) || mode === "all" ? "act" : "idle";
-      out.push('<g class="nd nd-' + k + '"><ellipse cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" rx="' + RX + '" ry="' + RY + '"/>' +
+      const sel = board.proj && n === board.proj ? " sel" : board.proj && n !== "Jing" ? " dim" : "";
+      out.push('<g class="nd nd-' + k + sel + '"' + (n === "Jing" ? "" : ' data-act="bd:pfilter" data-p="' + esc(n) + '"') + '><title>' +
+        (n === "Jing" ? "Jing" : (board.proj === n ? "不再只看 " : "只看 ") + esc(n)) + '</title><ellipse cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" rx="' + RX + '" ry="' + RY + '"/>' +
         '<text x="' + x.toFixed(1) + '" y="' + (y + 4).toFixed(1) + '" text-anchor="middle" class="nl">' + esc(bdClip(n, 11)) + "</text></g>");
       if (mode === "now" && inner[n]) {
         out.push('<text class="bdg" x="' + x.toFixed(1) + '" y="' + (y + RY + 13).toFixed(1) + '" text-anchor="middle">內部 ' + inner[n] + "</text>");
@@ -7641,17 +7701,18 @@
   }
 
   function bdWaits() {
-    const w = board.waits;
+    const w = bdWaitsShown();
     const kids = {};
     w.forEach((x) => { if (x.under) (kids[x.under] = kids[x.under] || []).push(x); });
     const how = (x) => (x.working ? "在做" : x.status === "queued" ? "排隊中" : "沒在動");
+    const ref = (ask) => '<button type="button" class="ref" data-act="bd:thread" data-ask="' + esc(ask) + '" title="在 Threads 打開">' + esc(ask) + "</button>";
     const chain = (x, depth) => (kids[x.ask] || []).map((k) =>
-      '<button type="button" class="chain" data-act="bd:thread" data-ask="' + esc(k.ask) + '" style="padding-left:' + (4 + depth * 12) + 'px">└ ' +
-      esc(k.from) + " → " + esc(k.to) + ' <span class="age">' + esc(bdTime(k.since)) + " · " + how(k) + "</span> " + esc(bdClip(k.head, 60)) + "</button>" +
+      '<div class="chain" style="padding-left:' + (4 + depth * 12) + 'px">└ ' + bdAgent(k.from) + " → " + bdAgent(k.to) +
+      ' <span class="age">' + esc(bdTime(k.since)) + " · " + how(k) + "</span> " + esc(bdClip(k.head, 60)) + " " + ref(k.ask) + "</div>" +
       chain(k, depth + 1)).join("");
-    const row = (x) => '<div class="wait"><button type="button" class="wrow" data-act="bd:thread" data-ask="' + esc(x.ask) + '" title="在 Threads 打開">' +
-      '<span class="who">' + esc(x.from) + "</span>" + '<span class="arr">' + (x.kind === "handoff" ? "⇢" : "→") + "</span>" +
-      '<span class="who">' + esc(x.to) + "</span>" + '<span class="age">' + esc(bdTime(x.since)) + " · " + esc(bdAge(x.since)) + " · " + how(x) + "</span></button>" +
+    const row = (x) => '<div class="wait"><div class="wrow">' + bdAgent(x.from, "who") +
+      '<span class="arr">' + (x.kind === "handoff" ? "⇢" : "→") + "</span>" + bdAgent(x.to, "who") +
+      '<span class="age">' + esc(bdTime(x.since)) + " · " + esc(bdAge(x.since)) + " · " + how(x) + "</span>" + ref(x.ask) + "</div>" +
       '<div class="what">' + esc(x.head) + " " + bdLink(x.item) + "</div>" + chain(x, 0) + "</div>";
     const top = w.filter((x) => !x.under);
     const cross = top.filter(bdCross), inner = top.filter((x) => !bdCross(x));
@@ -7659,11 +7720,13 @@
     if (cross.length) html += '<div class="wl-h">跨專案</div>' + cross.map(row).join("");
     if (inner.length) html += '<div class="wl-h">專案內</div>' + inner.map(row).join("");
     if (!w.length) html += '<p class="bdempty">沒有開著的 ask</p>';
-    if (board.jing.length) {
-      html += '<div class="wl-h red">等 Jing <button type="button" class="bdmore" data-act="bd:jump" data-to="jing">（全部 ' + board.jing.length + " 件）</button></div>" +
-        board.jing.slice(0, 2).map((j) => '<div class="wait wj"><button type="button" class="wrow" data-act="bd:inbox" data-id="' + esc(j.id) + '">' +
-          '<span class="who">' + esc(j.agent) + '</span><span class="arr">→</span><span class="who red">Jing</span>' +
-          '<span class="age">' + esc(bdTime(j.at)) + " · " + esc(bdAge(j.at)) + "</span></button>" +
+    const jg = bdJingShown();
+    if (jg.length) {
+      html += '<div class="wl-h red">等 Jing <button type="button" class="bdmore" data-act="bd:jump" data-to="jing">（全部 ' + jg.length + " 件）</button></div>" +
+        jg.slice(0, 2).map((j) => '<div class="wait wj"><div class="wrow">' + bdAgent(j.agent, "who") +
+          '<span class="arr">→</span><span class="who red">Jing</span>' +
+          '<span class="age">' + esc(bdTime(j.at)) + " · " + esc(bdAge(j.at)) + "</span>" +
+          (j.line ? "" : '<button type="button" class="ref" data-act="bd:inbox" data-id="' + esc(j.id) + '" title="在 Inbox 處理">Inbox</button>') + "</div>" +
           '<div class="what">' + (j.line ? "需要 Jing：" : "") + esc(j.title) + " " + bdLink(j.item) + "</div></div>").join("");
     }
     return html;
@@ -7687,9 +7750,15 @@
 
   function bdNeedLine(n, withItem) {
     return '<span class="bdneed"><span class="ntext">' + esc(n.text || n.title) + "</span>" +
-      '<span class="nmeta">' + esc(n.agent) + " · " + esc(bdTime(n.at)) + (withItem && n.item ? " " : "") + "</span>" +
+      '<span class="nmeta">' + bdAgent(n.agent) + " · " + esc(bdTime(n.at)) + (withItem && n.item ? " " : "") + "</span>" +
       (withItem ? bdLink(n.item) : "") +
       '<button type="button" class="bddone" data-act="bd:need-done" data-event="' + esc(String(n.event || n.id)) + '" title="你處理好了：不再列為等你">已處理</button></span>';
+  }
+
+  // What a card waits on, and what can be done from it: 交給 lead for an
+  // item nobody has, an inline reply for one waiting on Jing.
+  function bdHand(c) {
+    return '<div class="bdacts"><button type="button" class="bdact" data-act="bd:hand" data-id="' + esc(c.id) + '" title="打開它專案 lead 的 room，訊息先填好，你看過再送">交給 lead</button></div>';
   }
 
   function bdBlock(c) {
@@ -7698,31 +7767,104 @@
       const age = bdAge(c.last);
       if (c.needs && c.needs.length)
         return '<div class="blk"><span class="bl">沒人接</span><span>安靜 ' + esc(age) + "，還有「需要 Jing」沒處理：" +
-          c.needs.map((n) => bdNeedLine(n, false)).join("") + "</span></div>";
+          c.needs.map((n) => bdNeedLine(n, false)).join("") + "</span></div>" + bdHand(c);
       const u = c.unanswered || {};
       const why = u.status === "failed" ? "失敗" : u.status === "cancelled" ? "撤回" : "對方停下沒回答";
       return '<div class="blk"><span class="bl">沒人接</span><span>安靜 ' + esc(age) + "，最後一則 ask " + why + "：" +
-        esc(u.from || "") + " → " + esc(u.to || "") + "：" + esc(u.head || "") + "</span></div>";
+        bdAgent(u.from || "") + " → " + bdAgent(u.to || "") + "：" + esc(u.head || "") + "</span></div>" + bdHand(c);
     }
     if (c.needs && c.needs.length) {
-      return '<div class="blk"><span class="bl">等 Jing</span><span>' + c.needs.map((n) => bdNeedLine(n, false)).join("") + "</span></div>";
+      return '<div class="blk"><span class="bl">等 Jing</span><span>' + c.needs.map((n) => bdNeedLine(n, false)).join("") + "</span></div>" + bdReply(c);
     }
     if (c.status === "jing" || (c.jingOf && c.jingOf.length)) {
       const js = board.jing.filter((j) => (c.jingOf || []).includes(j.id));
       if (js.length && c.status === "jing") {
         return '<div class="blk"><span class="bl">等 Jing</span><span>' + js.map((j) =>
-          '<button type="button" class="bdjl" data-act="bd:inbox" data-id="' + esc(j.id) + '">' + esc(j.agent) + "：" + esc(j.title) + "</button>").join("、") +
-          '<span class="guess">（依 agent 推得）</span></span></div>';
+          bdAgent(j.agent) + "：" + '<button type="button" class="bdjl" data-act="bd:inbox" data-id="' + esc(j.id) + '">' + esc(j.title) + "</button>").join("、") +
+          '<span class="guess">（依 agent 推得）</span></span></div>' + bdReply(c);
       }
     }
     if (b.kind === "open") {
       const how = b.working ? "在做" : b.status === "queued" ? "排隊中" : "沒在動";
-      return '<div class="blk"><span class="bl">卡在</span><span>等 <b>' + esc(b.to) + "</b>（" + how + " · " + esc(bdAge(b.since)) + "）：" +
+      return '<div class="blk"><span class="bl">卡在</span><span>等 ' + bdAgent(b.to, "strong") + "（" + how + " · " + esc(bdAge(b.since)) + "）：" +
         esc(b.head) + "</span></div>";
     }
     const lab = b.kind === "failed" ? "失敗" : b.kind === "cancelled" ? "撤回" : "最後";
-    return '<div class="blk"><span class="bl">' + lab + "</span><span>" + esc(b.from || "") + (b.kind === "answered" ? " 回覆" : "") +
+    return '<div class="blk"><span class="bl">' + lab + "</span><span>" + bdAgent(b.from || "") + (b.kind === "answered" ? " 回覆" : "") +
       " · " + esc(bdTime(b.since)) + "：" + esc(b.head || "") + "</span></div>";
+  }
+
+  // The answer to what a card waits on, written here: the Inbox's own way for
+  // that item -- a lead's question through its lead (or primary), another
+  // agent's to the agent -- and for a lead's 需要 Jing line, through it.
+  function bdReplyTo(c) {
+    const ids = (c.needs || []).map((n) => "need:" + n.id).concat(c.jingOf || []);
+    return board.jing.find((j) => ids.includes(j.id) && j.replyVia) || null;
+  }
+  function bdReply(c) {
+    const j = bdReplyTo(c);
+    if (!j) return "";
+    if (board.replying !== c.id)
+      return '<div class="bdacts"><button type="button" class="bdact" data-act="bd:reply-open" data-id="' + esc(c.id) + '">回覆 ' + esc(j.agent) + "</button></div>";
+    return '<div class="bdreply" data-id="' + esc(c.id) + '"><textarea rows="3" data-jid="' + esc(j.id) + '" placeholder="寫給 ' + esc(j.agent) +
+      '（' + esc(j.replyVia === "agent" ? "直接給它" : j.replyVia === "primary" ? "經 primary" : "經它的專案 lead") + '）">' +
+      esc(board.replyText[j.id] || "") + "</textarea>" +
+      '<div class="bdacts"><button type="button" class="bdact send" data-act="bd:reply-send" data-id="' + esc(c.id) + '">送出</button>' +
+      '<button type="button" class="bdact" data-act="bd:reply-close" data-id="' + esc(c.id) + '">取消</button></div></div>';
+  }
+
+  // Off the Board to a room, at an agent: where the page was is kept for
+  // 回 Board; PREFILL, a message put in that agent's box, never sent.
+  function bdToRoom(project, name, prefill) {
+    board.back = { scroll: app.scrollTop };
+    if (prefill && name) herdNow.compose[name] = prefill;
+    if (name) herdNow.chatTo[project] = name;
+    showAgents();
+    herdNow.fromBoard = true;
+    herdNow.roomLand = name || "";
+    herdNow.roomLandAt = Date.now();
+    openRoom(project);
+  }
+
+  // Back from the room to the Board, as it was: scrolled where it was, its
+  // folds, filter and project as they were.
+  function bdBack() {
+    const at = board.back ? board.back.scroll : 0;
+    setStatus("");
+    showBoard();
+    app.scrollTop = at;
+    requestAnimationFrame(() => { app.scrollTop = at; });
+  }
+
+  // A room opened from the Board lands on its agent, once its columns are
+  // drawn: that column scrolled into view and marked a moment; in a chat,
+  // the box written to it.  One no longer in the room says so.
+  function bdLand(chat) {
+    const name = herdNow.roomLand;
+    if (!name) return;
+    const agents = roomAgents();
+    if (!agents.some((a) => a.name === name)) {
+      if (herdNow.data && Date.now() - (herdNow.roomLandAt || 0) > 4000) {
+        herdNow.roomLand = "";
+        setStatus(name + " 不在這個 room 了");
+      }
+      return;
+    }
+    herdNow.roomLand = "";
+    if (chat) {
+      setChatTo(name);
+      const ta = app.querySelector(".chat .cfoot textarea");
+      if (ta && herdNow.compose[name]) { ta.value = herdNow.compose[name]; ta.focus(); }
+      setStatus("寫給 " + name);
+      return;
+    }
+    const col = roomColumn(name);
+    if (!col) return;
+    col.scrollIntoView({ inline: "center", block: "nearest" });
+    col.setAttribute("data-landed", "1");
+    setTimeout(() => col.removeAttribute("data-landed"), 2200);
+    const ta = col.querySelector("textarea.agent-text");
+    if (ta && herdNow.compose[name]) ta.focus();
   }
 
   // An item's timeline: its key events first -- the ask that began it, each
@@ -7748,7 +7890,7 @@
     const rest = evs.length - shown.length;
     return '<div class="bdtl">' + sum + "<ol>" + shown.map((e) => {
       const st = e.kind === "need" && e.state && e.state !== "open" ? '<span class="nst">' + esc(BD_NEED_STATE[e.state] || e.state) + "</span>" : "";
-      const who = e.kind === "need" ? esc(e.from) + " → Jing" : e.from && e.to ? esc(e.from) + " → " + esc(e.to) : esc(e.from || "");
+      const who = e.kind === "need" ? bdAgent(e.from) + " → Jing" : e.from && e.to ? bdAgent(e.from) + " → " + bdAgent(e.to) : bdAgent(e.from || "");
       return '<li class="bk-' + esc(e.kind) + (e.fold ? " folded" : "") + (e.state && e.state !== "open" ? " past" : "") + '">' +
         '<span class="tt">' + esc(bdTime(e.at)) + "</span>" +
         '<span class="kk">' + esc((e.relay ? "轉述" : BD_KIND[e.kind] || e.kind) + (e.auto ? "*" : "")) + "</span>" +
@@ -7776,19 +7918,19 @@
       (c.cross ? '<span class="tag">跨專案</span>' : "") +
       '<span class="n">' + c.asks + " 則 ask" + (c.open ? "（開著 " + c.open + "）" : "") + " · 最後 " + esc(bdTime(c.last)) + "</span></button>";
     const title = '<h3 title="' + esc(c.askTitle ? "第一則 ask：" + c.askTitle : c.named ? "lead 取的名字" : "") + '">' + esc(c.title) + "</h3>";
-    const projs = c.projects.map((p) => '<span class="pj">' + esc(p) + "</span>").join("");
+    const projs = c.projects.map(bdProjTag).join("");
     if (fold) {
       return '<article class="wi st-' + esc(c.status) + ' folded" id="bd-w-' + esc(c.id) + '">' + head + title +
         '<div class="meta">' + projs + (c.prs.length ? '<span class="ag">' + c.prs.length + " 個 PR</span>" : "") +
         (quiet ? '<span class="ag">' + esc(bdBlockLine(c)) + "</span>" : "") + "</div></article>";
     }
     const labels = (c.labels || []).map((l) => '<span class="tk">' + esc(l) + "</span>").join("");
-    const meta = '<div class="meta">' + labels + projs + '<span class="ag">' + esc(c.agents.join("、")) + "</span></div>";
+    const meta = '<div class="meta">' + labels + projs + '<span class="ag">' + c.agents.map((n) => bdAgent(n)).join("、") + "</span></div>";
     const prs = '<div class="prl">' + (c.prs.length ? c.prs.map((p) => bdPrChip(p, c.id)).join("") : '<span class="nopr">沒有 PR</span>') + "</div>";
     const links = c.links && c.links.length ? '<div class="bdlinks">提到：' + c.links.map(bdLink).join(" ") + "</div>" : "";
     const dep = c.deploys && c.deploys.length ? c.deploys[c.deploys.length - 1] : null;
     const deploy = dep ? '<div class="bddep"><span class="bl">部署</span><span>' + esc(dep.text) + ' <span class="nmeta">' +
-      esc(dep.agent) + " · " + esc(bdTime(dep.at)) + "</span></span></div>" : "";
+      bdAgent(dep.agent) + " · " + esc(bdTime(dep.at)) + "</span></span></div>" : "";
     return '<article class="wi st-' + esc(c.status) + '" id="bd-w-' + esc(c.id) + '">' + head + title + meta + prs + bdBlock(c) + deploy + links + bdTimeline(c) + "</article>";
   }
 
@@ -7802,7 +7944,9 @@
     cards.forEach((c) => { if (c.status === "quiet") n.quiet++; else if (c.status === "done") n.done++; else n.busy++; });
     const chip = (f, label) => '<button type="button" class="bdchip' + (board.filter === f ? " on" : "") + '" data-act="bd:filter" data-f="' + f + '">' +
       label + " " + n[f] + "</button>";
-    return '<div class="bdchips">' + chip("all", "全部") + chip("busy", "還有事") + chip("quiet", "安靜") + chip("done", "完成") + "</div>";
+    const only = board.proj ? '<button type="button" class="bdchip on bdonly" data-act="bd:pfilter" data-p="' + esc(board.proj) +
+      '" title="不再只看 ' + esc(board.proj) + '">只看 ' + esc(board.proj) + ' <span aria-hidden="true">✕</span></button>' : "";
+    return '<div class="bdchips">' + only + chip("all", "全部") + chip("busy", "還有事") + chip("quiet", "安靜") + chip("done", "完成") + "</div>";
   }
 
   function bdShown(cards) {
@@ -7827,7 +7971,8 @@
     const rest = cards.filter((c) => !bdAwake(c));
     const by = {};
     rest.filter((c) => !bdOwnLine(c)).forEach((c) => {
-      const p = (c.projects && c.projects[0]) || "其他";
+      // Narrowed to a project, under it: an item of two projects is its too.
+      const p = board.proj || (c.projects && c.projects[0]) || "其他";
       (by[p] = by[p] || []).push(c);
     });
     const folds = Object.keys(by).map((p) => ({
@@ -7884,9 +8029,10 @@
   function bdJing() {
     const note = '<div class="phase2">lead 在回覆或報告最後寫的 <code>需要 Jing：…</code> 在前：你按「已處理」、lead 在同一項再寫一次（<code>需要 Jing：無</code> 表示都好了），' +
       "或項目關閉，它就結束。其次是 Inbox 等你處理的事，工作項目依 agent 最後在哪一項推得。</div>";
-    if (!board.jing.length) return note + '<p class="bdempty">現在沒有等你的事</p>';
-    const lines = board.jing.filter((j) => j.line), inbox = board.jing.filter((j) => !j.line);
-    const item = (j) => '<li class="ji' + (j.line ? " line" : "") + '"><div class="jh"><span class="who">' + esc(j.agent) + "</span>" + bdLink(j.item) +
+    const jg = bdJingShown();
+    if (!jg.length) return note + '<p class="bdempty">現在沒有等你的事</p>';
+    const lines = jg.filter((j) => j.line), inbox = jg.filter((j) => !j.line);
+    const item = (j) => '<li class="ji' + (j.line ? " line" : "") + '"><div class="jh">' + bdAgent(j.agent, "who") + bdLink(j.item) +
       '<span class="since">從 ' + esc(bdTime(j.at)) + "（" + esc(bdAge(j.at)) + "）</span>" +
       '<span class="tag">' + esc(j.tag || j.kind) + "</span></div>" +
       '<div class="bdjline">' + esc(j.title) + "</div>" +
@@ -7917,7 +8063,7 @@
       return;
     }
     if (!box.querySelector(".bd-strip")) {
-      box.innerHTML = '<div class="bd-strip"></div>' +
+      box.innerHTML = '<div class="bd-filter"></div><div class="bd-strip"></div>' +
         '<h2 class="section" id="bd-now">現在 <span class="cnt">只列還開著的</span></h2><div class="bd-now"></div>' +
         '<h2 class="section" id="bd-items">工作項目 <span class="cnt">還有事的在前，同一種依最後動靜</span></h2><div class="bd-chips"></div><div class="bdarea"></div>' +
         '<div class="bd-foot"></div>' +
@@ -7926,7 +8072,10 @@
       board.html = {};
       board.order = "";
     }
-    const cards = bdCards();
+    const cards = bdCards().filter(bdInProj);
+    bdSet(box, ".bd-filter", board.proj ? '<div class="bdfilter">只看 <b>' + esc(board.proj) + "</b> 的工作項目、等待、PR" +
+      '<button type="button" class="bdchip on bdonly" data-act="bd:pfilter" data-p="' + esc(board.proj) + '" title="不再只看 ' + esc(board.proj) +
+      '">只看 ' + esc(board.proj) + ' <span aria-hidden="true">✕</span></button></div>' : "");
     bdSet(box, ".bd-strip", bdStrip(cards));
     bdSet(box, ".bd-now", bdNow());
     bdSet(box, ".bd-chips", bdItems(cards));
@@ -7960,6 +8109,8 @@
       shown.forEach((c) => {
         if (board.html["card:" + c.id] === htmls[c.id]) return;
         const el = area.querySelector("#bd-w-" + CSS.escape(c.id));
+        // Being written in: drawn again once the box lets go.
+        if (el && el.contains(document.activeElement) && document.activeElement.tagName === "TEXTAREA") return;
         if (el) el.outerHTML = htmls[c.id];
         board.html["card:" + c.id] = htmls[c.id];
       });
@@ -8029,6 +8180,47 @@
     } else if (act === "inbox") {
       inbox.sel = id || "";
       showInbox();
+    } else if (act === "agent") {
+      const name = el.getAttribute("data-name") || "";
+      const a = bdAgentInfo(name);
+      if (!a) { setStatus(name + " 已不在 herd 裡（停了），沒有 room 可開"); return; }
+      bdToRoom(a.project, name);
+    } else if (act === "back") {
+      closeRoom();
+    } else if (act === "pfilter") {
+      const p = el.getAttribute("data-p") || "";
+      board.proj = board.proj === p ? "" : p;
+      renderBoard();
+    } else if (act === "hand") {
+      const c = board.cards[id];
+      if (!c) return;
+      const proj = (c.projects || [])[0] || "";
+      const lead = bdLeadOf(proj);
+      if (!lead) { setStatus((proj || "這個項目") + " 現在沒有 lead：要先開一個，Board 不會自己開"); return; }
+      const n = (c.needs || [])[0], u = c.unanswered;
+      const why = u && (u.status === "failed" ? "失敗了" : u.status === "cancelled" ? "被撤回" : "對方停下沒回答");
+      bdToRoom(lead.project, lead.name, "這件沒人接：" + c.title + "（工作項目 " + c.id + "）\n" +
+        (n ? "還沒處理的需要 Jing：" + n.text : u ? "最後一則 ask " + why + "：" + (u.head || "") : ""));
+    } else if (act === "reply-open" || act === "reply-close") {
+      board.replying = act === "reply-open" ? id : "";
+      renderBoard();
+      const ta = act === "reply-open" && app.querySelector('.bdreply[data-id="' + CSS.escape(id) + '"] textarea');
+      if (ta) ta.focus();
+    } else if (act === "reply-send") {
+      const c = board.cards[id], j = c && bdReplyTo(c);
+      const ta = app.querySelector('.bdreply[data-id="' + CSS.escape(id) + '"] textarea');
+      const text = ((ta && ta.value) || "").trim();
+      if (!j) return;
+      if (!text) { setStatus("先寫回覆"); return; }
+      const lost = () => { board.replyText[j.id] = text; board.replying = id; renderBoard(); setStatus("沒送到，回覆還在框裡", "error"); };
+      const sent = j.replyVia === "primary" ? emit("primary-say", { text: text }, lost)
+        : j.replyVia === "agent" ? emit("agent-prompt", { name: j.agent, text: text }, lost)
+        : emit("lead-say", { project: j.projectDir, text: text }, lost);
+      if (sent === false) { setStatus(TOO_LONG, "error"); return; }
+      board.replyText[j.id] = "";
+      board.replying = "";
+      setStatus("已送給 " + j.agent);
+      renderBoard();
     } else if (act === "need-done") {
       const ev = +el.getAttribute("data-event");
       if (ev) {
@@ -8081,6 +8273,12 @@
       const c = board.cards[p.id];
       board.tl[p.id] = p.error ? { error: String(p.error) } : { events: p.events || [], last: c ? c.last : p.last, asking: false };
       renderBoard();
+    },
+
+    // The badge's counts, looked at by Emacs while the tab is closed.
+    boardBadge: (p) => {
+      board.peek = p || null;
+      boardBadge();
     },
 
     boardError: (p) => {
@@ -8654,6 +8852,7 @@
   // brings the sessions with it (`needSessions').
   restore();
   emit("ready", { lazy: true });
-  // The Threads tab's badge, before the tab is opened.
+  // The Threads tab's badge, before the tab is opened; the Board's.
   emit("threads-peek");
+  emit("board-peek");
 })();
