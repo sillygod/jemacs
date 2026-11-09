@@ -2846,7 +2846,7 @@ From an agent's shell (a lead's, for the changes):
 #+begin_src sh
   herd item                          # the items: id, status, asks, last, projects, title
   herd item show 3fa2c1              # its asks, how each was placed, its PRs
-  herd item rename 3fa2c1 結帳頁改用新的稅率表
+  herd item rename 3fa2c1 結帳頁改用新的稅率表   # or --title "..."; "" gives back its first ask's name
   herd item merge 9b8a7c 3fa2c1      # 9b8a7c's asks into 3fa2c1
   herd item split 1a2b3c4d --title "..."   # the ask, with those made answering it, out on its own
   herd item move 3fa2c1 1a2b3c4d     # into 3fa2c1
@@ -2857,7 +2857,9 @@ From an agent's shell (a lead's, for the changes):
 #+end_src
 
 An ID is an item's or an ask's (the item it is in).  What a lead put
-somewhere stays there; a worker's change is refused.
+somewhere stays there; a worker's change is refused.  An option an action
+does not take (=--title= on a merge, =--remove= on a close ...) is
+refused, nothing changed, rather than dropped.
 
 *** Threads: who is talking to whom
 

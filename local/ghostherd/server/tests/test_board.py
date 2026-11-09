@@ -545,3 +545,80 @@ def test_lines_from_before_the_board_kept_them_are_not_needs_now(tmp_path):
         h._conn.execute("UPDATE ask_item SET replied = 0")
         h._conn.commit()
     assert _items(h)[_item_of(h, out["id"])]["needs"] == []
+
+
+# ---- `herd item' on the command line ------------------------------------------------
+
+
+def _cli(monkeypatch):
+    """bin/herd as a module, its RPCs recorded -- (method, params) -- and
+    answered as the sidecar does; run as lead-a."""
+    import importlib.machinery
+    import importlib.util
+    import sys
+    from tests.test_ask import HERD
+    loader = importlib.machinery.SourceFileLoader("herd_cli_board", str(HERD))
+    spec = importlib.util.spec_from_loader("herd_cli_board", loader)
+    mod = importlib.util.module_from_spec(spec)
+    was, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = was
+    sent = []
+
+    def rpc(method, params=None, timeout=15):
+        sent.append((method, params))
+        if method == "herd_items":
+            return {"items": [], "more": False, "days": 1}
+        out = {"item": (params or {}).get("id") or "n1"}
+        if (params or {}).get("op") in ("split", "move"):
+            out["moved"] = params["asks"]
+        return out
+    monkeypatch.setattr(mod, "rpc", rpc)
+    monkeypatch.setenv("GHOSTHERD_SESSION", "lead-a")
+    return mod, sent
+
+
+def test_item_rename_takes_its_title_as_words_or_title(monkeypatch, capsys):
+    """`rename ID --title T' renames: the --title was once dropped, the
+    title went out empty and gave the item back its first ask's name."""
+    hc, sent = _cli(monkeypatch)
+    assert hc.main(["item", "rename", "w1", "--title", "Rotate the keys"]) == 0
+    assert sent[-1] == ("herd_item_edit", {"op": "rename", "by": "lead-a", "id": "w1", "title": "Rotate the keys"})
+    assert "renamed: Rotate the keys" in capsys.readouterr().err
+    assert hc.main(["item", "rename", "w1", "Rotate", "the", "keys"]) == 0
+    assert sent[-1][1]["title"] == "Rotate the keys"
+    # Its own name back: said so, never by leaving the title out.
+    assert hc.main(["item", "rename", "w1", ""]) == 0
+    assert sent[-1][1]["title"] == ""
+    assert hc.main(["item", "rename", "w1", "--title", ""]) == 0
+    assert sent[-1][1]["title"] == ""
+    assert "back to the name its first ask gives" in capsys.readouterr().err
+    n = len(sent)
+    assert hc.main(["item", "rename", "w1"]) == 1
+    assert "rename w1 to what?" in capsys.readouterr().err
+    assert hc.main(["item", "rename", "w1", "A", "--title", "B"]) == 1
+    assert "give the title once" in capsys.readouterr().err
+    assert len(sent) == n
+
+
+def test_item_options_an_action_does_not_take_are_refused(monkeypatch, capsys):
+    hc, sent = _cli(monkeypatch)
+    for argv, opt in ((["item", "merge", "w1", "w2", "--title", "X"], "--title"),
+                      (["item", "close", "w1", "--remove"], "--remove"),
+                      (["item", "show", "w1", "--days", "3"], "--days"),
+                      (["item", "label", "w1", "deploy", "--json"], "--json"),
+                      (["item", "move", "w1", "1a2b3c4d", "--title", "X"], "--title")):
+        assert hc.main(argv) == 1, argv
+        assert ("takes no " + opt) in capsys.readouterr().err
+    assert sent == []
+    # Those that take them, do.
+    assert hc.main(["item", "split", "1a2b3c4d", "--title", "Alone"]) == 0
+    assert sent[-1][1] == {"op": "split", "by": "lead-a", "asks": ["1a2b3c4d"], "title": "Alone"}
+    assert hc.main(["item", "label", "w1", "deploy", "--remove"]) == 0
+    assert sent[-1][1]["remove"] is True
+    assert hc.main(["item", "list", "--days", "7"]) == 0
+    assert sent[-1] == ("herd_items", {"days": 7.0})
+    assert hc.main(["item"]) == 0
+    assert sent[-1] == ("herd_items", {"days": 1})
