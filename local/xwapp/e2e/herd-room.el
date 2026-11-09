@@ -267,6 +267,34 @@ older ones precede it."
                                          (while (< (float-time) end)))))
                   t))))
 
+;; The herd at work, on the test's word: POST /e2e-churn?ms=N changes
+;; lead-fox's notes every N ms -- some 40 KB of them, about what the
+;; Agents tab's snapshot of a herd of thirty agents with their tickets is
+;; (120 KB on this machine, 2026-11-09) -- and the tab is sent the herd
+;; soon after, as an agent's turn ending does; ms=0 stops.
+(defvar e2e-churn nil)
+(defconst e2e-big-notes
+  (mapconcat (lambda (i) (format "%s %d" (nth (% i (length e2e-words)) e2e-words) i)) (number-sequence 1 4500) " "))
+(advice-add 'xwapp--answer :before-until
+            (lambda (proc request _transport)
+              (when (string-prefix-p "/e2e-churn?" (or (nth 1 request) ""))
+                (let ((ms (string-to-number
+                           (or (cadr (assoc "ms" (url-parse-query-string
+                                                  (cadr (split-string (nth 1 request) "?")))))
+                               "0")))
+                      (n 0))
+                  (xwapp--respond proc 204)
+                  (when (timerp e2e-churn) (cancel-timer e2e-churn))
+                  (setq e2e-churn
+                        (and (> ms 0)
+                             (run-at-time 0 (/ ms 1000.0)
+                                          (lambda ()
+                                            (let ((s (gethash "lead-fox" ghostherd--sessions)))
+                                              (setf (ghostherd-session-notes s) (format "%d %s" (cl-incf n) e2e-big-notes))
+                                              (ghostherd-memory-page--send-herd-soon))))))
+                  (e2e-note (list :churn ms))
+                  t))))
+
 (write-region (json-encode (list (cons "herd" (xwapp-url ghostherd-memory-page--app))
                                  (cons "secret" (xwapp--secret ghostherd-memory-page--app))))
               nil (expand-file-name "urls.json" e2e-dir) nil 'silent)

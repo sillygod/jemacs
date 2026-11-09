@@ -121,6 +121,15 @@ another site's page, gets nothing.
   calls a function once the calls made so far are out --- to send one
   first, alone, and the rest after.  In Emacs's own page every call
   runs at once.
+- *The last of its kind.*  While a =next= is on its way --- 21 s for
+  374 KB at a phone's slow link, seen live --- Emacs goes on making
+  calls, and they wait for the next one.  An app's snapshot, the whole
+  of what one part of the page shows made again as it changes, piled up
+  there copy after copy: each slower next waited on more of them (on a
+  played slow link, 1, 3, 8, 19, 44, 100 copies of a 40 KB snapshot in
+  turn, one next 5 MB).  =(xwapp-js APP FN OBJ nil KEY)= says a call is
+  one: a newer call of the same KEY takes its place while it waits,
+  after the calls made since.
 - *Never a secret.*  Compressed, a body is as long as what in it does
   not repeat: one holding a secret beside text someone else can put in
   it --- an agent's, a pull request's --- tells a watcher on the path,
@@ -498,7 +507,11 @@ xwapp-timings= lists them, the latest first.
   is sent nothing, and a page from before sends nothing.
 - *Emacs times its side of every request* as it serves it: its bytes
   read, a =next= held until there were calls, the answer begun and all
-  in the socket, an intent's handler.  The latest 256, a ring; a few
+  in the socket, an intent's handler --- and what a =next= carried, by
+  kind: each call's function, how many, their bytes, the biggest five
+  (names alone, nothing they said).  A slow moment's line names its
+  biggest =next= when it was 64 KB or more: "· next 374 KB: renderHerd
+  ×6 703 KB, setChat 15 KB".  The latest 256, a ring; a few
   =float-time='s a request, and nothing while the page is idle.
 - *Joined*, each request's wait comes apart: Emacs's own part, to the
   millisecond --- /preparing/ (a =next= held while the app got its

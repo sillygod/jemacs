@@ -2610,7 +2610,11 @@ are the other tabs (below, and "What happened while you were away").
   conversation sent whole again while you read up keeps what you read
   drawn until all of it has come.  The chat, the same.  From the
   tap to the conversation drawn is timed (=room= in xwapp's timings); a
-  slow one is in the Log, as a slow open is.  At the desk the room
+  slow one is in the Log, as a slow open is, with what its biggest
+  =next= carried when it was big.  The page's snapshots --- the Agents
+  tab's herd, the Inbox, an agent's screen, the badges --- go as the
+  last of their kind (xwapp's README): behind a slow =next= only the
+  newest of each waits, so a slow one does not make the next slower.  At the desk the room
   comes whole at once, then changes alone.
 - /Chat/ in the room's header shows it as one conversation instead:
   who said what to whom --- your prompts, the asks and answers between
