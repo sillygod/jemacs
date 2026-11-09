@@ -3593,11 +3593,22 @@
     const to = chatTo(agents);
     return '<div class="chat"><div class="cjump"></div><div class="cbody"></div><div class="cmeter"></div>' +
       '<div class="cfoot" data-name="' + esc(to) + '"><div class="attach">' + attachHtml(to) + "</div>" +
+      // Typing on a phone, who it goes to is a tag at the box's left, the
+      // select over it unseen (`typing'); else the tag is not shown.
+      '<span class="chat-to-w"><span class="ttag" aria-hidden="true">' + esc(chatTag(to, agents)) + "</span>" +
       '<select class="chat-to" title="Who it goes to (or start with @name, @lead)">' +
       chatTargets(agents).map(([v, label]) => '<option value="' + esc(v) + '"' + (v === to ? " selected" : "") + ">" + esc(label) + "</option>").join("") +
-      '</select><textarea class="agent-text" rows="2" placeholder="' + esc(chatHint(to)) + '">' +
+      '</select></span><textarea class="agent-text" rows="2" placeholder="' + esc(chatHint(to)) + '">' +
       esc(herdNow.compose[to] || "") + "</textarea>" + IMAGE_BUTTON + useButton(to) +
       '<button type="button" class="primary small" data-act="a:send">Send</button></div></div>';
+  }
+
+  // Who the box writes to, in a word, for the tag typing shows: the lead
+  // and the primary by their role, any other by its name.
+  function chatTag(to, agents) {
+    if (to === "@lead" || to === "@primary") return to.slice(1);
+    const a = agents.find((x) => x.name === to);
+    return a && (a.role === "lead" || a.role === "primary") ? a.role : to;
   }
 
   // The box writes to TO now: what it held, words and images, goes along.
@@ -3614,6 +3625,7 @@
     delete herdNow.attach[was];
     foot.setAttribute("data-name", to);
     foot.querySelector(".chat-to").value = to;
+    foot.querySelector(".ttag").textContent = chatTag(to, roomAgents());
     const F = herdNow.find.chat;
     if (F && F.open && F.name !== chatFindAgent()) {
       if (herdNow.away.chat) backToLatest("chat");
@@ -4980,12 +4992,15 @@
     if (!XW.elsewhere) return emit("agent-image", { name: name });
     pickFor = name;
     picker.value = "";
+    if (typing) typeHold = Date.now();
     picker.click();
   }
 
   const picker = $("image-pick");
   let pickFor = null;
+  picker.addEventListener("cancel", () => typeRelease());
   picker.addEventListener("change", () => {
+    typeRelease();
     const file = picker.files && picker.files[0];
     const name = pickFor;
     pickFor = null;
@@ -5095,7 +5110,12 @@
       if (field && s && String(ev.target.value) !== String(slotCap(s, field))) setSlotCap(field, ev.target.value);
       return;
     }
-    if (ev.target.classList && ev.target.classList.contains("chat-to")) setChatTo(ev.target.value);
+    if (ev.target.classList && ev.target.classList.contains("chat-to")) {
+      setChatTo(ev.target.value);
+      // Typing, picked from the tag: on with the box.
+      const ta = typing && ev.target.closest(".cfoot").querySelector("textarea");
+      if (ta) ta.focus();
+    }
     if (ev.target.classList && ev.target.classList.contains("new-kind")) {
       herdNow.newKind = ev.target.value;
       herdNow.newKindPicked = true;
@@ -9072,13 +9092,153 @@
   // of that height: the composer (flex-shrink:0) stays above the keyboard
   // and the transcript (flex:1) shrinks, not the other way round.  On a
   // desktop the visual viewport is the window, so this is a no-op.
+  //
+  // Where the keyboard comes and goes on a phone (TYPES), a conversation
+  // at its end stays at its end; what is read up holds still anyway, its
+  // top not moving.
+  let appH = 0;
   function fitViewport() {
     const vv = window.visualViewport;
-    const h = vv ? vv.height : window.innerHeight;
-    document.documentElement.style.setProperty("--app-h", Math.round(h) + "px");
+    const h = Math.round(vv ? vv.height : window.innerHeight);
+    const ends = TYPES && h !== appH ? roomBodies().filter((b) => !scrolledUp(b)) : [];
+    document.documentElement.style.setProperty("--app-h", h + "px");
+    appH = h;
+    ends.forEach((b) => { b.scrollTop = b.scrollHeight; });
     // When the keyboard shifts the page down, pin it back so the top bar
     // and the composer both sit in the visible band.
     if (vv && vv.offsetTop > 0) window.scrollTo(0, 0);
+    if (TYPES) keyboardSeen(h, Math.round(vv ? vv.width : window.innerWidth));
+  }
+
+  // ---- Typing on a phone ---------------------------------------------------
+  //
+  // With its keyboard up a phone shows a third of the page, and a room's
+  // bars -- the tabs, the project's, the jump strip, the meter, who the
+  // chat goes to -- took all but two lines of it.  So while a room's box
+  // has the focus there, the page types (body.typing, style.css): the bars
+  // fold away, and who the chat's box goes to is a tag at its left, the
+  // select over it unseen.  The box's focus says so, not the visual
+  // viewport: the keyboard rises over a few frames, and a layout that
+  // followed it would change on the way.  A tap that passes through does
+  // not end it -- the select, Image (its picker), 💡 -- focus gone
+  // elsewhere does, or the keyboard put away with the box still focused
+  // (Android's back); a tap on the box types again.
+  //
+  // What a conversation shows stays where it was on the screen: the bars
+  // folding away show what was above it, coming back they cover it; at its
+  // end, it stays at its end.  Then held there (TYPE_KEEP) while the
+  // keyboard moves -- iOS scrolls for the box as it does -- unless a finger
+  // takes the conversation.
+  //
+  // A desktop never types -- Emacs's own page neither: a finger, on a
+  // screen a phone's size whichever way round.
+  const TYPES = TOUCH && Math.min(screen.width, screen.height) <= 600;
+  const TYPE_ROW = ".room .cfoot, .room .rfoot";
+  const TYPE_GRACE = 150, TYPE_KEEP = 900, TYPE_LOOK = 500, KEYBOARD = 150;
+  const typeRow = (el) => !!(el && el.closest && el.closest(TYPE_ROW));
+  const typeBox = (el) => !!(el && el.matches && el.matches("textarea.agent-text") && typeRow(el));
+  let typing = false, typeOff = null, typeLook = null, typeHold = 0, typeKept = null, typeFrame = 0;
+  const kbd = { tall: 0, wide: 0, seen: false, gone: null };
+
+  function roomBodies() {
+    return [...app.querySelectorAll(".room .chat .cbody, .room .rcol .rbody")];
+  }
+
+  function typeSet(on) {
+    if (!TYPES || on === typing) return;
+    const was = roomBodies().map((b) => ({ b, end: !scrolledUp(b), top: b.getBoundingClientRect().top }));
+    typing = on;
+    document.body.classList.toggle("typing", on);
+    clearInterval(typeLook);
+    // Focus taken away with the box -- a room drawn anew -- tells nothing.
+    typeLook = on ? setInterval(typeCheck, TYPE_LOOK) : null;
+    kbd.seen = on && keyboardUp();
+    clearTimeout(kbd.gone);
+    kbd.gone = null;
+    const keep = was.map((w) => {
+      if (w.end) w.b.scrollTop = w.b.scrollHeight;
+      else w.b.scrollTop += w.b.getBoundingClientRect().top - w.top;
+      return { b: w.b, end: w.end, a: w.end ? null : anchorOf(w.b) };
+    });
+    typeKept = { keep, until: Date.now() + TYPE_KEEP };
+    cancelAnimationFrame(typeFrame);
+    typeFrame = requestAnimationFrame(typeKeeping);
+    // A column's head was not there to fit its chips to.
+    if (!on) fitChips([...app.querySelectorAll(".room .rcol")]);
+  }
+
+  function typeKeep() {
+    const k = typeKept;
+    if (!k) return false;
+    if (Date.now() > k.until || handMoving()) { typeKept = null; return false; }
+    k.keep.forEach((w) => {
+      if (!w.b.isConnected) return;
+      if (w.end) w.b.scrollTop = w.b.scrollHeight;
+      else if (w.a) placeAnchor(w.b, w.a, drawn.get(w.b) || []);
+    });
+    return true;
+  }
+  function typeKeeping() {
+    typeFrame = typeKeep() ? requestAnimationFrame(typeKeeping) : 0;
+  }
+
+  // Still typing?  The box, or the select beside it, has the focus -- or
+  // Image's picker is up (`typeHold').
+  function typeCheck() {
+    if (!typing || typeHold) return;
+    const a = document.activeElement;
+    if (typeBox(a) || (typeRow(a) && a.matches("select"))) return;
+    typeSet(false);
+  }
+  function typeSoon() {
+    clearTimeout(typeOff);
+    typeOff = setTimeout(typeCheck, TYPE_GRACE);
+  }
+  function typeRelease() {
+    if (!typeHold) return;
+    typeHold = 0;
+    typeSoon();
+  }
+
+  // The keyboard: up while the visual viewport is KEYBOARD short of the
+  // tallest it has been at this width.
+  function keyboardUp() {
+    return !!kbd.tall && appH < kbd.tall - KEYBOARD;
+  }
+  function keyboardSeen(h, w) {
+    if (w !== kbd.wide) { kbd.wide = w; kbd.tall = h; } else kbd.tall = Math.max(kbd.tall, h);
+    if (!typing) return;
+    if (keyboardUp()) {
+      kbd.seen = true;
+      clearTimeout(kbd.gone);
+      kbd.gone = null;
+    } else if (kbd.seen && !kbd.gone && typeBox(document.activeElement)) {
+      kbd.gone = setTimeout(() => {
+        kbd.gone = null;
+        if (typing && !keyboardUp()) typeSet(false);
+      }, 250);
+    }
+  }
+
+  if (TYPES) {
+    document.addEventListener("focusin", (ev) => {
+      if (!typeBox(ev.target)) return;
+      clearTimeout(typeOff);
+      typeSet(true);
+    });
+    document.addEventListener("focusout", () => { if (typing) typeSoon(); });
+    // The keyboard put away, the box kept: a tap on it brings both back.
+    app.addEventListener("click", (ev) => {
+      if (!typing && typeBox(ev.target) && document.activeElement === ev.target) typeSet(true);
+    });
+    // Image and 💡 leave the box its focus, and so the keyboard.
+    document.addEventListener("mousedown", (ev) => {
+      if (typing && ev.target.closest && typeRow(ev.target) &&
+          ev.target.closest('[data-act="a:image"], [data-act="a:use-suggestion"]')) ev.preventDefault();
+    }, true);
+    // Back from Image's picker, picked or not: any touch on the page.
+    addEventListener("touchstart", () => { if (typeHold && Date.now() - typeHold > 400) typeRelease(); },
+      { passive: true, capture: true });
   }
   if (window.visualViewport) {
     visualViewport.addEventListener("resize", fitViewport);

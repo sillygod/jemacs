@@ -1642,6 +1642,35 @@ html { -webkit-text-size-adjust: 100%; }
   .lane-name { align-self: stretch; }
 }
 
+/* Typing on a phone (app.js, `typing'): while a room's box has the focus,
+   the bars above and below the conversation fold away -- the tabs, the
+   project's line, the jump strip, the meter (a column's head and its
+   sub-agents) -- and the conversation has the screen the keyboard leaves.
+   Who the chat's box goes to is then a tag at its left, "lead ▾", the
+   select over it unseen: a tap opens the list.  (A column's box is its
+   agent's, its placeholder says whose.)  Never set on a desktop, so it
+   stays as it is; there the tag is not shown and its wrapper lays out as
+   nothing. */
+.ttag { display: none; }
+.chat-to-w { display: contents; }
+body.typing > header.top, body.typing .room .rhead, body.typing .chat .cjump, body.typing .chat .cmeter,
+body.typing .rcol .rtop, body.typing .rcol .rjump, body.typing .rcol .rsubs { display: none; }
+body.typing .cfoot, body.typing .rfoot { gap: 5px; }
+body.typing .cfoot .chat-to-w { display: block; position: relative; flex: 0 1 auto; min-width: 0; max-width: 6.5em; align-self: flex-end; }
+body.typing .cfoot .ttag { display: block; box-sizing: border-box; height: 38px; line-height: 36px; padding: 0 22px 0 8px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg) var(--chevron) no-repeat right 7px center;
+  color: var(--text); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.typing .cfoot select.chat-to { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none;
+  padding: 0; opacity: 0; }
+body.typing .cfoot [data-act="a:image"], body.typing .rfoot [data-act="a:image"],
+body.typing .cfoot .use, body.typing .rfoot .use { width: 34px; }
+body.typing .cfoot [data-act="a:send"], body.typing .rfoot [data-act="a:send"] { padding: 0 10px; }
+/* 💡 puts what the agent suggests in place of what the box holds: of use
+   to an empty box, whose placeholder shows it.  Words in the box, its room
+   is the box's. */
+body.typing .cfoot textarea:not(:placeholder-shown) ~ .use,
+body.typing .rfoot textarea:not(:placeholder-shown) ~ .use { display: none; }
+
 /* ---- Inbox --------------------------------------------------------------- */
 .inboxpage { display: flex; flex: 1; min-height: 0; gap: 0; }
 .inboxpage.narrow { flex-direction: column; overflow-y: auto; padding: 10px 12px 24px; gap: 8px; }

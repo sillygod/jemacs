@@ -2700,6 +2700,17 @@ are the other tabs (below, and "What happened while you were away").
   screen's width; Columns one agent to the screen, swiped; Image picks
   a photo or takes one, sent to Emacs at 2000px at most.  An agent's
   name, a hook's file --- what opens in Emacs --- is only shown there.
+  Typing in a room, its box focused, the bars fold away --- the tabs,
+  the project's line, the strip, the meter, a column's head --- and the
+  conversation has what the keyboard leaves (of the 333 px an iPhone's
+  keyboard leaves, 282 for the chat instead of 66): who the chat goes to is a tag at the box's left,
+  =lead ▾=, a tap on it the list; 💡 is there while the box is empty.
+  The box left, or the keyboard put away, they come back.  The
+  select, Image's picker, 💡, a scroll do not end it.  What the
+  conversation shows stays where it was on the screen going in and
+  coming out, at its end at its end.  The box's focus says so, not the
+  keyboard's height, so the page changes once as the keyboard rises; a
+  desktop --- Emacs's page too --- never types.
 - The chat writes to the project's /lead/ unless you pick another: an
   agent that plans the work, hands it out as asks, and reports back.
   It is an ordinary agent --- =ghostherd-lead-kind=, claude by default
