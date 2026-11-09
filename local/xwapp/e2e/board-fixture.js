@@ -9,11 +9,15 @@ const BB = (repo, id) => "https://bitbucket.org/acme/" + repo + "/pull-requests/
 const pr = (repo, id, state, title, extra) => Object.assign({
   host: "bitbucket", owner: "acme", repo, id, state, title, dest: "master", url: BB(repo, id), draft: false, unsure: false,
   own: true, of: "", first: now - 300 * min, last: now - 30 * min }, extra || {});
-const card = (id, status, title, extra) => Object.assign({
+const card = (id, status, title, extra) => withTickets(Object.assign({
   id, status, title, named: false, labels: [], asks: 2, open: 0, fyi: 0, acks: 0, relays: 0, failed: 0,
   first: now - 400 * min, last: now - 60 * min, agents: [], projects: [], cross: false, prs: [], links: [], jingOf: [],
   needs: [], deploys: [], unanswered: null,
-  block: { kind: "answered", ask: "aa000000", from: "", to: "", since: now - 60 * min, head: "" }, closed: null }, extra || {});
+  block: { kind: "answered", ask: "aa000000", from: "", to: "", since: now - 60 * min, head: "" }, closed: null }, extra || {}));
+// What the sidecar sends of a card's tickets: each CU- label's id, named when it last moved.
+function withTickets(c) {
+  return Object.assign(c, { tickets: (c.labels || []).filter((l) => /^CU-/.test(l)).map((l) => ({ id: l.slice(3), last: c.last })) });
+}
 
 const CARDS = [
   card("c1a2b3", "live", "結帳頁改用新的稅率表", {
@@ -26,7 +30,7 @@ const CARDS = [
     block: { kind: "open", ask: "1c1c1c1c", from: "lead-billing", to: "taxaudit", since: now - 9 * min, status: "delivered",
              working: true, head: "盤點各區的稅率差異，寫成一張對照表" } }),
   card("d4e5f6", "live", "iOS 推播在背景收不到", {
-    asks: 3, open: 1, first: now - 70 * min, last: now - 12 * min, agents: ["lead-mobile", "pushfix"], projects: ["mobile"],
+    asks: 3, open: 1, first: now - 70 * min, last: now - 12 * min, agents: ["lead-mobile", "pushfix"], projects: ["mobile"], labels: ["CU-86c001"],
     block: { kind: "open", ask: "2d2d2d2d", from: "lead-mobile", to: "pushfix", since: now - 12 * min, status: "queued",
              working: false, head: "查 APNs 的 content-available 有沒有帶上" } }),
   card("e7f8a9", "live", "ops-helm 同步三站的 values", {
@@ -46,11 +50,11 @@ const CARDS = [
     prs: [pr("shop", 409, "OPEN", "cart: idempotent stock hold", { of: "f0a1b2" })],
     block: { kind: "answered", ask: "5a5a5a5a", from: "cartfix", to: "lead-shop", since: now - 150 * min, head: "#409 改好，測試 212 項全過，等 review" } }),
   card("a3b4c5", "quiet", "billing 對帳腳本加 dry-run", {
-    first: now - 500 * min, last: now - 300 * min, agents: ["lead-billing", "taxaudit"], projects: ["billing"],
+    first: now - 500 * min, last: now - 300 * min, agents: ["lead-billing", "taxaudit"], projects: ["billing"], labels: ["CU-86b2k1", "CU-86c002"],
     prs: [pr("billing", 90, "MERGED", "reconcile: --dry-run", { of: "a3b4c5" })],
     block: { kind: "answered", ask: "6b6b6b6b", from: "taxaudit", to: "lead-billing", since: now - 300 * min, head: "#90 merge 了" } }),
   card("c6d7e8", "orphan", "整理 nginx 的 rate limit 設定", {
-    asks: 3, first: now - 700 * min, last: now - 420 * min, agents: ["lead-infra", "ratefix"], projects: ["infra"],
+    asks: 3, first: now - 700 * min, last: now - 420 * min, agents: ["lead-infra", "ratefix"], projects: ["infra"], labels: ["CU-86c003"],
     needs: [{ id: 12, kind: "need", text: "三個方案選一個：全站、只 API、只登入", agent: "lead-infra", ask: "7c7c7c7c", at: now - 420 * min }],
     block: { kind: "answered", ask: "7c7c7c7c", from: "ratefix", to: "lead-infra", since: now - 420 * min, head: "列好三個方案，等 lead 決定" } }),
   card("9a8b7c", "quiet", "mobile 要 billing 的退款 webhook", {
@@ -59,6 +63,7 @@ const CARDS = [
     block: { kind: "answered", ask: "8d8d8d8d", from: "lead-mobile", to: "lead-shop", since: now - 260 * min, head: "收到格式了，下週接" } }),
   card("0f1e2d", "done", "更新 README 的部署步驟", {
     named: true, first: now - 800 * min, last: now - 640 * min, agents: ["lead-shop", "docsbot"], projects: ["shop"], closed: now - 600 * min,
+    labels: ["CU-86c002"],
     block: { kind: "answered", ask: "9e9e9e9e", from: "docsbot", to: "lead-shop", since: now - 640 * min, head: "README 改好了" } }),
   card("3c4d5e", "done", "試跑新的 CI runner", {
     failed: 1, first: now - 900 * min, last: now - 700 * min, agents: ["lead-infra", "runnerx"], projects: ["infra"], closed: now - 690 * min,
@@ -114,7 +119,20 @@ const META = {
   days: 1, more: true, agents: AGENTS,
 };
 
-const FULL = { v: 1, base: 0, full: true, cards: CARDS, drop: [], waits: WAITS, jing: JING, meta: META };
+const tk = (id, name, status, type, color, extra) => Object.assign({ id, name, status, type, color, url: "https://app.clickup.com/t/" + id,
+  error: null, done: type === "done" || type === "closed", loading: false, unsure: false }, extra || {});
+const TICKETS = [
+  tk("86b2k1", "結帳頁改用新稅率表", "in progress", "custom", "#4194f6"),
+  tk("86b2k9", "購物車重複扣庫存", "review", "custom", "#f9a03f"),
+  // Done in ClickUp, its item still at work: a hint.
+  tk("86c001", "iOS 推播在背景收不到", "complete", "done", "#6bc950"),
+  // Open in ClickUp, its PRs merged and nothing at work: a hint.
+  tk("86c002", "對帳與文件收尾", "to do", "open", "#87909e"),
+  // ClickUp could not be read.
+  tk("86c003", null, null, null, null, { url: null, error: "the token was refused" }),
+];
+
+const FULL = { v: 1, base: 0, full: true, cards: CARDS, drop: [], waits: WAITS, jing: JING, meta: META, tickets: TICKETS };
 
 const TIMELINE = {
   id: "c1a2b3", last: CARDS[0].last, asksOf: [],
@@ -131,4 +149,4 @@ const TIMELINE = {
   ],
 };
 
-module.exports = { FULL, CARDS, WAITS, JING, META, TIMELINE, AGENTS, P, now };
+module.exports = { FULL, CARDS, WAITS, JING, META, TIMELINE, AGENTS, TICKETS, P, now };

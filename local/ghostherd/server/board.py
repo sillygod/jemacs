@@ -54,7 +54,7 @@ rows it read.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 import links
@@ -621,17 +621,74 @@ def need_states(events: list[dict[str, Any]], closed_at: str | None = None) -> d
     return out
 
 
-def unanswered(asks: list[dict[str, Any]]) -> dict[str, Any] | None:
+def gone(asks: list[dict[str, Any]]) -> dict[str, Any] | None:
     """The item's last ask, when it ended with no answer -- failed,
     cancelled, its taker stopped without one -- and nothing is open: a
-    request that went nowhere.  None otherwise."""
+    request that went nowhere.  None otherwise.  Its status, auto and
+    created_at alone are read."""
     if not asks or any(a["status"] in ASK_OPEN for a in asks):
         return None
     a = max(asks, key=lambda a: a["created_at"])
     if a["status"] in ("failed", "cancelled") or (a["status"] == "answered" and a.get("auto")):
-        return {"ask": a["id"], "from": a["from_name"], "to": taker(a), "status": "stopped" if a.get("auto") else a["status"],
-                "at": ms(a["answered_at"] or a["created_at"]), "head": head(a["body"])}
+        return a
     return None
+
+
+def unanswered(asks: list[dict[str, Any]]) -> dict[str, Any] | None:
+    "The item's last ask that went nowhere (`gone'), as a card says it."
+    a = gone(asks)
+    if a is None:
+        return None
+    return {"ask": a["id"], "from": a["from_name"], "to": taker(a), "status": "stopped" if a.get("auto") else a["status"],
+            "at": ms(a["answered_at"] or a["created_at"]), "head": head(a["body"])}
+
+
+# How an item stands -- what the Board's window and its tab's badge read.
+# One function each, for the board (on its cards) and for the badge (on the
+# few columns `standing' reads, the tab closed), so the badge counts what
+# the Board would show: the two cannot tell different numbers.
+
+
+def standing(item: dict[str, Any], asks: list[dict[str, Any]], events: list[dict[str, Any]]) -> dict[str, Any]:
+    """How ITEM (its closed_at) stands, with ASKS (each its status, auto,
+    created_at, delivered_at, answered_at) and EVENTS (its fixed lines):
+    the keys of its card that `shown' and `urgent' read -- its status, its
+    needs still open, whether its last ask went nowhere (`unanswered',
+    true or false here; on the card, what that ask was), when it last
+    moved (`last', ms)."""
+    states = need_states(events, item.get("closed_at"))
+    return {"status": status(item, asks),
+            "needs": [_event(e) for e in events if states.get(e["id"]) == "open"],
+            "unanswered": gone(asks) is not None,
+            "last": ms(max([last_at(asks)] + [e["at"] for e in events]))}
+
+
+def shown(c: dict[str, Any], since: float) -> bool:
+    """Whether the Board lists an item standing C (a card, or `standing'):
+    live, a need of its still open, or moved since SINCE (ms) -- the
+    window the page chose; the older quiet and done ones are left out."""
+    return c["status"] == "live" or bool(c["needs"]) or (c["last"] or 0) >= since
+
+
+def urgent(c: dict[str, Any], orphan_since: float) -> str | None:
+    """What an item standing C (a card, or `standing') counts for on the
+    Board tab's badge: `orphan' -- nobody has it (沒人接): not live, not
+    done, a need still open or its last ask gone nowhere, and quiet since
+    before ORPHAN_SINCE (ms); `jing' -- a lead's need waits on the user;
+    else None."""
+    if c["status"] in ("live", "done"):
+        return None
+    if (c["needs"] or c["unanswered"]) and (c["last"] or 0) < orphan_since:
+        return "orphan"
+    return "jing" if c["needs"] else None
+
+
+def windows(days: float, orphan_hours: float, now: datetime | None = None) -> tuple[float, float]:
+    """The Board's window of DAYS and the 沒人接 line ORPHAN_HOURS back from
+    NOW, as ms -- what `shown' and `urgent' take."""
+    now = now or datetime.now(timezone.utc)
+    return (ms((now - timedelta(days=days)).isoformat()),
+            ms((now - timedelta(hours=max(0.0, float(orphan_hours)))).isoformat()))
 
 
 def _event(e: dict[str, Any]) -> dict[str, Any]:
@@ -666,8 +723,13 @@ def card(item: dict[str, Any], asks: list[dict[str, Any]], snap: dict[str, dict[
     prs: dict[str, dict[str, Any]] = {}
     labels = list(item.get("labels") or [])
     linked: list[str] = []
+    # Its tickets, each with when an ask last named it -- a lead's label of
+    # one counts as named when the item last moved.
+    named_at: dict[str, float] = {}
     for a in asks:
         at = ms(a["answered_at"] or a["created_at"])
+        for t in a.get("tickets") or []:
+            named_at[t] = max(named_at.get(t, 0) or 0, at or 0)
         for pr in a.get("prs") or []:
             k = pr_key(pr)
             if k not in prs:
@@ -686,11 +748,9 @@ def card(item: dict[str, Any], asks: list[dict[str, Any]], snap: dict[str, dict[
             it = known.get(r) if isinstance(known, dict) else None
             if it and it != item["id"] and it not in linked:
                 linked.append(it)
-    states = need_states(events, item.get("closed_at"))
-    needs = [_event(e) for e in events if states.get(e["id"]) == "open"]
+    st = standing(item, asks, events)
     deploys = [_event(e) for e in events if e["kind"] == "deploy"][-3:]
     open_ = [a for a in asks if a["status"] in ASK_OPEN]
-    gone = unanswered(asks)
     if open_:
         a = max(open_, key=lambda a: a["created_at"])
         block = {"kind": "open", "ask": a["id"], "from": a["from_name"], "to": taker(a),
@@ -703,20 +763,21 @@ def card(item: dict[str, Any], asks: list[dict[str, Any]], snap: dict[str, dict[
         block = {"kind": a["status"], "ask": a["id"], "from": taker(a), "to": a["from_name"],
                  "since": ms(a["answered_at"] or a["created_at"]),
                  "head": head(a.get("reply") if a["status"] == "answered" else (a.get("error") or a["status"]))}
-    last = max([last_at(asks)] + [e["at"] for e in events])
     return {
         "id": item["id"], "title": item.get("title") or title(*[a["body"] for a in asks[:3]]) or "(untitled)",
-        "named": bool(item.get("title")), "status": status(item, asks), "labels": labels,
+        "named": bool(item.get("title")), "status": st["status"], "labels": labels,
         "asks": len(asks), "open": len(open_),
         "fyi": sum(1 for a in asks if a.get("fyi")),
         "acks": sum(1 for a in asks if a["status"] == "answered" and ack(a.get("reply"))),
         "relays": sum(1 for a in asks if a.get("how") == "relay"),
         "failed": sum(1 for a in asks if a["status"] in ("failed", "cancelled")),
-        "first": ms(first["created_at"]), "last": ms(last),
+        "first": ms(first["created_at"]), "last": st["last"],
         "agents": names, "projects": projs, "cross": len(projs) > 1,
         "prs": sorted(prs.values(), key=lambda p: (not p["own"], p["first"] or 0)), "links": linked,
         "block": block, "closed": ms(item.get("closed_at")) if item.get("closed_at") else None,
-        "needs": needs, "deploys": deploys, "unanswered": gone,
+        "needs": st["needs"], "deploys": deploys, "unanswered": unanswered(asks),
+        "tickets": [{"id": t, "last": named_at.get(t) or st["last"]}
+                    for t in dict.fromkeys(list(named_at) + [x[3:] for x in labels if x.startswith("CU-")])],
     }
 
 

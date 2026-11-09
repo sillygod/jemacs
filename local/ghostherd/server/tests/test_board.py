@@ -11,7 +11,7 @@ import pytest
 
 import board
 from herd import HerdStore, reset_herd
-from tests.test_ask import SNAP, _deliver
+from tests.test_ask import SNAP, _deliver, client  # noqa: F401 -- the RPC client, a fixture
 
 LEADS = SNAP + [
     {"name": "lead-a", "kind": "claude", "state": "idle", "project": "/src/a/", "role": "lead"},
@@ -272,6 +272,7 @@ def test_reply_names_join_the_item(tmp_path):
     h.reply(a["id"], "Opened https://bitbucket.org/acme/shop/pull-requests/31", from_name="agy-a2")
     c = _items(h)[_item_of(h, a["id"])]
     assert c["labels"] == ["CU-86abc12"]
+    assert [t["id"] for t in c["tickets"]] == ["86abc12"] and c["tickets"][0]["last"]
     assert [(p["repo"], p["id"]) for p in c["prs"]] == [("shop", 31)]
     assert c["status"] == "quiet" and c["block"]["kind"] == "answered"
     # Learned from the link: `shop #32' is that repository's now.
@@ -685,8 +686,112 @@ def test_board_counts_for_the_tabs_badge(tmp_path):
     with h._mu:
         h._conn.execute("UPDATE item_events SET at = ?", ((datetime.now(timezone.utc) - timedelta(hours=5)).isoformat(),))
         h._conn.commit()
-    assert h.board_counts(4) == {"jing": 0, "orphan": 2}
-    assert h.board_counts(24) == {"jing": 1, "orphan": 0}
+    assert h.board_counts(orphan_hours=4) == {"jing": 0, "orphan": 2}
+    assert h.board_counts(orphan_hours=24) == {"jing": 1, "orphan": 0}
     # Closed by a lead: neither.
     h.item_edit("close", need["id"], by="lead-a")
-    assert h.board_counts(4) == {"jing": 0, "orphan": 1}
+    assert h.board_counts(orphan_hours=4) == {"jing": 0, "orphan": 1}
+
+
+def _badge_of_board(h, days, hours=4):
+    """The badge as the page counts it with the Board open: Emacs takes a
+    card's `orphan' as 沒人接, a need open on one not live nor done as 等
+    Jing (the page's bdUrgent)."""
+    out = {"jing": 0, "orphan": 0}
+    for c in h.board(days, hours)["items"]:
+        if c["orphan"]:
+            out["orphan"] += 1
+        elif c["status"] not in ("live", "done") and c["needs"]:
+            out["jing"] += 1
+    return out
+
+
+def _ended(h, ask_id, how, minutes):
+    "Ask ASK_ID ended with no answer -- failed, cancelled, stopped -- MINUTES ago."
+    when = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    with h._mu:
+        h._conn.execute("UPDATE asks SET status = ?, auto = ?, created_at = ?, delivered_at = ?, answered_at = ? WHERE id = ?",
+                        ("answered" if how == "stopped" else how, 1 if how == "stopped" else 0, when, when, when, ask_id))
+        h._conn.commit()
+
+
+def test_the_badge_counts_what_the_board_shows(tmp_path):
+    """An item whose last ask went nowhere three days ago is past the
+    Board's window of a day: the badge counts it no more than the Board
+    shows it.  A week's window holds it: it counts in both."""
+    h = _store(tmp_path)
+    gone = h.ask("agy-a2", "Do the thing", from_name="lead-a")
+    _deliver_all(h)
+    _ended(h, gone["id"], "cancelled", 3 * 24 * 60)
+    it = _item_of(h, gone["id"])
+    assert it not in _items(h, 1)
+    assert h.board_counts(1) == {"jing": 0, "orphan": 0} == _badge_of_board(h, 1)
+    assert _items(h, 7)[it]["orphan"] is True
+    assert h.board_counts(7) == {"jing": 0, "orphan": 1} == _badge_of_board(h, 7)
+
+
+def test_the_badge_and_the_board_agree_on_every_kind(tmp_path):
+    """Whatever the window and the hours, the badge (the tab closed) and
+    the Board's own cards (the tab open) count the same: needs open, old or
+    new, are always shown; asks gone nowhere -- failed, cancelled, stopped
+    -- are counted while the window holds them; live and closed ones never."""
+    h = _store(tmp_path)
+    ago = lambda minutes: (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    needs = []
+    for minutes in (10, 5 * 60, 3 * 24 * 60):
+        out = _lead_answer(h, f"需要 Jing：pick one of {minutes}")  # one message is kept once: each its own
+        _item_of(h, out["id"])  # its line read before it is made old
+        _backdate(h, out["id"], minutes)
+        needs.append((out["id"], minutes))
+    with h._mu:
+        for a, minutes in needs:
+            h._conn.execute("UPDATE item_events SET at = ? WHERE ask = ?", (ago(minutes), a))
+        h._conn.commit()
+    for how, minutes in (("failed", 60), ("cancelled", 5 * 60), ("stopped", 2 * 24 * 60), ("failed", 3 * 24 * 60)):
+        a = h.ask("agy-a2", f"Do it ({how}, {minutes})", from_name="lead-a")
+        _deliver_all(h)
+        _ended(h, a["id"], how, minutes)
+    live = _lead_answer(h, "需要 Jing：while still at work")
+    h.ask("agy-a2", "and more", from_name="lead-a", item=_item_of(h, live["id"]))
+    shut = _lead_answer(h, "需要 Jing：later")
+    h.item_edit("close", shut["id"], by="lead-a")
+    seen = set()
+    for days in (0.5, 1, 7):
+        for hours in (0, 4, 24):
+            counts = h.board_counts(days, hours)
+            assert counts == _badge_of_board(h, days, hours), (days, hours)
+            seen.add(tuple(counts.values()))
+    # A day: the need of ten minutes waits on the user; the needs of five
+    # hours and three days, and the ask cancelled five hours ago, are
+    # nobody's -- the one failed an hour ago not yet.  A week adds the two
+    # gone two and three days ago.
+    assert h.board_counts(1, 4) == {"jing": 1, "orphan": 3}
+    assert h.board_counts(7, 4) == {"jing": 1, "orphan": 5}
+    assert len(seen) > 3
+
+
+def test_the_badge_and_the_board_take_the_window_over_rpc(client):
+    """The page's window reaches both RPCs: herd_board_counts takes the
+    Board's days, herd_board the hours an item may be quiet before it is
+    nobody's."""
+    from herd import get_herd
+    from tests.test_ask import _rpc
+    h = get_herd()
+    gone = h.ask("agy-a2", "Do the thing", from_name="claude-main")
+    _ended(h, gone["id"], "failed", 3 * 24 * 60)
+    assert _rpc(client, "herd_board_counts", {"days": 1, "orphan_hours": 4})["result"] == {"jing": 0, "orphan": 0}
+    assert _rpc(client, "herd_board_counts", {"days": 7, "orphan_hours": 4})["result"] == {"jing": 0, "orphan": 1}
+    assert _rpc(client, "herd_board_counts", {})["result"] == {"jing": 0, "orphan": 0}
+    [c] = _rpc(client, "herd_board", {"days": 7, "orphan_hours": 100})["result"]["items"]
+    assert c["orphan"] is False
+    [c] = _rpc(client, "herd_board", {"days": 7})["result"]["items"]
+    assert c["orphan"] is True
+    assert "days must be a number" in _rpc(client, "herd_board_counts", {"days": "a week"})["error"]["message"]
+
+
+def test_a_leads_ticket_label_is_one_of_its_tickets(tmp_path):
+    h = _store(tmp_path)
+    a = h.ask("agy-a2", "Fix the cart", from_name="lead-a")
+    h.item_edit("label", a["id"], by="lead-a", labels=["CU-86zz9", "deploy"])
+    c = _items(h)[_item_of(h, a["id"])]
+    assert [t["id"] for t in c["tickets"]] == ["86zz9"] and c["labels"] == ["CU-86zz9", "deploy"]

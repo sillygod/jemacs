@@ -2820,6 +2820,23 @@ words are Traditional Chinese.
   the PR chips' own lookup and cache.  A PR is the item's whose ask's
   answer said it was opened (=開好=, =opened= ... beside its number), else
   whose answer named it first, else whose ask did.
+- *所有單號*, after the PRs: one row per ticket the shown items carry --
+  its id (opening it as the work chips do), what ClickUp says of it
+  (title, status; =?= when it could not be read, or its last state marked
+  unsure when the last look failed), its items by status (=3 件：進行中
+  1、收尾 1、完成 1=), their PRs, its projects, when an ask last named it.
+  Looked up through the work chips' own lookup and cache
+  (=clickup-view-task-brief=, =ghostherd-memory-page--task-briefs=), by
+  the PR chips' rules: a failed look keeps what it knew, a done or closed
+  ticket is kept an hour, a look that hangs is asked again.  A tap opens
+  a row to its items' cards; =只看這張=, or a ticket label on a card,
+  narrows the Board to it (=只看 CU-xxx ✕=) -- with a project too, both
+  hold.  A last row counts the items with no ticket, and where; a tap
+  narrows to them.  Hints where ClickUp and the work disagree, by the
+  status's type (never its name), display only -- nothing is written to
+  ClickUp: open or custom in ClickUp while every PR its items name is
+  merged or deployed and none of them is live; done or closed while one
+  is live, 等 Jing or 沒人接.  None while its state is not known for sure.
 - *等 Jing*: first the leads' own lines.  A lead (or primary) ends an
   answer or a report with a line of its own for each that applies ---
   =需要 Jing：what the user must do= and =部署：what went where=, either
@@ -2836,7 +2853,8 @@ words are Traditional Chinese.
   it names *已部署* on their chips.
 - *沒人接*: an item quiet for =ghostherd-board-orphan-hours= (4) with a
   need still open, or whose last ask failed, was cancelled or was left
-  unanswered (its taker stopped without one), and nothing open.
+  unanswered (its taker stopped without one), and nothing open.  The
+  sidecar says which (=board.urgent=), the rule the badge counts by.
 - A card's timeline shows its *key events* first: the ask that began
   it, each 需要 Jing (and how it ended) and 部署 line, each PR an answer
   said was opened and each own PR's merge (the forge's time: GitHub's,
@@ -2862,11 +2880,16 @@ From the Board:
   question through its lead, another agent's to it), and a lead's
   =需要 Jing= through that lead.
 - The tab's red count is the items nobody has and those waiting on you
-  by a lead's line.  With the tab open, from its cards; closed, Emacs
-  asks the sidecar for two counts (=herd_board_counts=, the events and
-  the asks' few columns, never the board) as the page starts, after news
-  in the herd -- an entry of the herd log, at most every 30 s -- and
-  every 5 min with none (an item turns 沒人接 by time alone).
+  by a lead's line, of those the Board shows -- its window, a day or
+  seven, as you chose it: what the tab says closed is what it shows
+  open.  With the tab open, from its cards; closed, Emacs asks the
+  sidecar for two counts (=herd_board_counts= with that window, the
+  events and the asks' few columns, never the board) as the page
+  starts, after news in the herd -- an entry of the herd log, at most
+  every 30 s -- and every 5 min with none (an item turns 沒人接 by time
+  alone).  Both go through the same functions (=board.shown=, which
+  items the Board lists; =board.urgent=, what each counts for), so the
+  two cannot disagree.
 
 It lists every item an ask is open in, and the quiet and done ones of
 the last day (seven on asking, kept in your browser); the herd keeps
