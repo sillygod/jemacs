@@ -2940,6 +2940,43 @@ class HerdStore:
             self._conn.commit()
         return {"id": int(event), "closed": cur.rowcount == 1}
 
+    def board_counts(self, orphan_hours: float = 4) -> dict[str, Any]:
+        """How many items wait on the user (a lead's need open, not live)
+        and how many nobody has (quiet past ORPHAN_HOURS with a need open or
+        its last ask gone nowhere): the Board tab's badge, for a page that
+        has not the tab open.  The asks' few columns and the events alone --
+        no cards, no text."""
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(hours=max(0.0, float(orphan_hours)))).isoformat()
+        with self._mu:
+            self._assign_items()
+            events = self._events()
+            closed = {r[0]: r[1] for r in self._conn.execute(
+                "SELECT id, closed_at FROM work_items WHERE merged_into IS NULL")}
+            rows = self._conn.execute(
+                "SELECT i.item, a.status, a.auto, a.created_at, COALESCE(a.answered_at, a.delivered_at, a.created_at) "
+                "FROM asks a JOIN ask_item i ON i.ask = a.id").fetchall()
+        by: dict[str, list[tuple]] = {}
+        for r in rows:
+            by.setdefault(r[0], []).append(r)
+        jing = orphan = 0
+        for item, asks in by.items():
+            if item not in closed or any(a[1] in ASK_OPEN for a in asks):
+                continue
+            if closed[item] and all(a[3] <= closed[item] for a in asks):
+                continue
+            evs = events.get(item, [])
+            states = board.need_states(evs, closed[item])
+            need = any(st == "open" for st in states.values())
+            latest = max(asks, key=lambda a: a[3])
+            gone = latest[1] in ("failed", "cancelled") or (latest[1] == "answered" and latest[2])
+            last = max([a[4] for a in asks] + [e["at"] for e in evs])
+            if (need or gone) and last < cutoff:
+                orphan += 1
+            elif need:
+                jing += 1
+        return {"jing": jing, "orphan": orphan}
+
     def open_needs(self) -> dict[str, Any]:
         """What the leads' lines say waits on the user now, newest first --
         for the Inbox, every few seconds: the events alone, not the board."""

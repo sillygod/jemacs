@@ -179,6 +179,7 @@ class JsonRpcHandler:
             "herd_board_item": self._herd_board_item,
             "herd_items": self._herd_items,
             "herd_needs": self._herd_needs,
+            "herd_board_counts": self._herd_board_counts,
             "herd_board_need_close": self._herd_board_need_close,
             "herd_item_edit": self._herd_item_edit,
             "herd_report": self._herd_report,
@@ -615,6 +616,14 @@ class JsonRpcHandler:
         if not ref:
             raise ValueError("give the item's id, or an ask's")
         return get_herd().board_item(ref)
+
+    def _herd_board_counts(self, params: dict) -> dict:
+        "The Board tab's badge: items waiting on the user, items nobody has."
+        try:
+            hours = float(params.get("orphan_hours") if params.get("orphan_hours") is not None else 4)
+        except (TypeError, ValueError):
+            raise ValueError("orphan_hours must be a number") from None
+        return get_herd().board_counts(hours)
 
     def _herd_needs(self, _params: dict) -> dict:
         "What the leads' 需要 Jing lines say waits on the user now: the Inbox's."

@@ -346,5 +346,63 @@ an ask goes on with, a relay, closing, and the two fixed lines."
   (dolist (words '("--item ID" "--relay-of ASK" "需要 Jing：" "部署："))
     (should (string-search words ghostherd--primary-role))))
 
+;;; Ways out of the Board: names to rooms, the badge with the tab closed
+
+(ert-deftest ghostherd-test-board-knows-the-herd-and-each-way-to-answer ()
+  "The patch names the herd's agents and the room each is under, as the
+Agents tab has it, for the page's names to lead to rooms; a lead's need
+says how to answer it, through its project."
+  (ghostherd-board-test--with
+    (let ((ghostherd--sessions (make-hash-table :test #'equal))
+          (ghostherd--roles (make-hash-table :test #'equal)))
+      (puthash "lead-a" (ghostherd-session--create :id "lead-a" :name "lead-a" :kind 'claude :state 'idle
+                                                    :project "/src/a/" :backend 'tmux)
+               ghostherd--sessions)
+      (puthash "lead-a" "lead" ghostherd--roles)
+      (puthash "rd-1" (ghostherd-session--create :id "rd-1" :name "rd-1" :kind 'claude :state 'working
+                                                  :project "/src/a/" :backend 'tmux)
+               ghostherd--sessions)
+      (let ((board (ghostherd-board-test--reply
+                    (ghostherd-board-test--card "w1" "quiet" :needs (list (list :id 4 :text "pick" :agent "lead-a" :at 9))))))
+        (setq reply (lambda (m _p) (pcase m ("herd_board" board) (_ nil))))
+        (ghostherd-memory-page--handle '((op . "board-watch")))
+        (let* ((p (ghostherd-test--call calls "boardPatch"))
+               (agents (append (plist-get (plist-get p :meta) :agents) nil))
+               (need (aref (plist-get p :jing) 0)))
+          (should (equal (mapcar (lambda (a) (list (plist-get a :name) (plist-get a :role))) agents)
+                         '(("lead-a" "lead") ("rd-1" ""))))
+          (should (equal (plist-get (car agents) :project) (ghostherd--project-name "/src/a/")))
+          (should (equal (list (plist-get need :replyVia) (plist-get need :projectDir))
+                         (list "lead" (ghostherd--project-name "/src/a/")))))))))
+
+(ert-deftest ghostherd-test-board-badge-with-the-tab-closed ()
+  "With the Board closed, its badge's counts come from `herd_board_counts'
+-- never the board: as the page starts, on news at most every
+`ghostherd-board--peek-every', and every `--peek-fallback' with none (an
+item turns 沒人接 by time alone).  With the Board open, none is asked."
+  (ghostherd-board-test--with
+    (let ((ghostherd-board--peek-timer nil) (ghostherd-board--peek-soon nil) (ghostherd-board--peek-at 0)
+          (ghostherd-board-orphan-hours 6) (timers nil))
+      (cl-letf (((symbol-function 'run-at-time) (lambda (secs rep _fn &rest _) (push (list secs rep) timers) 'a-timer)))
+        (setq reply (lambda (m _p) (pcase m ("herd_board_counts" '(:jing 2 :orphan 1)))))
+        (ghostherd-memory-page--handle '((op . "board-peek")))
+        (should (equal requests '(("herd_board_counts" (:orphan_hours 6)))))
+        (should (equal (ghostherd-test--call calls "boardBadge") '(:jing 2 :orphan 1)))
+        (should (member (list ghostherd-board--peek-fallback ghostherd-board--peek-fallback) timers))
+        ;; News: one look, after the last by `--peek-every' at most; more news meanwhile, still one.
+        (setq timers nil requests nil)
+        (ghostherd-board--on-log nil)
+        (ghostherd-board--on-log nil)
+        (should (= 1 (length timers)))
+        (should (> (car (car timers)) 20))
+        (should-not requests)
+        ;; The Board open: its patches carry the count; news asks nothing.
+        (setq timers nil ghostherd-board--peek-soon nil)
+        (let ((ghostherd-board--watching t))
+          (ghostherd-board--on-log nil)
+          (ghostherd-board--peek)
+          (should-not timers)
+          (should-not requests))))))
+
 (provide 'ghostherd-board-tests)
 ;;; ghostherd-board-tests.el ends here

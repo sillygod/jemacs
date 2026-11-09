@@ -664,3 +664,29 @@ def test_item_options_an_action_does_not_take_are_refused(monkeypatch, capsys):
     assert sent[-1] == ("herd_items", {"days": 7.0})
     assert hc.main(["item"]) == 0
     assert sent[-1] == ("herd_items", {"days": 1})
+
+
+def test_board_counts_for_the_tabs_badge(tmp_path):
+    """The badge's counts, without the board: an item waiting on the user (a
+    lead's need open, not live), one nobody has (quiet past the hours with
+    a need open or its last ask gone nowhere) -- the same the page shows."""
+    h = _store(tmp_path)
+    assert h.board_counts() == {"jing": 0, "orphan": 0}
+    need = _lead_answer(h, "需要 Jing：pick a vendor")
+    gone = h.ask("agy-a2", "Do the thing", from_name="lead-a")
+    _deliver_all(h)
+    h.cancel(gone["id"])
+    live = _lead_answer(h, "需要 Jing：while it is still at work")
+    h.ask("agy-a2", "and more", from_name="lead-a", item=live["id"])
+    assert h.board_counts() == {"jing": 1, "orphan": 0}
+    # Five hours later: quiet past four, both are nobody's.
+    for a in (need["id"], gone["id"]):
+        _backdate(h, a, 5 * 60)
+    with h._mu:
+        h._conn.execute("UPDATE item_events SET at = ?", ((datetime.now(timezone.utc) - timedelta(hours=5)).isoformat(),))
+        h._conn.commit()
+    assert h.board_counts(4) == {"jing": 0, "orphan": 2}
+    assert h.board_counts(24) == {"jing": 1, "orphan": 0}
+    # Closed by a lead: neither.
+    h.item_edit("close", need["id"], by="lead-a")
+    assert h.board_counts(4) == {"jing": 0, "orphan": 1}

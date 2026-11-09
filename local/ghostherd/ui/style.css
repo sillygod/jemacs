@@ -2198,3 +2198,42 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 .boardpage .bdfoldh .fp { font-family: var(--mono); color: var(--text); }
 .boardpage .bdfoldh .chev { flex: none; color: var(--muted); }
 .boardpage .bdfold > .cards { padding: 0 8px 8px; }
+
+/* Names to rooms, a project as a filter, acting from a card, the red badge. */
+.tab .count.badge.red { background: var(--minus); color: #fff; }
+.boardpage .bdname { background: none; border: 0; padding: 0; font: inherit; font-family: var(--mono); color: inherit; cursor: pointer;
+  text-decoration: underline dotted rgba(139,148,158,.5); text-underline-offset: 3px; }
+.boardpage .bdname:hover { color: var(--accent); text-decoration-color: var(--accent); }
+.boardpage .bdname.gone { color: var(--muted); text-decoration: line-through; cursor: help; }
+.boardpage .bdname.strong { font-weight: 600; }
+.boardpage .bdwaits .wrow { cursor: default; }
+.boardpage .bdwaits .wrow .ref { margin-left: 2px; }
+.boardpage .bdwaits .chain { cursor: default; }
+.boardpage button.pj { border: 0; cursor: pointer; }
+.boardpage button.pj:hover, .boardpage button.pj.sel { background: rgba(121,192,255,.18); color: var(--accent); }
+.bdg-svg .nd[data-act] { cursor: pointer; }
+.bdg-svg .nd.sel ellipse { stroke: var(--accent); stroke-width: 2.6; fill: rgba(121,192,255,.12); }
+.bdg-svg .nd.dim { opacity: .45; }
+.boardpage .bdfilter { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted);
+  border: 1px solid rgba(121,192,255,.35); background: rgba(121,192,255,.06); border-radius: 8px; padding: 6px 10px; margin-bottom: 10px; }
+.boardpage .bdfilter b { color: var(--text); font-family: var(--mono); }
+.boardpage .bdonly span { margin-left: 4px; }
+.boardpage .bdacts { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.boardpage .bdact { font-size: 12px; color: var(--accent); background: none; border: 1px solid rgba(121,192,255,.45); border-radius: 5px;
+  padding: 3px 10px; cursor: pointer; }
+.boardpage .bdact:hover { border-color: var(--accent); }
+.boardpage .bdact.send { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+.boardpage .bdreply { margin-top: 6px; }
+.boardpage .bdreply textarea { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 13px; resize: vertical; }
+.boardpage .bdreply textarea:focus { outline: none; border-color: var(--accent); }
+.room .rhead .rback { margin-right: 4px; }
+.rcol[data-landed] { box-shadow: inset 0 0 0 2px var(--accent); transition: box-shadow .3s; }
+@media (max-width: 640px) {
+  .boardpage .bdact { min-height: 32px; padding: 4px 12px; }
+  .boardpage .bdname { padding: 3px 0; }
+  /* From the Board, the phone's way back is a bar of its own above the
+     room's head: one tap, nothing squeezed. */
+  .room .rhead:has(> .rback) { flex-wrap: wrap; row-gap: 6px; }
+  .room .rhead .rback { order: 0; flex: 1 0 100%; text-align: left; white-space: nowrap; min-height: 34px; margin: 0; }
+}
