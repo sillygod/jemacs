@@ -141,6 +141,29 @@ async function shoot(page, width, file) {
       const h = await page.$eval('.bdtk[data-t="86b2k1"] .bdtkh', (e) => e.getBoundingClientRect().height);
       const nh = await page.$eval(".bdtknone", (e) => e.getBoundingClientRect().height);
       check("phone: a row's head and the no-ticket row are a finger's target", h >= 40 && nh >= 44, { h, nh });
+      // The no-ticket row's 只看: one line, as wide as its words, a button
+      // as the rows' 只看這張 are.
+      const only = await page.evaluate(() => {
+        const b = document.querySelector(".bdtknone .bdtkonly"), t = document.querySelector('.bdtk[data-t="86b2k1"] [data-act="bd:tfilter"]');
+        const r = b.getBoundingClientRect(), tr = t.getBoundingClientRect();
+        const range = document.createRange();
+        range.selectNodeContents(b);
+        const tops = [...new Set([...range.getClientRects()].map((x) => Math.round(x.top)))];
+        return { w: r.width, h: r.height, lines: tops.length, tw: tr.width, th: tr.height, text: b.textContent,
+                 fit: b.scrollWidth <= b.clientWidth + 1 };
+      });
+      check("phone: the no-ticket row's 只看 is on one line, not a character a line", only.text === "只看" && only.lines === 1 && only.fit, only);
+      check("phone: and a button as 只看這張 is: as tall, at least as wide as its words",
+        Math.abs(only.h - only.th) <= 1 && only.h >= 30 && only.w >= 44, only);
+      // The ▸ stays on its row's title line: no band under a long title.
+      const heads = await page.$$eval(".bdtks .bdtk", (rs) => rs.map((r) => {
+        const id = r.querySelector(".bdtkid").getBoundingClientRect(), chev = r.querySelector(".bdtkh .chev").getBoundingClientRect();
+        const name = r.querySelector(".bdtkname"), nr = name.getBoundingClientRect(), m = r.querySelector(".bdtkm").getBoundingClientRect();
+        const last = Math.max(id.bottom, name.textContent ? nr.bottom : 0, r.querySelector(".bdtkst").getBoundingClientRect().bottom);
+        return { t: r.getAttribute("data-t"), onLine: chev.top < id.bottom && chev.bottom > id.top, band: Math.round(m.top - last) };
+      }));
+      check("phone: each row's ▸ on its title line", heads.every((x) => x.onLine), heads);
+      check("phone: no empty band between a row's title and its counts", heads.every((x) => x.band <= 8), heads);
       if (SHOTS) {
         await page.evaluate(() => { document.querySelector("#app").scrollTop = 0; });
         await shoot(page, 390, path.join(SHOTS, "tickets-phone.png"));

@@ -8120,7 +8120,9 @@
       r.cards.forEach((c) => (c.projects || []).forEach((p) => { if (!projs.includes(p)) projs.push(p); }));
       return '<div class="bdtk' + (hint ? " mis" : "") + (open ? " open" : "") + '" data-t="' + esc(r.id) + '">' +
         '<div class="bdtkh" data-act="bd:tkopen" data-t="' + esc(r.id) + '" role="button" aria-expanded="' + open + '">' +
-        bdTkLink(r.id, info) + st + '<span class="bdtkname">' + esc((info && info.name) || "") + "</span>" +
+        // What wraps -- id, status, title -- apart from the ▸, which stays
+        // on the title's line however long the title.
+        '<span class="bdtkt">' + bdTkLink(r.id, info) + st + '<span class="bdtkname">' + esc((info && info.name) || "") + "</span></span>" +
         '<span class="chev" aria-hidden="true">' + (open ? "▾" : "▸") + "</span></div>" +
         '<div class="bdtkm"><span class="bdtkn">' + esc(counts) + "</span>" +
         (prs.length ? '<span class="bdtkprs">' + prs.map((x) => bdPrChip(x.pr)).join("") + "</span>" : "") +
@@ -8136,7 +8138,8 @@
       ? '<button type="button" class="bdtk bdtknone' + (board.ticket === "none" ? " sel" : "") + '" data-act="bd:tfilter" data-t="none">' +
         '<span class="bdtkid">沒有單號</span><span class="bdtkn">' + none.length + " 件" +
         (noneProjs.length ? " · " + esc(noneProjs.join("、")) : "") + "</span>" +
-        '<span class="chev">' + (board.ticket === "none" ? "✕" : "只看") + "</span></button>" : "";
+        // Drawn as the rows' 只看這張 is (the row itself is the button).
+        '<span class="bdact bdtkonly">' + (board.ticket === "none" ? "不再只看" : "只看") + "</span></button>" : "";
     return {
       head: rows.length + " 個單號" + (mis ? " · 對不上 " + mis : "") + " · 狀態取自 ClickUp",
       html: (rows.length ? '<div class="bdtks">' + html + "</div>" : '<p class="bdempty">這些工作項目都沒有單號</p>') + noneRow,

@@ -2243,7 +2243,9 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 .boardpage .bdtks { display: flex; flex-direction: column; gap: 6px; }
 .boardpage .bdtk { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); min-width: 0; }
 .boardpage .bdtk.mis { border-color: rgba(210,153,34,.55); }
-.boardpage .bdtkh { display: flex; align-items: center; gap: 8px; padding: 8px 12px 2px; cursor: pointer; flex-wrap: wrap; min-width: 0; }
+.boardpage .bdtkh { display: flex; align-items: flex-start; gap: 8px; padding: 8px 12px 2px; cursor: pointer; min-width: 0; }
+/* The id, status and title wrap among themselves; the ▸ beside them stays on the first line. */
+.boardpage .bdtkt { flex: 1 1 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
 .boardpage .bdtkid { font-family: var(--mono); font-size: 12px; color: var(--meta); text-decoration: none; white-space: nowrap; }
 .boardpage .bdtkid:hover { text-decoration: underline; }
 .boardpage .bdtkst { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text); border: 1px solid var(--line);
@@ -2251,7 +2253,7 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 .boardpage .bdtkst i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
 .boardpage .bdtkst.unk { color: var(--warn); border-style: dashed; }
 .boardpage .bdtkname { flex: 1 1 12em; min-width: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
-.boardpage .bdtkh .chev { color: var(--muted); margin-left: auto; }
+.boardpage .bdtkh .chev { flex: none; color: var(--muted); line-height: 20px; }
 .boardpage .bdtkm { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 2px 12px 8px; font-size: 12px; color: var(--muted); }
 .boardpage .bdtkn { color: var(--text); }
 .boardpage .bdtkprs { display: inline-flex; flex-wrap: wrap; gap: 4px; }
@@ -2264,13 +2266,15 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 .boardpage .bdtknone { display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 6px; padding: 9px 12px; text-align: left;
   cursor: pointer; color: var(--muted); font-size: 12.5px; }
 .boardpage .bdtknone .bdtkid { color: var(--text); font-family: inherit; font-weight: 600; }
-.boardpage .bdtknone .chev { margin-left: auto; font-size: 11.5px; color: var(--accent); flex: none; white-space: nowrap; }
+.boardpage .bdtknone .bdtkonly { margin-left: auto; flex: none; white-space: nowrap; font-size: 11.5px; padding: 1px 8px;
+  min-width: 44px; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; }
 .boardpage .bdtknone .bdtkid { flex: none; }
 .boardpage .bdtknone.sel { border-color: var(--accent); }
 .boardpage button.tk { background: none; cursor: pointer; }
 .boardpage button.tk:hover, .boardpage button.tk.sel { background: rgba(163,113,247,.15); }
 @media (max-width: 640px) {
-  .boardpage .bdtkh { padding: 10px 12px 2px; min-height: 40px; }
-  .boardpage .bdtkm .bdact { min-height: 30px; }
+  /* A finger's height by its padding, not a min-height: its parts sit at the top. */
+  .boardpage .bdtkh { padding: 14px 12px 6px; min-height: 40px; }
+  .boardpage .bdtkm .bdact, .boardpage .bdtknone .bdtkonly { min-height: 30px; }
   .boardpage .bdtknone { min-height: 44px; }
 }
