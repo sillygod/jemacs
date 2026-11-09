@@ -90,11 +90,53 @@ def test_fyi_ack_and_relay():
 
 
 def test_title_takes_the_lead_s_openers_off():
-    assert board.title("來自 lead-b（/src/b）。請把 staging 的 key 換掉。之後回報") == "請把 staging 的 key 換掉。"
+    assert board.title("來自 lead-b（/src/b）。請把 staging 的 key 換掉。之後回報") == "請把 staging 的 key 換掉"
     assert board.title("**緊急**，staging 改成 DEBUG=False") == "staging 改成 DEBUG=False"
     assert board.title("（排在 #12 之後）新任務（唯讀）：查 VM 有沒有被入侵") == "查 VM 有沒有被入侵"
     assert board.title("背景：攻擊者上週進來過。\n請盤點所有 key") == "請盤點所有 key"
     assert len(board.title("x" * 200)) == board.TITLE_MAX
+
+
+@pytest.mark.parametrize("body, want", [
+    # Lines that say nothing are skipped: numbering, links, acknowledgements.
+    ("1.\n修 cart 的重複扣款", "修 cart 的重複扣款"),
+    ("https://claude.ai/artifact/abc123\n盤點 billing 的 secret", "盤點 billing 的 secret"),
+    ("看完回一句收到即可。\n結論：shop 的 webhook 打不到外網", "結論：shop 的 webhook 打不到外網"),
+    ("很好，謝謝。\n請把 staging 的憑證換掉", "請把 staging 的憑證換掉"),
+    # What frames a message goes; what follows it stays.
+    ("這是 1a2b3c4d 第 2 點的回報。\n修 shop #412 的測試", "修 shop #412 的測試"),
+    ("這是 cart 壓測的結果，回一句收到就好。", "cart 壓測的結果"),
+    ("補充 1a2b3c4d 的範圍：billing 的 webhook 也要改", "billing 的 webhook 也要改"),
+    ("接續 1a2b3c4d。\n把 shop #412 拆成兩個 PR", "把 shop #412 拆成兩個 PR"),
+    ("急件：分析 cart 的扣款異常，從資料庫這一面看。", "分析 cart 的扣款異常，從資料庫這一面看"),
+    ("優先度提高（使用者想 merge #40）：請先處理 #40，其他往後排。", "請先處理 #40，其他往後排"),
+    ("現況（11/04 的快照，lead 盤點）：billing 的 key 都還沒換", "billing 的 key 都還沒換"),
+    # Markdown off.
+    ("- **修**掉 `cart` 的[重複扣款](https://example.com/x)", "修掉 cart 的重複扣款"),
+    # An aside, the work's rules, an approval with nothing after it, a line of configuration: not a name.
+    ("（排在 #40 之後做。）再開一個小 PR：staging 改成 DEBUG=False", "再開一個小 PR：staging 改成 DEBUG=False"),
+    ("唯讀調查，不要改程式。\n找出 billing 對帳差 3 元的原因", "找出 billing 對帳差 3 元的原因"),
+    ("Jing 已經說要做了。\n輪換 staging 的 key", "輪換 staging 的 key"),
+    ("lion：confidential，grant=password\n修掉 token 的公開端點", "修掉 token 的公開端點"),
+    # One with a PR or a ticket just after a topic that says no work, preferred;
+    # a topic that says its work kept.
+    ("攻擊者還在打 cart 的 API。\n請開 hotfix PR #12 補上驗證", "請開 hotfix PR #12 補上驗證"),
+    ("請把 billing 的稅率表同步到 staging。\nshop PR #412 已經部署", "請把 billing 的稅率表同步到 staging"),
+    ("使用者要整理一份各 project 的修正報告。\nshop #2529 有沒有部署到 production？", "shop #2529 有沒有部署到 production？"),
+    # Kept as written: an approval with what it approves, a time's colon, a comma.
+    ("Jing approved two Board UX changes.", "Jing approved two Board UX changes."),
+    ("11/07 20:36 UTC，有人用 staff 帳號登入了後台", "11/07 20:36 UTC，有人用 staff 帳號登入了後台"),
+    ("A design mockup, not code for the repo.", "A design mockup, not code for the repo."),
+])
+def test_title_names_the_work(body, want):
+    assert board.title(body) == want
+
+
+def test_title_goes_on_to_the_next_asks_when_the_first_says_nothing():
+    assert board.title("看完回一句收到即可。", "修 cart 的庫存鎖") == "修 cart 的庫存鎖"
+    assert board.title("修 shop 的結帳頁", "也看一下 billing") == "修 shop 的結帳頁"
+    # Nothing says anything at all: the first line as it was.
+    assert board.title("收到", "OK") == "收到"
 
 
 # ---- Where an ask goes ------------------------------------------------------------

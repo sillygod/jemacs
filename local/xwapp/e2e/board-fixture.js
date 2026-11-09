@@ -62,6 +62,14 @@ const CARDS = [
   card("3c4d5e", "done", "試跑新的 CI runner", {
     failed: 1, first: now - 900 * min, last: now - 700 * min, agents: ["lead-infra", "runnerx"], projects: ["infra"], closed: now - 690 * min,
     block: { kind: "cancelled", ask: "0f0f0f0f", from: "runnerx", to: "lead-infra", since: now - 700 * min, head: "cancelled" } }),
+  // A day's one-ask items at rest: an FYI, a relay, a one-off look.
+  card("51a001", "quiet", "shop 的結帳頁文案改好了", { asks: 1, last: now - 40 * min, agents: ["lead-shop", "copybot"], projects: ["shop"] }),
+  card("51a002", "quiet", "查 cart 的 session 過期時間", { asks: 1, last: now - 95 * min, agents: ["lead-shop", "cartfix"], projects: ["shop"] }),
+  card("51a003", "quiet", "shop 的 robots.txt 加上 staging", { asks: 1, last: now - 200 * min, agents: ["lead-shop", "cartfix"], projects: ["shop"] }),
+  card("51a004", "quiet", "billing 對帳報表的欄位說明", { asks: 1, last: now - 70 * min, agents: ["lead-billing"], projects: ["billing"] }),
+  card("51a005", "quiet", "taxaudit 的稅率對照表給 shop", { asks: 2, last: now - 130 * min, agents: ["lead-billing", "lead-shop"], projects: ["billing", "shop"] }),
+  card("51a006", "quiet", "nginx 的 access log 保留 7 天", { asks: 1, last: now - 330 * min, agents: ["lead-infra", "ratefix"], projects: ["infra"] }),
+  card("51a007", "quiet", "推播憑證到期日查一下", { asks: 1, last: now - 500 * min, agents: ["lead-mobile"], projects: ["mobile"] }),
 ];
 
 const WAITS = [

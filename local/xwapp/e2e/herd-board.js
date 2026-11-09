@@ -43,7 +43,7 @@ async function shoot(page, width, file) {
 
       const tiles = await page.$$eval(".bdtile", (ts) => ts.map((t) => ({ big: t.querySelector(".big").textContent, sub: t.querySelector(".sub").textContent })));
       check("desk: the tiles count items, open waits, waits on Jing and PRs",
-        tiles.map((t) => t.big).join() === "10,4,4,6", tiles.map((t) => t.big));
+        tiles.map((t) => t.big).join() === "17,4,4,6", tiles.map((t) => t.big));
       check("desk: the items tile says what the asks were", /34 則 ask：跨專案 9、FYI 4、轉述 1、撤回／失敗 2/.test(tiles[0].sub), tiles[0].sub);
       check("desk: the waits tile names the cross-project pairs and the oldest", /跨專案 2：shop → billing、infra → ops-helm/.test(tiles[1].sub) &&
         /專案內 2/.test(tiles[1].sub) && /最久的開了 20 分/.test(tiles[1].sub), tiles[1].sub);
@@ -51,9 +51,17 @@ async function shoot(page, width, file) {
       check("desk: the Jing tile counts the leads' lines and the Inbox's, and the items nobody has",
         /lead 寫的「需要 Jing」2 件/.test(tiles[2].sub) && /Inbox 等你處理 2 件/.test(tiles[2].sub) && /沒人接 1 項/.test(tiles[2].sub), tiles[2].sub);
 
-      const order = await page.$$eval(".cards .wi", (ws) => ws.map((w) => w.id.slice(5) + ":" + w.querySelector(".pill").textContent + (w.classList.contains("folded") ? ":f" : "")));
-      check("desk: live first, then waiting on Jing, nobody's, the PR still open, quiet, done -- each by its last",
-        order.join(" ") === "c1a2b3:進行中 d4e5f6:進行中 e7f8a9:進行中 b1c2d3:等 Jing c6d7e8:沒人接 f0a1b2:收尾 9a8b7c:安靜:f a3b4c5:安靜:f 0f1e2d:完成:f 3c4d5e:完成:f", order);
+      const order = await page.$$eval(".bdarea .wi", (ws) => ws.map((w) => w.id.slice(5) + ":" + w.querySelector(".pill").textContent + (w.classList.contains("folded") ? ":f" : "")));
+      check("desk: on top what needs Jing's eye -- live, waiting on Jing, nobody's, a PR open -- then the items at rest of some size, folded",
+        order.join(" ") === "c1a2b3:進行中 d4e5f6:進行中 e7f8a9:進行中 b1c2d3:等 Jing c6d7e8:沒人接 f0a1b2:收尾 9a8b7c:安靜:f 0f1e2d:完成:f", order);
+      const folds = await page.$$eval(".bdfoldh", (fs) => fs.map((f) => f.querySelector(".fl").textContent));
+      check("desk: the rest at rest, a line a project, the latest first",
+        folds.join(" | ") === "shop：零星 3 則 · 最後 40 分前 | billing：零星 3 則 · 最後 1 小時前 | infra：零星 2 則（完成 1） · 最後 5 小時前 | mobile：零星 1 則 · 最後 8 小時前", folds);
+      await page.click('.bdfoldh[data-p="billing"]');
+      await sleep(80);
+      const opened = await page.$$eval('.bdfold[data-p="billing"] .wi', (ws) => ws.map((w) => w.id.slice(5)));
+      check("desk: a tap opens that project's cards", opened.join() === "51a004,51a005,a3b4c5", opened);
+      check("desk: the others stay folded", !(await page.$('.bdfold[data-p="shop"] .wi')));
 
       const c1 = await page.$eval("#bd-w-c1a2b3", (w) => ({
         prs: [...w.querySelectorAll(".bdpr")].map((p) => p.textContent), blk: w.querySelector(".blk").textContent,
@@ -98,6 +106,9 @@ async function shoot(page, width, file) {
       await page.click('#bd-w-a3b4c5 .wh');
       await sleep(80);
       check("desk: a folded card opens on a tap", !(await page.$eval("#bd-w-a3b4c5", (w) => w.classList.contains("folded"))));
+      await page.click('.bdfoldh[data-p="billing"]');
+      await sleep(80);
+      check("desk: and its project folds again", !(await page.$("#bd-w-a3b4c5")));
       await page.click('#bd-w-c1a2b3 .wh');
       await sleep(80);
       check("desk: and an open one folds", await page.$eval("#bd-w-c1a2b3", (w) => w.classList.contains("folded")));
@@ -128,7 +139,7 @@ async function shoot(page, width, file) {
       check("desk: an open timeline whose card moved on is asked for again", ops(intents, "board-timeline").length === 2);
       await page.evaluate(() => GM.boardPatch({ v: 3, base: 2, full: false, cards: [], drop: ["3c4d5e"] }));
       await sleep(80);
-      check("desk: an item gone is dropped", !(await page.$("#bd-w-3c4d5e")) && (await page.textContent(".bdtile .big")) === "9");
+      check("desk: an item gone is dropped", !(await page.$("#bd-w-3c4d5e")) && (await page.textContent(".bdtile .big")) === "16");
       await page.evaluate(() => GM.boardPatch({ v: 9, base: 7, full: false, cards: [], drop: [] }));
       await sleep(80);
       check("desk: a version missed asks for the whole again", ops(intents, "board-resend").length === 1);
@@ -144,7 +155,10 @@ async function shoot(page, width, file) {
       // Filters.
       await page.click('[data-act="bd:filter"][data-f="busy"]');
       await sleep(80);
-      check("desk: 還有事 keeps the live, waiting-on-Jing, nobody's and tail ones", (await page.$$(".cards .wi")).length === 6);
+      check("desk: 還有事 keeps the live, waiting-on-Jing, nobody's and tail ones", (await page.$$(".bdarea .wi")).length === 6 && !(await page.$(".bdfoldh")));
+      await page.click('[data-act="bd:filter"][data-f="quiet"]');
+      await sleep(80);
+      check("desk: 安靜 lists every quiet item, none folded away", (await page.$$(".bdarea .wi")).length === 9 && !(await page.$(".bdfoldh")));
       await page.click('[data-act="bd:filter"][data-f="all"]');
 
       // PRs by repository.
@@ -202,7 +216,9 @@ async function shoot(page, width, file) {
       const over = await page.$$eval(".boardpage *", (els) => els.filter((e) => e.getBoundingClientRect().right > window.innerWidth + 1 &&
         !e.closest(".gscroll")).map((e) => e.className || e.tagName).slice(0, 5));
       check("phone: no part of the board past the screen's edge", !over.length, over);
-      const tap = await page.$eval("#bd-w-a3b4c5 .wh", (b) => b.getBoundingClientRect().height);
+      const tap = await page.$eval("#bd-w-9a8b7c .wh", (b) => b.getBoundingClientRect().height);
+      const fh = await page.$eval(".bdfoldh", (b) => b.getBoundingClientRect().height);
+      check("phone: a project's fold line is a finger's target", fh >= 40, fh);
       check("phone: a folded card's head is a finger's target", tap >= 28, tap);
       if (SHOTS) {
         await page.click('#bd-w-c1a2b3 .bdtlb');

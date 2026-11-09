@@ -7389,7 +7389,7 @@
 
   let board = { got: false, v: 0, cards: {}, waits: [], jing: [], meta: { counts: {}, edges: [], days: 1, more: false },
                 error: "", filter: "all", graph: "now", fold: new Map(), tlOpen: new Set(), tlAll: new Set(), tl: {},
-                days: boardDaysKept(), html: {}, order: "", flash: "", goto: "" };
+                days: boardDaysKept(), html: {}, order: "", flash: "", goto: "", openProj: new Set() };
   let boardWatching = false;
   let boardTimer = 0;
 
@@ -7807,7 +7807,43 @@
 
   function bdShown(cards) {
     const f = board.filter;
-    return cards.filter((c) => f === "all" || (f === "busy" ? c.status !== "quiet" && c.status !== "done" : c.status === f));
+    return cards.filter((c) => f === "all" || (f === "busy" ? bdAwake(c) : c.status === f));
+  }
+
+  // ---- The default view: what needs Jing's eye, the rest folded ----------
+  // On top only what is going on or waits on someone: live, waiting on
+  // Jing, nobody's, a PR still open.  Of the items at rest, one a lead named
+  // or with BD_OWN_ASKS asks or more keeps a line of its own: work of some
+  // size, finished or dropped -- only a lead can say which.  The rest -- on
+  // a day of the herd's, most items are one ask: an FYI, a relay, a
+  // one-off look -- fold by project into a line each, a tap away.
+
+  const BD_OWN_ASKS = 3;
+  function bdAwake(c) { return c.status !== "quiet" && c.status !== "done"; }
+  function bdOwnLine(c) { return !!c.named || c.asks >= BD_OWN_ASKS; }
+
+  function bdPlan(cards) {
+    if (board.filter !== "all") return { top: bdShown(cards), own: [], folds: [] };
+    const rest = cards.filter((c) => !bdAwake(c));
+    const by = {};
+    rest.filter((c) => !bdOwnLine(c)).forEach((c) => {
+      const p = (c.projects && c.projects[0]) || "其他";
+      (by[p] = by[p] || []).push(c);
+    });
+    const folds = Object.keys(by).map((p) => ({
+      proj: p, cards: by[p], last: Math.max(...by[p].map((c) => c.last || 0)),
+      done: by[p].filter((c) => c.status === "done").length,
+    })).sort((a, b) => b.last - a.last);
+    return { top: cards.filter(bdAwake), own: rest.filter(bdOwnLine), folds };
+  }
+
+  function bdFoldHead(f) {
+    const open = board.openProj.has(f.proj);
+    const age = bdAge(f.last);
+    return '<button type="button" class="bdfoldh" data-act="bd:proj" data-p="' + esc(f.proj) + '" aria-expanded="' + open + '">' +
+      '<span class="fl"><span class="fp">' + esc(f.proj) + "</span>：零星 " + f.cards.length + " 則" +
+      (f.done ? "（完成 " + f.done + "）" : "") + " · 最後 " + esc(age === "剛剛" ? age : age + "前") + "</span>" +
+      '<span class="chev" aria-hidden="true">' + (open ? "▾" : "▸") + "</span></button>";
   }
 
   // ---- The pull requests, by repository --------------------------------
@@ -7883,7 +7919,7 @@
     if (!box.querySelector(".bd-strip")) {
       box.innerHTML = '<div class="bd-strip"></div>' +
         '<h2 class="section" id="bd-now">現在 <span class="cnt">只列還開著的</span></h2><div class="bd-now"></div>' +
-        '<h2 class="section" id="bd-items">工作項目 <span class="cnt">還有事的在前，同一種依最後動靜</span></h2><div class="bd-chips"></div><div class="cards"></div>' +
+        '<h2 class="section" id="bd-items">工作項目 <span class="cnt">還有事的在前，同一種依最後動靜</span></h2><div class="bd-chips"></div><div class="bdarea"></div>' +
         '<div class="bd-foot"></div>' +
         '<h2 class="section" id="bd-prs">所有 PR <span class="cnt">依 repo 分組 · 狀態取自 Bitbucket</span></h2><div class="bd-prs"></div>' +
         '<h2 class="section red" id="bd-jing">等 Jing <span class="cnt bd-jn"></span></h2><div class="bd-jing"></div>';
@@ -7894,20 +7930,45 @@
     bdSet(box, ".bd-strip", bdStrip(cards));
     bdSet(box, ".bd-now", bdNow());
     bdSet(box, ".bd-chips", bdItems(cards));
-    const shown = bdShown(cards);
-    const list = box.querySelector(".cards");
-    const order = shown.map((c) => c.id).join(" ");
-    const htmls = shown.map(bdCard);
-    if (order !== board.order) {
-      list.innerHTML = htmls.join("") || '<p class="bdempty">沒有這一類的工作項目</p>';
-      board.order = order;
-      shown.forEach((c, i) => (board.html["card:" + c.id] = htmls[i]));
+    const area = box.querySelector(".bdarea");
+    const plan = bdPlan(cards);
+    const ids = (cs) => cs.map((c) => c.id).join(" ");
+    const opened = plan.folds.filter((f) => board.openProj.has(f.proj));
+    const shown = plan.top.concat(plan.own, ...opened.map((f) => f.cards));
+    const htmls = {};
+    shown.forEach((c) => (htmls[c.id] = bdCard(c)));
+    // Its shape: which cards where, which folds open.  The same shape, the
+    // cards and fold lines that changed are put in alone.
+    const shape = board.filter + "|" + ids(plan.top) + "|" + ids(plan.own) + "|" +
+      plan.folds.map((f) => f.proj + (board.openProj.has(f.proj) ? "=" + ids(f.cards) : "#" + f.cards.length)).join(";");
+    if (shape !== board.order) {
+      const card = (c) => htmls[c.id];
+      const all = board.filter === "all";
+      area.innerHTML = (all && !plan.top.length && (plan.own.length || plan.folds.length)
+        ? '<p class="bdempty bdcalm">現在沒有要你看的：沒有進行中、等你、沒人接或 PR 還開著的工作項目</p>' : "") +
+        (plan.top.length ? '<div class="cards">' + plan.top.map(card).join("") + "</div>" : "") +
+        (plan.own.length ? '<div class="bdsub">安靜，但不只一兩則：lead 取了名，或有 ' + BD_OWN_ASKS + " 則以上的 ask</div>" +
+          '<div class="cards">' + plan.own.map(card).join("") + "</div>" : "") +
+        (plan.folds.length ? '<div class="bdsub">其餘安靜的，依專案收起</div><div class="bdfolds">' + plan.folds.map((f) =>
+          '<div class="bdfold" data-p="' + esc(f.proj) + '">' + bdFoldHead(f) +
+          (board.openProj.has(f.proj) ? '<div class="cards">' + f.cards.map(card).join("") + "</div>" : "") + "</div>").join("") + "</div>" : "") ||
+        '<p class="bdempty">沒有這一類的工作項目</p>';
+      board.order = shape;
+      shown.forEach((c) => (board.html["card:" + c.id] = htmls[c.id]));
+      plan.folds.forEach((f) => (board.html["fold:" + f.proj] = bdFoldHead(f)));
     } else {
-      shown.forEach((c, i) => {
-        if (board.html["card:" + c.id] === htmls[i]) return;
-        const el = list.querySelector("#bd-w-" + CSS.escape(c.id));
-        if (el) el.outerHTML = htmls[i];
-        board.html["card:" + c.id] = htmls[i];
+      shown.forEach((c) => {
+        if (board.html["card:" + c.id] === htmls[c.id]) return;
+        const el = area.querySelector("#bd-w-" + CSS.escape(c.id));
+        if (el) el.outerHTML = htmls[c.id];
+        board.html["card:" + c.id] = htmls[c.id];
+      });
+      plan.folds.forEach((f) => {
+        const h = bdFoldHead(f);
+        if (board.html["fold:" + f.proj] === h) return;
+        const el = area.querySelector('.bdfold[data-p="' + CSS.escape(f.proj) + '"] > .bdfoldh');
+        if (el) el.outerHTML = h;
+        board.html["fold:" + f.proj] = h;
       });
     }
     const days = board.meta.days || 1;
@@ -7931,6 +7992,10 @@
     } else if (act === "filter") {
       board.filter = el.getAttribute("data-f") || "all";
       renderBoard();
+    } else if (act === "proj") {
+      const p = el.getAttribute("data-p") || "";
+      if (board.openProj.has(p)) board.openProj.delete(p); else board.openProj.add(p);
+      renderBoard();
     } else if (act === "fold") {
       const c = board.cards[id];
       if (c) board.fold.set(id, !bdFolded(c));
@@ -7950,6 +8015,7 @@
       const c = board.cards[id];
       if (!c) return;
       if (board.filter !== "all" && !bdShown([c]).length) board.filter = "all";
+      if (board.filter === "all" && !bdAwake(c) && !bdOwnLine(c)) board.openProj.add((c.projects && c.projects[0]) || "其他");
       board.fold.set(id, false);
       renderBoard();
       const card = $("bd-w-" + id);
