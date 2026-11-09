@@ -1205,6 +1205,10 @@ class HerdStore:
             """
         )
         self._conn.execute("CREATE INDEX IF NOT EXISTS item_events_by_item ON item_events (item)")
+        # Since when lines are kept: replies read again when the Board grew
+        # its events, answered before, are not taken for needs open now.
+        self._conn.execute("INSERT OR IGNORE INTO meta (k, v) VALUES ('board_events_since', ?)",
+                           (datetime.now(timezone.utc).isoformat(),))
         # A line the last sidecar was to make and never did -- it stopped
         # between an answer and its trace -- will not come now: no waiter
         # holds for it, and an answer held for it goes without.
@@ -2850,6 +2854,7 @@ class HerdStore:
             "i.item, a.auto FROM asks a JOIN ask_item i ON i.ask = a.id "
             "WHERE a.status = 'answered' AND a.reply IS NOT NULL AND length(a.reply) != i.replied"
         ).fetchall()
+        since = (self._conn.execute("SELECT v FROM meta WHERE k = 'board_events_since'").fetchone() or ("",))[0]
         for aid, reply, refs, prs, tks, fp, tp, by, answered, item, auto in replies:
             refs, prs, tks = json.loads(refs or "[]"), json.loads(prs or "[]"), json.loads(tks or "[]")
             refs += [r for r in board.ask_ids(reply, known, aid) if r not in refs]
@@ -2860,7 +2865,7 @@ class HerdStore:
             self._conn.execute(
                 "UPDATE ask_item SET refs = ?, prs = ?, tickets = ?, reply_prs = ?, opened_prs = ?, replied = ? WHERE ask = ?",
                 (json.dumps(refs), json.dumps(prs), json.dumps(tks), json.dumps(mine), json.dumps(opened), len(reply), aid))
-            if by and board.is_lead(by, snap) and board.may_have_lines(reply):
+            if by and board.is_lead(by, snap) and board.may_have_lines(reply) and (answered or now) >= since:
                 self._note_lines(by, reply, "reply", answered or now, ask=aid, item=item)
         self._resolve_events()
         self._conn.commit()

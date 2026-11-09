@@ -505,6 +505,7 @@ def test_a_request_that_went_nowhere(tmp_path):
 def test_an_old_item_with_a_need_open_stays_on_the_board(tmp_path):
     h = _store(tmp_path)
     out = _lead_answer(h, "需要 Jing：decide on the vendor")
+    h.board()  # its lines read as it came
     _backdate(h, out["id"], 3 * 24 * 60)
     with h._mu:
         h._conn.execute("UPDATE item_events SET at = ?", ((datetime.now(timezone.utc) - timedelta(days=3)).isoformat(),))
@@ -530,3 +531,17 @@ def test_the_lines_the_leads_are_taught_are_the_lines_read():
     kinds = [board.fixed_lines(ln)[0]["kind"] for ln in taught]
     assert kinds == ["need", "deploy"]
     assert board.fixed_lines("需要 Jing：無")[0]["none"]
+
+
+def test_lines_from_before_the_board_kept_them_are_not_needs_now(tmp_path):
+    """A reply answered before the Board kept lines -- read again when it
+    grew them -- is not taken for a need open now."""
+    h = _store(tmp_path)
+    out = _lead_answer(h, "需要 Jing：an old request")
+    with h._mu:
+        h._conn.execute("UPDATE meta SET v = ? WHERE k = 'board_events_since'",
+                        ((datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),))
+        h._conn.execute("DELETE FROM item_events")
+        h._conn.execute("UPDATE ask_item SET replied = 0")
+        h._conn.commit()
+    assert _items(h)[_item_of(h, out["id"])]["needs"] == []
