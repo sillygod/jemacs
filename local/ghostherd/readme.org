@@ -2601,7 +2601,14 @@ are the other tabs (below, and "What happened while you were away").
   for.  A column you are reading does not move as the rest comes --- at
   its end it stays at its end, scrolled up it stays put --- /Load
   earlier/ pressed meanwhile is answered by it, and the strip's count
-  of your messages says =…= (so far) until it has all come.  From the
+  of your messages says =…= (so far) until it has all come.  Read up
+  from its end, the entry at the top of the screen is put back where
+  it was after each redraw, whatever came above or below it (WebKit
+  has no scroll anchoring); while your finger scrolls it, or its fling
+  goes on, the redraw waits (iOS drops a scroll position the page sets
+  then, and what came above would show instead: the oldest of it); a
+  conversation sent whole again while you read up keeps what you read
+  drawn until all of it has come.  The chat, the same.  From the
   tap to the conversation drawn is timed (=room= in xwapp's timings); a
   slow one is in the Log, as a slow open is.  At the desk the room
   comes whole at once, then changes alone.
