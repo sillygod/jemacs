@@ -2025,6 +2025,29 @@ the biggest first -- names and bytes, nothing they said."
       (xwapp-js app "herd" "h6" nil "herd")
       (should (= 1 (length (xwapp--get app :outbox)))))))
 
+(ert-deftest xwapp-test-browser-let-go-is-said ()
+  "Each time the app's page is let go -- another tab's hello, the same
+tab's again (it comes back asking for what it shows), the page gone --
+`xwapp-let-go-functions' are called with the app, each on its own: one
+that fails is said, the next still called."
+  (xwapp-test--with-browser
+    (let* ((said nil)
+           (xwapp-let-go-functions (list (lambda (_a) (error "Boom"))
+                                         (lambda (a) (push (list (eq a app) (xwapp--get a :page)) said)))))
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+      (setq said nil)
+      ;; Another tab takes it: called before it is that tab's.
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p2") "{}")
+      (should (equal said '((t nil))))
+      (should (equal (xwapp--get app :page) "p2"))
+      ;; The same tab again.
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p2") "{}")
+      (should (= (length said) 2))
+      ;; Gone.
+      (xwapp--gone app)
+      (should (= (length said) 3))
+      (should-not (xwapp--get app :page)))))
+
 (ert-deftest xwapp-test-calls-said ()
   "What a `next' carried, by the name of each call's function: how many
 and how many bytes, the biggest first, `xwapp--calls-said-max' at most;

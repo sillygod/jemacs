@@ -3973,5 +3973,49 @@ they are, each in its turn."
                    '(("renderHerd" nil "renderHerd") ("renderInbox" nil "renderInbox") ("setScreen" nil "setScreen:rd-1")
                      ("boardPatch" nil nil) ("setConversation" nil nil) ("logAdd" nil nil))))))
 
+(ert-deftest ghostherd-test-page-let-go-drops-every-watch ()
+  "The herd page let go -- another page took it, or it went -- every watch
+of the page that had it stops: the Board and its badge's looks, the
+Inbox, Threads and an open thread, the room and its sub-agent, the
+Agents tab, a store's facts, an import's progress.  What Emacs was told
+to show first stays, for the page coming.  Another app's page is not
+the herd page's."
+  (let* ((timer (lambda () (run-at-time 3600 nil #'ignore)))
+         (timers nil)
+         (mk (lambda () (car (push (funcall timer) timers))))
+         (ghostherd-board--watching t) (ghostherd-board--timer (funcall mk)) (ghostherd-board--sent (make-hash-table))
+         (ghostherd-board--inflight 1.0) (ghostherd-board--peek-timer (funcall mk)) (ghostherd-board--peek-soon (funcall mk))
+         (ghostherd-inbox--watching t) (ghostherd-inbox--timer (funcall mk)) (ghostherd-inbox--sig 'old)
+         (ghostherd-threads--watching t) (ghostherd-threads--timer (funcall mk)) (ghostherd-threads--req '(:id "t1"))
+         (ghostherd-threads--thread-sig 'old) (ghostherd-threads--limit 80)
+         (ghostherd-memory-page--herd-timer (funcall mk)) (ghostherd-memory-page--herd-sent '(:agents []))
+         (ghostherd-memory-page--memory-timer (funcall mk)) (ghostherd-memory-page--memory-key "user")
+         (ghostherd-memory-page--progress-timer (funcall mk))
+         (ghostherd-memory-page--room "/src/fox/") (ghostherd-memory-page--room-timer (funcall mk))
+         (ghostherd-memory-page--room-split t) (ghostherd-memory-page--sub '("rd-1" "/t.jsonl" "abc"))
+         (ghostherd-memory-page--pending '(:view "search")))
+    (unwind-protect
+        (progn
+          ;; Another app's page: nothing of the herd's stops.
+          (run-hook-with-args 'xwapp-let-go-functions (xwapp-create :buffer-name "*other*" :index "/x/index.html"))
+          (should ghostherd-board--watching)
+          (should ghostherd-memory-page--room)
+          ;; The herd page's: all of it.
+          (run-hook-with-args 'xwapp-let-go-functions ghostherd-memory-page--app)
+          (should-not (or ghostherd-board--watching ghostherd-board--timer ghostherd-board--sent
+                          ghostherd-board--peek-timer ghostherd-board--peek-soon))
+          (should-not (or ghostherd-inbox--watching ghostherd-inbox--timer ghostherd-inbox--sig))
+          (should-not (or ghostherd-threads--watching ghostherd-threads--timer ghostherd-threads--req))
+          (should (= ghostherd-threads--limit 40))
+          (should-not (or ghostherd-memory-page--herd-timer ghostherd-memory-page--herd-sent))
+          (should-not (or ghostherd-memory-page--memory-timer ghostherd-memory-page--memory-key))
+          (should-not ghostherd-memory-page--progress-timer)
+          (should-not (or ghostherd-memory-page--room ghostherd-memory-page--room-timer
+                          ghostherd-memory-page--room-split ghostherd-memory-page--sub))
+          (should (equal ghostherd-memory-page--pending '(:view "search")))
+          ;; Every timer it had, cancelled.
+          (should-not (seq-some (lambda (tm) (memq tm timer-list)) timers)))
+      (mapc #'cancel-timer timers))))
+
 (provide 'ghostherd-memory-page-tests)
 ;;; ghostherd-memory-page-tests.el ends here

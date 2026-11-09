@@ -302,6 +302,15 @@ The tab comes back with a /soft/ hello: one that takes nothing another
 page has meanwhile.  A tab that was taken from stays where it is, even
 once the app is free --- it was left on purpose.
 
+Each time the app's page is let go --- another page takes it (a tab's
+hello, Emacs's own page opened), or it went --- =xwapp-let-go-functions=
+are called with the app.  What the app did for that page alone, what it
+watched and sent it, it stops there: Emacs's own page, killed as a tab
+takes over, runs no on-kill, and the tab would otherwise be sent what
+the desk had open.  The page that has the app next asks again for what
+it shows --- a new one as it loads, a tab come back where it is through
+its =back=.
+
 *** A page that comes back where it is
 
 A phone's tab asleep past ten seconds is let go, and wakes to a 410
