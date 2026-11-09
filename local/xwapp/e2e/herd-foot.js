@@ -91,6 +91,12 @@ const box = (page, sel) => page.$eval(sel, (b) => ({
 
       // ---- The room's chat ----
       await draw(herd());
+      // The keyboard put away first: typing, a phone's room has its head
+      // folded away (herd-typing.js).
+      if (where === "phone") {
+        await page.evaluate(() => document.activeElement && document.activeElement.blur());
+        await sleep(250);
+      }
       await tap('.room [data-act="a:room-view"][data-view="chat"]');
       await sleep(150);
       await page.selectOption(".chat-to", RD);

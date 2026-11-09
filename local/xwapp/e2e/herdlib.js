@@ -68,6 +68,8 @@ async function phonePage(browser, opts) {
     const type = { html: "text/html", js: "text/javascript", css: "text/css" }[file.split(".").pop()] || "application/octet-stream";
     return route.fulfill({ status: 200, contentType: type + "; charset=utf-8", body: fs.readFileSync(file) });
   });
+  // OPTS.init: run in the page before its own scripts (ctx.addInitScript).
+  if (opts.init) await ctx.addInitScript(opts.init);
   const page = await ctx.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
