@@ -2758,6 +2758,86 @@ are the other tabs (below, and "What happened while you were away").
     tab, room and open view watch.  A ui/ file changed meanwhile loads
     it again; another device that took the page meanwhile keeps it.
 
+*** Board: the herd's work, item by item
+
+The Board tab shows, at a glance, what work there is across every
+project, what is still open and who waits on whom, the pull requests
+and how they stand, and what each piece of work went through --- most
+of it has no ticket, and one ticket spans several pieces of work.  Its
+words are Traditional Chinese.
+
+- A *work item* is the asks of one piece of work.  The sidecar puts
+  each ask in one as it first sees it, and keeps it there
+  (=server/board.py=): the item a lead named (=herd ask --item ID=) or
+  of the ask it relays (=--relay-of ASK=); else the item of the ask it
+  was made while answering (its parent); else, for a relay of another
+  lead's answer --- an ask that begins =lead-x 轉來= / =轉 ...的回覆= ---
+  the item of the ask its relayer had answered in the five minutes
+  before, by another than the one it tells; else an item of its own.
+  An ask id or a PR its body names is shown as a link, and does not
+  move it: measured on a day's real asks against a hand-made grouping,
+  each was another item's about half the time (=board.JOIN_BY= turns
+  either on).  A lead puts right what the herd got wrong: =herd item
+  rename | merge | split | move | label | close | reopen=, below.
+  Tickets (=CU-...=, ClickUp links) are labels.
+- An item is *live* while an ask in it is open, *quiet* when none is,
+  and *done* only once a lead closed it --- never by its quiet: work
+  nobody picked up looks as quiet as work finished.  The page adds
+  *收尾* (its asks answered, a PR of its own still open, by the forge)
+  and *等 Jing* (the Inbox has something of yours from an agent in it).
+- Across the top, four tiles: the items by status with what their asks
+  were (cross-project, FYI, relays, cancelled or failed); the open asks
+  with the oldest; what waits on you; the PRs by state.
+- *現在*: a map of the projects --- the open asks between them blue,
+  what waits on you red, the asks inside a project as a count under it
+  --- or of the window's cross-project asks, a line's width its count,
+  a relay dashed; beside it every open ask, =from → to= (=⇢= a
+  handoff), how long and whether its taker is at it, the asks made
+  answering it nested under it.  A click opens its thread in Threads.
+- One card per item, the live, waiting-on-you and 收尾 ones first and
+  open, the quiet and done folded to a line: its title (a lead's name,
+  else its first own PR's title, else its first ask's first sentence,
+  the lead's openers taken off), its ticket labels, projects and agents,
+  its PRs with their state and the branch they go into (another item's
+  PR dashed), what it waits on, the items it names.  Its timeline opens
+  on a tap, asked for then: each ask and answer, an ask that wants only
+  to be read (=回一句收到=) and a reply that only says it was (=收到=)
+  folded away.
+- Every PR the window's asks name, by repository: a link, a
+  =bitbucket.org/.../pull-requests/N=, or =REPO #N= for a repository
+  the herd has seen a link to; with its state from the forge, through
+  the PR chips' own lookup and cache.  A PR is the item's whose ask
+  named it first.
+- *等 Jing*: in phase 1, the Inbox's Needs-you items, each put on the
+  item its agent was last in (a guess, said so), a click away from
+  handling it in the Inbox.
+
+It lists every item an ask is open in, and the quiet and done ones of
+the last day (seven on asking, kept in your browser); the herd keeps
+asks seven days, and an item whose asks are all gone goes with them.
+Emacs sends it only while the tab is shown, every five seconds, in
+parts: the whole once, then only the cards that changed and the ids
+gone, each patch on the version the page has --- a page that missed one
+asks for the whole again.  A card is some 800 bytes.
+
+From an agent's shell (a lead's, for the changes):
+
+#+begin_src sh
+  herd item                          # the items: id, status, asks, last, projects, title
+  herd item show 3fa2c1              # its asks, how each was placed, its PRs
+  herd item rename 3fa2c1 結帳頁改用新的稅率表
+  herd item merge 9b8a7c 3fa2c1      # 9b8a7c's asks into 3fa2c1
+  herd item split 1a2b3c4d --title "..."   # the ask, with those made answering it, out on its own
+  herd item move 3fa2c1 1a2b3c4d     # into 3fa2c1
+  herd item label 3fa2c1 CU-86b2k1 deploy   (--remove takes them off)
+  herd item close 3fa2c1             # done; a new ask in it opens it again
+  herd ask cartfix --item 3fa2c1 "..."     # an ask you know the item of
+  herd handoff billing --relay-of 1a2b3c4d "..."   # passing on that ask's answer
+#+end_src
+
+An ID is an item's or an ask's (the item it is in).  What a lead put
+somewhere stays there; a worker's change is refused.
+
 *** Threads: who is talking to whom
 
 The Threads tab shows the herd's conversations with each other, across

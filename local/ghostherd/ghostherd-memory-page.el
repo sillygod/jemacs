@@ -4623,6 +4623,11 @@ user's state (or none) and push."
         ("threads-peek" (ghostherd-threads--peek))
         ("thread-open" (ghostherd-threads--open intent))
         ("thread-close" (ghostherd-threads--close))
+        ("board-watch" (ghostherd-board--watch intent))
+        ("board-unwatch" (ghostherd-board--unwatch))
+        ("board-resend" (ghostherd-board--resend))
+        ("board-days" (ghostherd-board--set-days intent))
+        ("board-timeline" (ghostherd-board--timeline intent))
         ("inbox-watch" (ghostherd-inbox--watch))
         ("inbox-unwatch" (ghostherd-inbox--unwatch))
         ("inbox-set" (ghostherd-memory-page--inbox-set intent))
@@ -5030,6 +5035,253 @@ that has not opened the tab."
                     ((funcall str 'agent) (list :agent (funcall str 'agent))))))
     (setq ghostherd-threads--req req ghostherd-threads--thread-sig nil)
     (ghostherd-threads--fetch-thread)))
+
+;;; The Board tab: the herd's work, item by item
+;;
+;; The sidecar keeps the work items -- each ask put in one as the herd
+;; first saw it (server/board.py) -- and answers the Board's list
+;; (herd_board) and one item whole (herd_board_item).  What it cannot see
+;; is added here: what the forge says of each pull request an item names
+;; (the PR chips' own lookup and cache, `ghostherd-memory-page--pr-briefs'),
+;; and what waits on the user (the Inbox's Needs-you items, by agent, put
+;; on the item that agent was last in).
+;;
+;; Sent only while the tab is shown, and in parts: the page holds the
+;; board as a version, each card by its id; a tick sends the cards that
+;; changed and the ids gone, the open asks or the waits on the user when
+;; they changed, nothing when nothing did.  A page that missed a version
+;; asks for the whole again (board-resend).  A timeline is sent when its
+;; card is opened (board-timeline), never with the list.
+
+(defvar ghostherd-board--watching nil)
+(defvar ghostherd-board--timer nil)
+(defconst ghostherd-board--every 5 "Seconds between looks while the tab is shown.")
+(defvar ghostherd-board--days 1
+  "How far back quiet and done items are listed: the page's choice.")
+(defvar ghostherd-board--v 0 "The version of the board last sent.")
+(defvar ghostherd-board--sent nil
+  "What the page has, by part -- (card . ID), `waits', `jing', `meta' --
+each as it was sent, to compare with `equal' (`sxhash-equal' looks at a
+list's first seven elements only, and a card's change is often further
+on): a hash table, or nil for nothing yet.")
+(defvar ghostherd-board--inflight nil
+  "When a look began and has not answered: one at a time.")
+
+(defconst ghostherd-board--bools '(:named :cross :working :own :unsure :draft :relay :auto :pinned :more :read :guess :full)
+  "Keys that are true or false: the reply reads JSON false as nil.")
+(defconst ghostherd-board--lists
+  '(:items :labels :agents :projects :prs :links :waits :edges :events :asksOf :cards :drop :jing :jingOf)
+  "Keys that are arrays: the reply reads [] as nil.")
+
+(defconst ghostherd-board--need-kinds
+  '("blocked" "guard" "question" "login" "login-continue" "carry-on" "relay" "ask-failed" "unsent" "gone")
+  "The Inbox's kinds that wait on the user's own hand: the Board's `等 Jing'.
+A memory proposal waits on the user too, but is no one's piece of work.")
+
+(defun ghostherd-board--js (v)
+  "V, a reply's plist or list, as the page gets it (`ghostherd-threads--js')."
+  (cond
+   ((and (consp v) (keywordp (car v)))
+    (cl-loop for (k x) on v by #'cddr
+             append (list k (cond ((memq k ghostherd-board--bools) (if (and x (not (eq x :json-false))) t :json-false))
+                                  ((memq k ghostherd-board--lists) (vconcat (mapcar #'ghostherd-board--js x)))
+                                  (t (ghostherd-board--js x))))))
+   ((consp v) (vconcat (mapcar #'ghostherd-board--js v)))
+   (t v)))
+
+(defun ghostherd-board--pr (ref)
+  "Pull request REF, as an item names it, with what the forge said of it,
+and a look asked for when what it said is stale."
+  (if (not (ghostherd-memory-page--pr-ref-p ref))
+      ref
+    (ghostherd-memory-page--chore #'ghostherd-memory-page--pr-brief-ask
+                                  (list :host (plist-get ref :host) :owner (plist-get ref :owner)
+                                        :repo (plist-get ref :repo) :id (plist-get ref :id)))
+    (let* ((entry (gethash (ghostherd-memory-page--pr-key ref) ghostherd-memory-page--pr-briefs))
+           (pr (plist-get entry :pr)))
+      (append ref
+              (list :title (ghostherd-memory-page--str (alist-get 'title pr))
+                    :state (ghostherd-memory-page--str (alist-get 'state pr))
+                    :dest (ghostherd-memory-page--str (alist-get 'destination pr))
+                    :url (ghostherd-memory-page--str (alist-get 'url pr))
+                    :draft (eq (alist-get 'draft pr) t)
+                    ;; The last look failed, or hung: the chip says it does
+                    ;; not know rather than a state it can no longer confirm.
+                    :unsure (and (ghostherd-memory-page--pr-unsure-p entry) t))))))
+
+(defun ghostherd-board--needs (items state)
+  "The Inbox's ITEMS that wait on the user's hand, those dismissed in STATE
+\({:id :done ...}) left out, newest first."
+  (let ((done (make-hash-table :test #'equal)))
+    (dolist (s state)
+      (when (eq (plist-get s :done) t) (puthash (plist-get s :id) t done)))
+    (sort (seq-filter (lambda (it)
+                        (and (member (plist-get it :kind) ghostherd-board--need-kinds)
+                             (not (gethash (plist-get it :id) done))
+                             (not (equal (plist-get (seq-find (lambda (s) (equal (plist-get s :id) (plist-get it :id))) state)
+                                                    :override)
+                                         "update"))))
+                      items)
+          (lambda (a b) (> (or (plist-get a :at) 0) (or (plist-get b :at) 0))))))
+
+(defun ghostherd-board--item-for (agent cards)
+  "The item of CARDS AGENT was in last: what its wait on the user is most
+likely about.  A guess, said so on the page."
+  (let (best)
+    (dolist (c cards)
+      (when (and (member agent (plist-get c :agents))
+                 (or (null best) (> (or (plist-get c :last) 0) (or (plist-get best :last) 0))))
+        (setq best c)))
+    (and best (plist-get best :id))))
+
+(defun ghostherd-board--cards (result needs)
+  "RESULT's cards, as the page shows them: each pull request with what the
+forge said; the status `tail' for one quiet with a PR of its own still open,
+`jing' for one the user's hand is waited on in (NEEDS, by agent); a title
+from its first own PR's when no lead named it and its ask gave none better."
+  (let* ((cards (plist-get result :items))
+         (of (make-hash-table :test #'equal)))
+    (dolist (n needs)
+      (when-let* ((it (ghostherd-board--item-for (plist-get n :agent) cards)))
+        (push (plist-get n :id) (gethash it of))))
+    (mapcar
+     (lambda (c)
+       (let* ((prs (mapcar #'ghostherd-board--pr (plist-get c :prs)))
+              (own (seq-filter (lambda (p) (plist-get p :own)) prs))
+              (jing (reverse (gethash (plist-get c :id) of)))
+              (status (plist-get c :status))
+              (status (cond ((and jing (not (equal status "live"))) "jing")
+                            ((and (equal status "quiet")
+                                  (seq-some (lambda (p) (equal (plist-get p :state) "OPEN")) own))
+                             "tail")
+                            (t status)))
+              (c (copy-sequence c)))
+         (setq c (plist-put c :prs prs))
+         (setq c (plist-put c :status status))
+         (setq c (plist-put c :jingOf jing))
+         (when-let* (((not (plist-get c :named)))
+                     (pt (plist-get (car own) :title)))
+           (setq c (plist-put c :askTitle (plist-get c :title)))
+           (setq c (plist-put c :title pt)))
+         c))
+     cards)))
+
+(defun ghostherd-board--jing (needs cards)
+  "NEEDS, the Inbox's items that wait on the user, as the Board lists them:
+with the item each is likely about."
+  (mapcar (lambda (n)
+            (list :id (plist-get n :id) :kind (plist-get n :kind) :tag (plist-get n :tag)
+                  :agent (plist-get n :agent) :project (file-name-nondirectory
+                                                        (directory-file-name (or (plist-get n :project) "")))
+                  :title (plist-get n :title) :preview (plist-get n :preview) :at (plist-get n :at)
+                  :item (ghostherd-board--item-for (plist-get n :agent) cards) :guess t))
+          needs))
+
+(defun ghostherd-board--patch (result needs)
+  "The parts of the board built from RESULT (herd_board) and NEEDS that the
+page does not have, as a patch on its version -- or nil, nothing changed.
+Each part is kept as sent (`ghostherd-board--sent')."
+  (let* ((full (null ghostherd-board--sent))
+         (sent (or ghostherd-board--sent (make-hash-table :test #'equal)))
+         (cards (ghostherd-board--cards result needs))
+         (now (make-hash-table :test #'equal))
+         changed drop patch)
+    (dolist (c cards)
+      (let ((k (cons 'card (plist-get c :id))))
+        (puthash k c now)
+        (unless (equal (gethash k sent) c) (push c changed))))
+    (maphash (lambda (k _) (when (and (consp k) (not (gethash k now))) (push (cdr k) drop))) sent)
+    (dolist (part (list (cons 'waits (plist-get result :waits))
+                        (cons 'jing (ghostherd-board--jing needs (plist-get result :items)))
+                        (cons 'meta (list :counts (plist-get result :counts) :edges (plist-get result :edges)
+                                          :days (plist-get result :days) :more (plist-get result :more)))))
+      (puthash (car part) (cdr part) now)
+      (unless (and (not full) (equal (gethash (car part) sent) (cdr part)))
+        (setq patch (append patch (list (intern (format ":%s" (car part))) (cdr part))))))
+    (when (or full changed drop patch)
+      (setq ghostherd-board--sent now)
+      (append (list :v (1+ ghostherd-board--v) :base ghostherd-board--v :full full
+                    :cards (nreverse changed) :drop drop)
+              patch))))
+
+(defun ghostherd-board--push (result needs)
+  (when-let* ((patch (ghostherd-board--patch result needs)))
+    (setq ghostherd-board--v (plist-get patch :v))
+    (ghostherd-memory-page--js "boardPatch" (ghostherd-board--js patch))))
+
+(defun ghostherd-board--tick ()
+  "Look at the board while the tab is shown: the sidecar's items, then the
+user's own state on the Inbox's items -- each failing soft -- and push what
+changed."
+  (cond
+   ((not (and ghostherd-board--watching (xwapp-live-p ghostherd-memory-page--app)))
+    (ghostherd-board--unwatch))
+   ((and ghostherd-board--inflight
+         (< (- (float-time) ghostherd-board--inflight) ghostherd-memory-page--pending-ttl)))
+   (t
+    (setq ghostherd-board--inflight (float-time))
+    (ghostherd-memory-request-async
+     "herd_board"
+     (lambda (result)
+       (if (not ghostherd-board--watching)
+           (setq ghostherd-board--inflight nil)
+         (let* ((items (ignore-errors (ghostherd-inbox--all nil)))
+                (ids (mapcar (lambda (it) (plist-get it :id)) items))
+                (go (lambda (state)
+                      (setq ghostherd-board--inflight nil)
+                      (when ghostherd-board--watching
+                        (ghostherd-board--push result (ghostherd-board--needs items state))))))
+           (ghostherd-memory-request-async
+            "herd_inbox_state" (lambda (st) (funcall go (plist-get st :state)))
+            (list :ids (ghostherd-memory-page--vec ids))
+            (lambda (_e) (funcall go nil))))))
+     (list :days ghostherd-board--days)
+     (lambda (e)
+       (setq ghostherd-board--inflight nil)
+       (when ghostherd-board--watching
+         (ghostherd-memory-page--js "boardError" (list :error (format "%s" e)))))))))
+
+(defun ghostherd-board--watch (&optional intent)
+  "Look at the board while the tab is shown; send it whole first.  INTENT
+says how far back (`days') the page lists quiet and done items."
+  (let ((days (alist-get 'days intent)))
+    (when (numberp days) (setq ghostherd-board--days (max 0.04 (min 7 days)))))
+  (setq ghostherd-board--watching t ghostherd-board--sent nil ghostherd-board--inflight nil)
+  (unless (timerp ghostherd-board--timer)
+    (setq ghostherd-board--timer
+          (run-at-time ghostherd-board--every ghostherd-board--every #'ghostherd-board--tick)))
+  (ghostherd-board--tick))
+
+(defun ghostherd-board--unwatch ()
+  (when (timerp ghostherd-board--timer) (cancel-timer ghostherd-board--timer))
+  (setq ghostherd-board--timer nil ghostherd-board--watching nil ghostherd-board--sent nil
+        ghostherd-board--inflight nil))
+
+(defun ghostherd-board--resend ()
+  "The page missed a version: the whole board again."
+  (setq ghostherd-board--sent nil ghostherd-board--inflight nil)
+  (when ghostherd-board--watching (ghostherd-board--tick)))
+
+(defun ghostherd-board--set-days (intent)
+  "List quiet and done items as far back as INTENT's `days'."
+  (let ((days (alist-get 'days intent)))
+    (when (numberp days)
+      (setq ghostherd-board--days (max 0.04 (min 7 days)) ghostherd-board--inflight nil)
+      (when ghostherd-board--watching (ghostherd-board--tick)))))
+
+(defun ghostherd-board--timeline (intent)
+  "Send the item INTENT names whole: its timeline, its asks."
+  (when-let* ((id (ghostherd-memory-page--str (alist-get 'id intent))))
+    (ghostherd-memory-request-async
+     "herd_board_item"
+     (lambda (r)
+       (ghostherd-memory-page--js
+        "boardTimeline"
+        (ghostherd-board--js (list :id id :events (plist-get r :events) :asksOf (plist-get r :asksOf)
+                                   :last (plist-get r :last)))))
+     (list :id id)
+     (lambda (e)
+       (ghostherd-memory-page--js "boardTimeline" (list :id id :error (format "%s" e)))))))
 
 ;;; Inbox -- the selected item's thread and full report ------------------
 ;; The Inbox shows a one-line head per item on every tick; when the user

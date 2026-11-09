@@ -2,8 +2,8 @@
 """herd -- ask another agent in this Emacs's herd, or answer an ask.
 
 Usage:
-  herd ask TO [TEXT|-] [--wait] [--timeout SECS] [--rounds N]
-  herd handoff PROJECT [TEXT|-] [--wait] [--timeout SECS] [--rounds N]
+  herd ask TO [TEXT|-] [--wait] [--timeout SECS] [--rounds N] [--item ID] [--relay-of ASK]
+  herd handoff PROJECT [TEXT|-] [--wait] [--timeout SECS] [--rounds N] [--item ID] [--relay-of ASK]
   herd reply ID [TEXT|-]
   herd status ID
   herd cancel ID
@@ -24,6 +24,9 @@ Usage:
   herd hooks install|uninstall|status [--dry-run]
   herd hooks list [--json] [--project DIR]...
   herd cost [--days N] [--project P] [--tasks] [--json]
+  herd item [list [--days N] [--json] | show ID | rename ID [TITLE] | merge ID INTO
+             | split ASK... [--title T] | move ID ASK... | label ID LABEL... [--remove]
+             | close ID | reopen ID]
 
 TO is an agent's name, or a kind -- claude, grok, agy -- to take that
 kind's agent in your project.  TEXT `-', or left out, reads stdin.
@@ -56,6 +59,19 @@ frees: queued is not refused, so never hand the same work off again
 may hand off, and so may an agent in a project with no lead; an agent
 working under a lead is refused -- it puts what the other project needs
 in its answer to its lead, which hands it off.
+
+`item' is the herd page's Board: the work items, each the asks of one
+piece of work.  The herd puts each ask in one as it sees it -- with the ask
+it was made answering, a relay with the answer it passes on, else in one
+of its own -- and a lead puts right what it got wrong: `rename' (no TITLE
+gives back the name it had), `merge' ID into INTO, `split' asks -- each
+with the asks made answering it -- out into an item of their own, `move'
+asks into item ID, `label' (a ticket, a deploy), `close' once done --
+the herd never takes an item for done by its quiet -- and `reopen'.  ID
+is an item's id, or an ask's for the item it is in.  An ask you make for
+an item you know, say so: `ask --item ID'; one that passes on the answer
+to another ask, `ask --relay-of ASK'.  What a lead moved stays put.  Only
+a lead changes items; anyone may list and show them.
 
 `cost' compares what a task costs, in weighted tokens (input 1, cache
 read 0.1, cache write 1.25 or 2, output 5), through a lead and talking to
@@ -364,6 +380,7 @@ def cmd_ask(args):
     params = {"to": args.to, "body": body, "from": me(), "wait": bool(args.wait)}
     if args.rounds is not None:
         params["rounds"] = args.rounds
+    params.update(_board_hints(args))
     out = rpc("herd_ask", params)
     say("asked %s (ask %s)%s" % (
         out["to"], out["id"],
@@ -426,6 +443,7 @@ def cmd_handoff(args):
               "from": me(), "wait": bool(args.wait)}
     if args.rounds is not None:
         params["rounds"] = args.rounds
+    params.update(_board_hints(args))
     out = rpc("herd_handoff", params)
     where = os.path.basename(out["project"].rstrip("/")) or out["project"]
     to = out["to"]
@@ -506,6 +524,96 @@ def cmd_cancel(args):
         said += ("; %s, at work on it, is interrupted and told not to go on with it" if out.get("interrupted")
                  else "; %s is told not to go on with it (not interrupted: it is not at work on it)") % out["told"]
     say(said)
+    return 0
+
+
+def _board_hints(args):
+    "What `--item' and `--relay-of' say of an ask, for the Board."
+    out = {}
+    if getattr(args, "item", None):
+        out["item"] = args.item
+    if getattr(args, "relay_of", None):
+        out["relay_of"] = args.relay_of
+    return out
+
+
+ITEM_STATUS = {"live": "live", "quiet": "quiet", "done": "done"}
+
+
+def _ago(ms):
+    "MS, a time in milliseconds, as how long ago: 5m, 3h, 2d."
+    if not ms:
+        return "-"
+    s = max(0, time.time() - ms / 1000.0)
+    return "%dm" % (s // 60) if s < 3600 else "%dh" % (s // 3600) if s < 86400 else "%dd" % (s // 86400)
+
+
+def cmd_item(args):
+    """The Board's work items: list, show, and a lead's changes to them."""
+    act, rest = args.action, args.args
+
+    def need(n, usage):
+        if len(rest) < n:
+            raise HerdError("usage: herd item " + usage)
+
+    if act == "list":
+        out = rpc("herd_items", {"days": args.days})
+        if args.json:
+            print(json.dumps(out, indent=2, ensure_ascii=False))
+            return 0
+        for it in out["items"]:
+            where = ",".join(it["projects"]) or "-"
+            print("%-6s  %-5s  %3d asks%s  %4s  %-18s  %s%s" % (
+                it["id"], ITEM_STATUS.get(it["status"], it["status"]), it["asks"],
+                " (%d open)" % it["open"] if it["open"] else "", _ago(it["last"]), where[:18], it["title"],
+                "  [" + " ".join(it["labels"]) + "]" if it["labels"] else ""))
+        if out.get("more"):
+            say("older quiet and done items left out: --days %g shows more" % min(7, out["days"] * 7))
+        return 0
+    if act == "show":
+        need(1, "show ID")
+        out = rpc("herd_board_item", {"id": rest[0]})
+        if args.json:
+            print(json.dumps(out, indent=2, ensure_ascii=False))
+            return 0
+        print("%s  %s  %s" % (out["id"], out["status"], out["title"]))
+        if out["labels"]:
+            print("labels: " + " ".join(out["labels"]))
+        for p in out["prs"]:
+            print("PR %s/%s #%d%s" % (p["owner"], p["repo"], p["id"], "" if p["own"] else "  (item %s's)" % p["of"]))
+        for a in out["asksOf"]:
+            print("  %s  %-9s %s -> %s  [%s%s]  %s" % (
+                a["ask"], a["status"], a["from"], a["to"], a["how"], ", put by a lead" if a["pinned"] else "", a["head"]))
+        return 0
+    params = {"op": act, "by": me()}
+    if act == "rename":
+        need(1, "rename ID [TITLE]")
+        params.update(id=rest[0], title=" ".join(rest[1:]))
+    elif act == "merge":
+        need(2, "merge ID INTO")
+        params.update(id=rest[0], into=rest[1])
+    elif act == "split":
+        need(1, "split ASK... [--title T]")
+        params.update(asks=rest, title=args.title or "")
+    elif act == "move":
+        need(2, "move ID ASK...")
+        params.update(id=rest[0], asks=rest[1:])
+    elif act == "label":
+        need(2, "label ID LABEL... [--remove]")
+        params.update(id=rest[0], labels=rest[1:], remove=bool(args.remove))
+    elif act in ("close", "reopen"):
+        need(1, act + " ID")
+        params.update(id=rest[0])
+    out = rpc("herd_item_edit", params)
+    if act == "merge":
+        say("item %s merged into %s" % (out["merged"], out["item"]))
+    elif act in ("split", "move"):
+        say("%s %d asks into item %s: %s" % ("split" if act == "split" else "moved", len(out["moved"]),
+                                            out["item"], " ".join(out["moved"])))
+    else:
+        say("item %s: %s" % (out["item"], {"rename": "renamed", "label": "labels changed",
+                                          "close": "closed", "reopen": "reopened"}[act]))
+    print(out["item"])
     return 0
 
 
@@ -1684,6 +1792,11 @@ def cmd_hooks_list(args):
     return 0
 
 
+def _hint_args(p):
+    p.add_argument("--item", metavar="ID", help="the work item this is for: an item's id or an ask's (herd item)")
+    p.add_argument("--relay-of", metavar="ASK", help="the ask whose answer this passes on")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="herd",
@@ -1699,6 +1812,7 @@ def main(argv=None):
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     p.add_argument("--rounds", type=int, metavar="N",
                    help="how many times the taker may ask any one agent for this")
+    _hint_args(p)
     p.set_defaults(fn=cmd_ask)
     p = sub.add_parser("handoff",
                        help="hand work to another project's lead (a lead, or an agent "
@@ -1709,6 +1823,7 @@ def main(argv=None):
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     p.add_argument("--rounds", type=int, metavar="N",
                    help="how many times that lead may ask any one agent for this")
+    _hint_args(p)
     p.set_defaults(fn=cmd_handoff)
     p = sub.add_parser("reply", help="answer an ask")
     p.add_argument("id")
@@ -1729,6 +1844,15 @@ def main(argv=None):
     p.add_argument("--tasks", action="store_true", help="list each task too, newest first")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_cost)
+    p = sub.add_parser("item", help="the Board's work items: list, show, and a lead's changes")
+    p.add_argument("action", nargs="?", default="list",
+                   choices=("list", "show", "rename", "merge", "split", "move", "label", "close", "reopen"))
+    p.add_argument("args", nargs="*", metavar="ARG")
+    p.add_argument("--days", type=float, default=1, help="list: quiet and done items of the last N days too (1; 7 at most)")
+    p.add_argument("--title", help="split: the new item's name")
+    p.add_argument("--remove", action="store_true", help="label: take the labels off")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_item)
     p = sub.add_parser("remember", help="write a fact to the herd's shared memory")
     p.add_argument("text", nargs="?")
     p.add_argument("--type", choices=("project", "feedback", "reference", "user"),

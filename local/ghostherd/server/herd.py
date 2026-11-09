@@ -42,6 +42,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import board
 import projects
 import conversation
 import cost
@@ -1101,6 +1102,70 @@ class HerdStore:
         # to fetch secrets for it.
         if "guarded" not in ask_cols:
             self._conn.execute("ALTER TABLE asks ADD COLUMN guarded INTEGER")
+        # The Board (board.py): the work items, and which item each ask is
+        # in -- put there once, as the herd first saw it, and kept: by how
+        # (`parent', `relay', `lead', `new' ...) and what by (`ref');
+        # `pinned' a lead put it there, and it stays; what its body and
+        # reply name, read once each (`replied' once the reply was); the
+        # projects at both ends as they were then.  An item a lead merged
+        # into another keeps a row saying where it went, so its old id
+        # still finds it.  `board_repos' is the repositories the herd has
+        # seen a link to, and whose: what `shop #412' is.  A lead's
+        # `--item' and `--relay-of' on an ask wait in `ask_hints' until the
+        # ask is placed.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS work_items (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                labels TEXT,
+                merged_into TEXT,
+                closed_at TEXT,
+                closed_by TEXT,
+                touched_by TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ask_item (
+                ask TEXT PRIMARY KEY,
+                item TEXT NOT NULL,
+                how TEXT NOT NULL,
+                ref TEXT,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                refs TEXT,
+                prs TEXT,
+                tickets TEXT,
+                fyi INTEGER NOT NULL DEFAULT 0,
+                replied INTEGER NOT NULL DEFAULT 0,
+                from_proj TEXT,
+                to_proj TEXT
+            )
+            """
+        )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS ask_item_by_item ON ask_item (item)")
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS board_repos (
+                repo TEXT PRIMARY KEY,
+                host TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                seen_at TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ask_hints (
+                ask TEXT PRIMARY KEY,
+                item TEXT,
+                relay_of TEXT
+            )
+            """
+        )
         # A line the last sidecar was to make and never did -- it stopped
         # between an answer and its trace -- will not come now: no waiter
         # holds for it, and an answer held for it goes without.
@@ -1292,13 +1357,17 @@ class HerdStore:
         from_name: str | None = None,
         wait: bool = False,
         rounds: int | None = None,
+        item: str | None = None,
+        relay_of: str | None = None,
     ) -> dict[str, Any]:
         """Queue BODY for TO as an ask.  TO is a session or a kind.
 
         WAIT says the asker will collect the answer with herd_await;
         otherwise the answer comes back to it as mail.  ROUNDS is how
         many times the taker may ask any one agent while it answers this
-        (ASK_ROUNDS when not given).
+        (ASK_ROUNDS when not given).  ITEM, the work item it is for (an
+        item's id or an ask's), and RELAY_OF, the ask whose answer it
+        passes on, place it on the Board (board.py).
         """
         body = _body(body)
         rounds = _rounds(rounds)
@@ -1311,7 +1380,9 @@ class HerdStore:
             chain = self._chain_checked(sender)
             target = self._resolve_taker(to, sender, exclude=chain)
             self._not_in_chain(target, sender, chain)
+            item, relay_of = self._check_hint(item, relay_of)
             out, mail_id = self._insert_ask(sender, target, body, wait, rounds)
+            self._hint(out["id"], item, relay_of)
             self._conn.commit()
         if mail_id:
             self._attach_memory(mail_id, target, body)
@@ -1432,6 +1503,8 @@ class HerdStore:
         from_name: str | None = None,
         wait: bool = False,
         rounds: int | None = None,
+        item: str | None = None,
+        relay_of: str | None = None,
     ) -> dict[str, Any]:
         """Hand BODY to PROJECT's lead as an ask: the answer, rounds and loop
         rules are an ask's.  PROJECT is the project's directory, resolved.
@@ -1501,8 +1574,10 @@ class HerdStore:
                     "for a handoff (ghostherd-handoff-may-start-lead is off); ask the user"
                 )
             target = lead[0] if lead else ""
+            item, relay_of = self._check_hint(item, relay_of)
             out, mail_id = self._insert_ask(
                 sender, target, body, wait, rounds, project=shown, from_project=from_project)
+            self._hint(out["id"], item, relay_of)
             to_attach = []
             if not lead:
                 # One start per project, however many handoffs wait on it;
@@ -2574,6 +2649,363 @@ class HerdStore:
         out = threads_mod.direct_detail(row, said, snap, view["on"].get(row["agent"]) == "task:" + tid)
         out["cost"] = self._thread_cost(out["id"], view, whole=True)
         return out
+
+    # ---- The Board: work items (board.py) --------------------------------
+
+    # What a card and a timeline need of an ask: its first lines, not the
+    # whole of a long reply -- what it names was read once, in full, when it
+    # was placed (`_assign_items').
+    _BOARD_COLS = ("a.id, a.from_name, a.to_name, a.status, a.auto, a.error, a.created_at, "
+                   "a.delivered_at, a.answered_at, a.parent, a.project, a.from_project, "
+                   "substr(a.body, 1, 1500) AS body, substr(a.reply, 1, 1500) AS reply, "
+                   "i.item, i.how, i.ref, i.pinned, i.refs, i.prs, i.tickets, i.fyi, i.from_proj, i.to_proj")
+
+    def _board_rows(self, where: str = "", args: tuple = ()) -> list[dict[str, Any]]:
+        "Asks with their item, as dicts for board.py.  Caller holds `_mu`."
+        cur = self._conn.execute(
+            f"SELECT {self._BOARD_COLS} FROM asks a JOIN ask_item i ON i.ask = a.id {where}", args)
+        names = [d[0] for d in cur.description]
+        out = []
+        for r in cur.fetchall():
+            row = dict(zip(names, r))
+            for k in ("refs", "prs", "tickets"):
+                row[k] = json.loads(row[k]) if row[k] else []
+            out.append(row)
+        return out
+
+    @staticmethod
+    def _proj(name: str, project: str | None, snap: dict[str, dict[str, Any]]) -> str:
+        """NAME's project, as a board shows it (its leaf): a handoff names it
+        (PROJECT), else the snapshot does.  The user, and the herd-wide lead,
+        are of none."""
+        s = snap.get(name) or {}
+        if name == "user" or s.get("role") == PRIMARY:
+            return ""
+        p = project or s.get("project") or ""
+        return projects.leaf(p) if p else ""
+
+    def _item_id(self) -> str:
+        "A new item's id: short enough to type.  Caller holds `_mu`."
+        while True:
+            i = uuid.uuid4().hex[:6]
+            if not self._conn.execute("SELECT 1 FROM work_items WHERE id = ?", (i,)).fetchone():
+                return i
+
+    def _new_item(self, now: str, title: str | None = None, by: str | None = None) -> str:
+        "Caller holds `_mu`."
+        i = self._item_id()
+        self._conn.execute(
+            "INSERT INTO work_items (id, title, labels, touched_by, created_at, updated_at) VALUES (?, ?, '[]', ?, ?, ?)",
+            (i, title, by, now, now))
+        return i
+
+    def _item_of(self, ask_id: str) -> str | None:
+        "The item ask ASK_ID is in, or None.  Caller holds `_mu`."
+        row = self._conn.execute("SELECT item FROM ask_item WHERE ask = ?", (ask_id,)).fetchone()
+        return self._live_item(row[0]) if row else None
+
+    def _live_item(self, item: str | None) -> str | None:
+        "ITEM, or the item it was merged into.  Caller holds `_mu`."
+        seen = set()
+        while item and item not in seen:
+            seen.add(item)
+            row = self._conn.execute("SELECT merged_into FROM work_items WHERE id = ?", (item,)).fetchone()
+            if not row:
+                return None
+            if not row[0]:
+                return item
+            item = row[0]
+        return None
+
+    def _resolve_item(self, ref: str) -> str:
+        """The item REF names: an item's id, or an ask's -- the item it is
+        in.  Places the asks not placed yet first.  Caller holds `_mu`."""
+        ref = (ref or "").strip()
+        if not ref:
+            raise ValueError("name an item, by its id or an ask's")
+        it = self._live_item(ref)
+        if it:
+            return it
+        if self._conn.execute("SELECT 1 FROM asks WHERE id = ?", (ref,)).fetchone():
+            self._assign_items()
+            it = self._item_of(ref)
+            if it:
+                return it
+        raise ValueError(f"no item {ref}: give an item's id (herd item list) or an ask's")
+
+    def _assign_items(self) -> None:
+        """Put each ask not in an item yet in one (board.place), oldest
+        first, and read what each new reply names.  Caller holds `_mu`."""
+        new = self._conn.execute(
+            "SELECT a.id, a.from_name, a.to_name, a.body, a.created_at, a.parent, a.project, a.from_project, a.reply "
+            "FROM asks a LEFT JOIN ask_item i ON i.ask = a.id WHERE i.ask IS NULL ORDER BY a.created_at"
+        ).fetchall()
+        replies = self._conn.execute(
+            "SELECT a.id, a.reply FROM asks a JOIN ask_item i ON i.ask = a.id "
+            "WHERE a.status = 'answered' AND a.reply IS NOT NULL AND length(a.reply) != i.replied"
+        ).fetchall()
+        if not new and not replies:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        # Every link first -- a new ask's reply's too: an ask after it may
+        # name that repository by its name alone.
+        for text in [r[3] for r in new] + [r[8] for r in new] + [r[1] for r in replies]:
+            for host, owner, repo, _ in board.pr_links(text):
+                self._conn.execute(
+                    "INSERT INTO board_repos (repo, host, owner, seen_at) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(repo) DO UPDATE SET host = excluded.host, owner = excluded.owner, "
+                    "seen_at = excluded.seen_at", (repo, host, owner, now))
+        repos = {r[0]: (r[1], r[2]) for r in self._conn.execute("SELECT repo, host, owner FROM board_repos")}
+        known = {r[0] for r in self._conn.execute("SELECT id FROM asks")}
+        snap = self._thread_snap()
+        hints = {r[0]: (r[1], r[2]) for r in self._conn.execute("SELECT ask, item, relay_of FROM ask_hints")}
+
+        def pr_item(pr):
+            k = board.pr_key(pr)
+            for ask_id, prs in self._conn.execute(
+                    "SELECT i.ask, i.prs FROM ask_item i JOIN asks a ON a.id = i.ask "
+                    "WHERE i.prs LIKE ? ORDER BY a.created_at", (f"%{pr[2]}%",)):
+                if any(board.pr_key(p) == k for p in json.loads(prs or "[]")):
+                    return self._item_of(ask_id)
+            return None
+
+        def relayed(ask):
+            rows = self._conn.execute(
+                "SELECT id, from_name, to_name, answered_at FROM asks "
+                "WHERE from_name = ? AND status = 'answered' AND answered_at <= ? AND answered_at >= ?",
+                (ask["from_name"], ask["created_at"],
+                 (datetime.fromisoformat(ask["created_at"]) - timedelta(seconds=board.RELAY_WINDOW)).isoformat()),
+            ).fetchall()
+            return board.relay_source(ask, [dict(zip(("id", "from_name", "to_name", "answered_at"), r)) for r in rows])
+
+        for aid, frm, to, body, created, parent, project, from_project, _reply in new:
+            fp = self._proj(frm, from_project if project else None, snap)
+            tp = self._proj(to, project, snap) if to or project else ""
+            ask = {"id": aid, "from_name": frm, "to_name": to, "created_at": created, "parent": parent,
+                   "relay": board.relay(body), "refs": board.ask_ids(body, known, aid),
+                   "prs": board.pr_refs(body, repos, (fp, tp))}
+            hint_item, hint_relay = hints.get(aid, (None, None))
+            it, how, ref, pinned = None, "new", None, 0
+            if hint_item:
+                it = self._live_item(hint_item) or self._item_of(hint_item)
+                how, ref, pinned = "lead", hint_item, 1
+            if not it and hint_relay and (it := self._item_of(hint_relay)):
+                how, ref, pinned = "relay", hint_relay, 1
+            if not it:
+                it, how, ref = board.place(ask, self._item_of, pr_item, relayed)
+            if not it:
+                it, how, ref = self._new_item(created), "new", None
+            self._conn.execute(
+                "INSERT INTO ask_item (ask, item, how, ref, pinned, refs, prs, tickets, fyi, replied, from_proj, to_proj) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                (aid, it, how, ref, pinned, json.dumps(ask["refs"]), json.dumps(ask["prs"]),
+                 json.dumps(board.tickets(body)), 1 if board.fyi(body) else 0, fp, tp))
+            self._conn.execute("UPDATE work_items SET updated_at = ? WHERE id = ?", (now, it))
+        self._conn.execute("DELETE FROM ask_hints WHERE ask IN (SELECT ask FROM ask_item)")
+        # What each new reply names joins what its ask named.
+        replies = self._conn.execute(
+            "SELECT a.id, a.reply, i.refs, i.prs, i.tickets, i.from_proj, i.to_proj FROM asks a "
+            "JOIN ask_item i ON i.ask = a.id "
+            "WHERE a.status = 'answered' AND a.reply IS NOT NULL AND length(a.reply) != i.replied"
+        ).fetchall()
+        for aid, reply, refs, prs, tks, fp, tp in replies:
+            refs, prs, tks = json.loads(refs or "[]"), json.loads(prs or "[]"), json.loads(tks or "[]")
+            refs += [r for r in board.ask_ids(reply, known, aid) if r not in refs]
+            prs += [list(p) for p in board.pr_refs(reply, repos, (fp, tp)) if list(p) not in prs]
+            tks += [t for t in board.tickets(reply) if t not in tks]
+            self._conn.execute("UPDATE ask_item SET refs = ?, prs = ?, tickets = ?, replied = ? WHERE ask = ?",
+                               (json.dumps(refs), json.dumps(prs), json.dumps(tks), len(reply), aid))
+        self._conn.commit()
+
+    def board(self, days: float = 1) -> dict[str, Any]:
+        """The page's Board tab: every item an ask is open in, and those that
+        moved in the last DAYS -- each a card (board.card); every open ask,
+        who waits on whom; the asks between projects in that window, by
+        which way; and what the window holds.  `more' says older quiet or
+        done items are left out."""
+        days = max(0.04, min(7.0, float(days)))
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(days=days)).isoformat()
+        with self._mu:
+            self._assign_items()
+            snap = self._thread_snap()
+            rows = self._board_rows("ORDER BY a.created_at")
+            items = {r[0]: {"id": r[0], "title": r[1], "labels": json.loads(r[2] or "[]"), "closed_at": r[3]}
+                     for r in self._conn.execute(
+                         "SELECT id, title, labels, closed_at FROM work_items WHERE merged_into IS NULL")}
+        by_item: dict[str, list[dict[str, Any]]] = {}
+        owner: dict[str, str] = {}
+        known = {}
+        proj_of = {}
+        for r in rows:
+            by_item.setdefault(r["item"], []).append(r)
+            known[r["id"]] = r["item"]
+            proj_of[r["id"]] = r["to_proj"]
+            for p in r["prs"]:
+                owner.setdefault(board.pr_key(p), r["item"])
+        cards, more = [], False
+        for it, asks in by_item.items():
+            if it not in items:
+                continue
+            c = board.card(items[it], asks, snap, owner, known)
+            if c["status"] == "live" or board.last_at(asks) >= cutoff:
+                cards.append(c)
+            else:
+                more = True
+        cards.sort(key=lambda c: -(c["last"] or 0))
+        shown = {c["id"] for c in cards}
+        recent = [r for r in rows if r["created_at"] >= cutoff and r["item"] in shown]
+        for r in recent:
+            if r["how"] == "relay" and r["ref"]:
+                r["src_proj"] = proj_of.get(r["ref"])
+        open_rows = [r for r in rows if r["status"] in ASK_OPEN]
+        return {
+            "items": cards, "waits": board.waits(open_rows, snap), "edges": board.edges(recent),
+            # `xproj', not `cross': Emacs reads a key `cross' as a card's flag.
+            "counts": {"asks": len(recent),
+                       "xproj": sum(1 for r in recent if r["from_proj"] and r["to_proj"] and r["from_proj"] != r["to_proj"]),
+                       "fyi": sum(1 for r in recent if r["fyi"]),
+                       "relays": sum(1 for r in recent if r["how"] == "relay"),
+                       "failed": sum(1 for r in recent if r["status"] in ("failed", "cancelled"))},
+            "days": days, "more": more, "at": now.timestamp() * 1000,
+        }
+
+    def board_item(self, ref: str) -> dict[str, Any]:
+        "One item whole: its card and its timeline (board.timeline), by its id or an ask's."
+        with self._mu:
+            it = self._resolve_item(ref)
+            snap = self._thread_snap()
+            rows = self._board_rows("WHERE i.item = ? ORDER BY a.created_at", (it,))
+            row = self._conn.execute("SELECT id, title, labels, closed_at FROM work_items WHERE id = ?", (it,)).fetchone()
+            known = {r[0]: r[1] for r in self._conn.execute("SELECT ask, item FROM ask_item")}
+        item = {"id": row[0], "title": row[1], "labels": json.loads(row[2] or "[]"), "closed_at": row[3]}
+        if not rows:
+            raise ValueError(f"item {it} has no asks left: the herd keeps asks {HISTORY_SECONDS // 86400} days")
+        out = board.card(item, rows, snap, known=known)
+        out["events"] = board.timeline(rows)
+        out["asksOf"] = [{"ask": r["id"], "from": r["from_name"], "to": board.taker(r), "status": r["status"],
+                          "how": r["how"], "pinned": bool(r["pinned"]), "at": board.ms(r["created_at"]),
+                          "head": board.head(r["body"], 90)} for r in rows]
+        return out
+
+    def items(self, days: float = 1) -> dict[str, Any]:
+        "The items as `herd item list' shows them: the board's, compact."
+        b = self.board(days)
+        return {"items": [{k: c[k] for k in ("id", "title", "status", "asks", "open", "last", "projects", "labels")}
+                          for c in b["items"]], "more": b["more"], "days": b["days"]}
+
+    def _may_edit_items(self, by: str) -> None:
+        """Only a lead, the herd-wide lead or the user changes items: a worker
+        tells its lead.  Caller holds `_mu`."""
+        if not by or by == "user":
+            return
+        row = self._conn.execute("SELECT role FROM snapshot WHERE name = ?", (by,)).fetchone()
+        if row and (row[0] or "") not in ("lead", PRIMARY):
+            raise ValueError(f"{by} is not a lead: work items are a lead's to change -- tell your lead")
+
+    def item_edit(self, op: str, ref: str = "", by: str = "", title: str | None = None,
+                  into: str = "", asks: list[str] | None = None, labels: list[str] | None = None,
+                  remove: bool = False) -> dict[str, Any]:
+        """A lead's change to the items (`herd item'): `rename' ITEM to TITLE
+        ('' gives it back its own); `merge' ITEM into INTO; `split' ASKS --
+        each with the asks made answering it -- out into an item of their
+        own (TITLE); `move' ASKS into ITEM; `label' ITEM with LABELS (REMOVE
+        takes them off); `close' and `reopen' ITEM.  An ask a lead moved
+        stays where it was put."""
+        by = (by or "").strip() or "user"
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            self._may_edit_items(by)
+            self._assign_items()
+            if op in ("split", "move"):
+                picked = [self._ask_in_items(a) for a in (asks or []) if (a or "").strip()]
+                if not picked:
+                    raise ValueError("name the asks to move, by id")
+                if op == "split":
+                    it = self._new_item(now, (title or "").strip() or None, by)
+                else:
+                    it = self._resolve_item(ref)
+                moved = self._move_asks(picked, it)
+                self._touch(it, by, now)
+                self._conn.commit()
+                return {"item": it, "moved": moved}
+            it = self._resolve_item(ref)
+            if op == "rename":
+                self._conn.execute("UPDATE work_items SET title = ? WHERE id = ?", ((title or "").strip() or None, it))
+            elif op == "merge":
+                to = self._resolve_item(into)
+                if to == it:
+                    raise ValueError(f"{ref} and {into} are one item already")
+                self._conn.execute("UPDATE ask_item SET item = ? WHERE item = ?", (to, it))
+                a = json.loads(self._conn.execute("SELECT labels FROM work_items WHERE id = ?", (it,)).fetchone()[0] or "[]")
+                b = json.loads(self._conn.execute("SELECT labels FROM work_items WHERE id = ?", (to,)).fetchone()[0] or "[]")
+                self._conn.execute("UPDATE work_items SET labels = ? WHERE id = ?", (json.dumps(b + [x for x in a if x not in b]), to))
+                self._conn.execute("UPDATE work_items SET merged_into = ?, updated_at = ? WHERE id = ?", (to, now, it))
+                self._touch(to, by, now)
+                self._conn.commit()
+                return {"item": to, "merged": it}
+            elif op == "label":
+                want = [x.strip() for x in (labels or []) if x and x.strip()]
+                if not want:
+                    raise ValueError("name the labels")
+                have = json.loads(self._conn.execute("SELECT labels FROM work_items WHERE id = ?", (it,)).fetchone()[0] or "[]")
+                have = [x for x in have if x not in want] if remove else have + [x for x in want if x not in have]
+                self._conn.execute("UPDATE work_items SET labels = ? WHERE id = ?", (json.dumps(have), it))
+            elif op == "close":
+                self._conn.execute("UPDATE work_items SET closed_at = ?, closed_by = ? WHERE id = ?", (now, by, it))
+            elif op == "reopen":
+                self._conn.execute("UPDATE work_items SET closed_at = NULL, closed_by = NULL WHERE id = ?", (it,))
+            else:
+                raise ValueError(f"no such change to an item: {op}")
+            self._touch(it, by, now)
+            self._conn.commit()
+        return {"item": it}
+
+    def _ask_in_items(self, ask_id: str) -> str:
+        "ASK_ID, an ask in an item.  Caller holds `_mu`."
+        ask_id = ask_id.strip()
+        if not self._conn.execute("SELECT 1 FROM ask_item WHERE ask = ?", (ask_id,)).fetchone():
+            raise ValueError(f"no ask {ask_id} in an item: the herd keeps asks {HISTORY_SECONDS // 86400} days")
+        return ask_id
+
+    def _move_asks(self, picked: list[str], to: str) -> list[str]:
+        """Move PICKED, each with the asks made answering it in the item it
+        was in, into item TO, and pin them there.  Caller holds `_mu`."""
+        moved: list[str] = []
+        for a in picked:
+            frm = self._item_of(a)
+            todo = [a]
+            while todo:
+                cur = todo.pop()
+                if cur in moved:
+                    continue
+                moved.append(cur)
+                todo += [r[0] for r in self._conn.execute(
+                    "SELECT a.id FROM asks a JOIN ask_item i ON i.ask = a.id WHERE a.parent = ? AND i.item = ?",
+                    (cur, frm))]
+        for a in moved:
+            self._conn.execute("UPDATE ask_item SET item = ?, how = 'lead', pinned = 1 WHERE ask = ?", (to, a))
+        return moved
+
+    def _touch(self, item: str, by: str, now: str) -> None:
+        self._conn.execute("UPDATE work_items SET touched_by = ?, updated_at = ? WHERE id = ?", (by, now, item))
+
+    def _hint(self, ask_id: str, item: str | None, relay_of: str | None) -> None:
+        """What a lead said of ask ASK_ID as it made it: the item it is for,
+        or the ask whose answer it passes on.  Caller holds `_mu`."""
+        if item or relay_of:
+            self._conn.execute("INSERT OR REPLACE INTO ask_hints (ask, item, relay_of) VALUES (?, ?, ?)",
+                               (ask_id, item or None, relay_of or None))
+
+    def _check_hint(self, item: str | None, relay_of: str | None) -> tuple[str | None, str | None]:
+        "ITEM and RELAY_OF as an ask may name them, or why not.  Caller holds `_mu`."
+        item, relay_of = (item or "").strip() or None, (relay_of or "").strip() or None
+        if item and not (self._conn.execute("SELECT 1 FROM work_items WHERE id = ?", (item,)).fetchone()
+                         or self._conn.execute("SELECT 1 FROM asks WHERE id = ?", (item,)).fetchone()):
+            raise ValueError(f"no item {item}: give an item's id (herd item list) or an ask's")
+        if relay_of and not self._conn.execute("SELECT 1 FROM asks WHERE id = ?", (relay_of,)).fetchone():
+            raise ValueError(f"no ask {relay_of} to relay")
+        return item, relay_of
 
     def _close_ask(self, ask_id: str, status: str, now: str, error: str) -> None:
         "Caller holds `_mu`."
@@ -5099,6 +5531,14 @@ class HerdStore:
             """,
             (cutoff,),
         )
+        # The Board's record of the asks gone with them, and the items left
+        # with none -- and those merged into one of them.
+        self._conn.execute("DELETE FROM ask_item WHERE ask NOT IN (SELECT id FROM asks)")
+        self._conn.execute("DELETE FROM ask_hints WHERE ask NOT IN (SELECT id FROM asks)")
+        for _ in range(3):
+            self._conn.execute(
+                "DELETE FROM work_items WHERE id NOT IN (SELECT item FROM ask_item) "
+                "AND (merged_into IS NULL OR merged_into NOT IN (SELECT id FROM work_items))")
         # `taken' is in flight (handed to Emacs, awaiting its reply), not
         # strictly terminal; after a week with no reply it is a fire-and-
         # forget command that will never come back, so it is collected too.

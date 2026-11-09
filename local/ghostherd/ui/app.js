@@ -896,6 +896,11 @@
       threads.cur = null;
       emit("threads-unwatch");
     }
+    if (boardWatching && view !== "board") {
+      boardWatching = false;
+      clearInterval(boardTimer);
+      emit("board-unwatch");
+    }
     inboxBadge();
     threadsBadge();
     document.querySelectorAll(".tab").forEach((b) => {
@@ -946,6 +951,7 @@
     else if (where === "search") showSearch();
     else if (where === "inbox") showInbox();
     else if (where === "threads") showThreads();
+    else if (where === "board") showBoard();
     else if (where === "docs") showDocs();
     // Home: the page opens on the Inbox when nothing else is asked for.
     else showInbox();
@@ -970,6 +976,9 @@
     if (memWatching) emit("memory-watch", mem.key ? { key: mem.key } : { key: "user" });
     if (inboxWatching) emit("inbox-watch");
     if (threadsWatching) emit("threads-watch", { project: threads.project, sort: threads.sort });
+    // Emacs sends the board whole again: what it sent while the page was
+    // away is not here.
+    if (boardWatching) emit("board-watch", { days: board.days });
     if (view === "log") emit("log");
     if (view === "docs") emit("docs");
     emit("ready", { lazy: true });
@@ -6054,6 +6063,8 @@
       onInboxAction(act.slice(3), el);
     } else if (act.startsWith("th:")) {
       onThreadsAction(act.slice(3), el);
+    } else if (act.startsWith("bd:")) {
+      onBoardAction(act.slice(3), el);
     } else if (act === "resume") {
       resume(false);
     } else if (act === "fork") {
@@ -6193,6 +6204,7 @@
       src = null;
       const which = b.getAttribute("data-tab");
       if (which === "inbox") showInbox();
+      else if (which === "board") showBoard();
       else if (which === "threads") showThreads();
       else if (which === "sessions") showSessions();
       else if (which === "log") showLog();
@@ -6206,6 +6218,7 @@
     if (view === "log") emit("log");
     else if (view === "agents") emit("usage-refresh");
     else if (view === "docs") emit("docs");
+    else if (view === "board") emit("board-resend");
     else if (listsSessions()) askSessions();
     else emit("refresh", { lazy: true });
   });
@@ -7352,8 +7365,579 @@
   }
 
 
+  // ---- Board -----------------------------------------------------------
+  // The herd's work at a glance, item by item: what work there is, what is
+  // still open and who waits on whom across projects, the pull requests
+  // and how they stand, and each item's history.  A work item is the asks
+  // of one piece of work, put together by the herd (server/board.py) and
+  // put right by a lead (`herd item').  Emacs sends it only while the tab
+  // is shown, in parts: the whole once, then the cards that changed, by
+  // version (boardPatch); an item's timeline when its card is opened
+  // (boardTimeline).  Text in Traditional Chinese, Jing's own.
+
+  let board = { got: false, v: 0, cards: {}, waits: [], jing: [], meta: { counts: {}, edges: [], days: 1, more: false },
+                error: "", filter: "all", graph: "now", fold: new Map(), tlOpen: new Set(), tlAll: new Set(), tl: {},
+                days: boardDaysKept(), html: {}, order: "", flash: "" };
+  let boardWatching = false;
+  let boardTimer = 0;
+
+  // Each status: its label, its order on the board, and whether its card
+  // starts folded: work going on open, work at rest folded.
+  const BD_STATUS = { live: ["進行中", 0, false], jing: ["等 Jing", 1, false], tail: ["收尾", 2, false],
+                      quiet: ["安靜", 3, true], done: ["完成", 4, true] };
+  const BD_PR = { OPEN: ["open", "opn"], MERGED: ["已 merge", "mrg"], DECLINED: ["關閉", "off"], SUPERSEDED: ["被取代", "off"] };
+  const BD_PR_ORDER = ["OPEN", "MERGED", "DECLINED", "SUPERSEDED", ""];
+  const BD_KIND = { ask: "ask", handoff: "handoff", answer: "回覆", failed: "失敗", cancelled: "撤回" };
+
+  // How far back the viewer lists quiet and done items, kept for them.
+  function boardDaysKept() {
+    try { return localStorage.getItem("ghostherd.board.days") === "7" ? 7 : 1; } catch (e) { return 1; }
+  }
+  function boardDaysKeep(d) {
+    try { localStorage.setItem("ghostherd.board.days", String(d)); } catch (e) { /* this page keeps it */ }
+  }
+
+  function bdTime(ms) {
+    if (!ms) return "";
+    const d = new Date(ms), p = (n) => String(n).padStart(2, "0");
+    const day = d.toDateString() === new Date().toDateString() ? "" : (d.getMonth() + 1) + "/" + d.getDate() + " ";
+    return day + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+  function bdAge(ms) {
+    if (!ms) return "";
+    const s = Math.max(0, (Date.now() - ms) / 1000);
+    return s < 60 ? "剛剛" : s < 3600 ? Math.floor(s / 60) + " 分" : s < 86400 ? Math.floor(s / 3600) + " 小時" : Math.floor(s / 86400) + " 天";
+  }
+  function bdClip(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+  function bdCards() {
+    return Object.values(board.cards).sort((a, b) =>
+      (BD_STATUS[a.status] || [0, 9])[1] - (BD_STATUS[b.status] || [0, 9])[1] || (b.last || 0) - (a.last || 0));
+  }
+  function bdFolded(c) {
+    const mine = board.fold.get(c.id);
+    return mine === undefined ? !!(BD_STATUS[c.status] || [])[2] : mine;
+  }
+  function bdLink(id) {
+    return id ? '<button type="button" class="bdilink" data-act="bd:goto" data-id="' + esc(id) + '" title="到這個工作項目">' + esc(id) + "</button>" : "";
+  }
+  function bdPrKey(p) { return p.host + ":" + p.owner + "/" + p.repo + "#" + p.id; }
+  function bdPrState(p) {
+    if (p.unsure || !p.state) return ["?", "unk"];
+    return BD_PR[p.state] || [p.state.toLowerCase(), "unk"];
+  }
+  function bdCross(w) { return w.kind === "handoff" || (w.fromProj && w.toProj && w.fromProj !== w.toProj); }
+
+  function boardBadge() {
+    const b = $("board-n");
+    if (!b) return;
+    const n = Object.values(board.cards).filter((c) => !BD_STATUS[c.status] || !BD_STATUS[c.status][2]).length;
+    b.textContent = board.got && n ? String(n) : "";
+  }
+
+  function showBoard() {
+    if (herdNow.room) closeRoomState();
+    view = tab = "board";
+    src = null;
+    chrome();
+    app.innerHTML = '<div class="page boardpage"><div class="bdbody"></div></div>';
+    board.html = {};
+    board.order = "";
+    if (!boardWatching) { boardWatching = true; emit("board-watch", { days: board.days }); }
+    // Ages ("5 分") move on with no new data: drawn again now and then.
+    clearInterval(boardTimer);
+    boardTimer = setInterval(() => { if (view === "board") renderBoard(); }, 30000);
+    renderBoard();
+  }
+
+  // ---- Its parts --------------------------------------------------------
+
+  function bdStrip(cards) {
+    const n = {};
+    cards.forEach((c) => (n[c.status] = (n[c.status] || 0) + 1));
+    const k = board.meta.counts || {};
+    const seg = (cls, v) => '<span class="bdseg ' + cls + '" style="flex:' + v + '"></span>';
+    const lg = (cls, label, v) => '<span class="bdlg ' + cls + '"><i></i>' + esc(label) + " " + v + "</span>";
+    const order = Object.keys(BD_STATUS).filter((s) => n[s]);
+    const days = board.meta.days > 1 ? Math.round(board.meta.days) + " 天" : "24 小時";
+    const t1 = '<button type="button" class="bdtile" data-act="bd:jump" data-to="items"><div class="tl1">工作項目</div>' +
+      '<div class="big">' + cards.length + "</div>" +
+      '<div class="sbar">' + order.map((s) => seg("st-" + s, n[s])).join("") + "</div>" +
+      '<div class="legend">' + order.map((s) => lg("st-" + s, BD_STATUS[s][0], n[s])).join("") + "</div>" +
+      '<div class="sub">' + days + "內 " + (k.asks || 0) + " 則 ask：跨專案 " + (k.xproj || 0) + "、FYI " + (k.fyi || 0) +
+      "、轉述 " + (k.relays || 0) + "、撤回／失敗 " + (k.failed || 0) + "</div></button>";
+    const w = board.waits, cross = w.filter(bdCross), inner = w.filter((x) => !bdCross(x));
+    const oldest = w.reduce((a, b) => (!a || (b.since || 0) < (a.since || 0) ? b : a), null);
+    const pairs = (list, f) => {
+      const c = {};
+      list.forEach((x) => { const key = f(x); c[key] = (c[key] || 0) + 1; });
+      return Object.keys(c).slice(0, 2).map((key) => key + (c[key] > 1 ? " ×" + c[key] : "")).join("、");
+    };
+    const t2 = '<button type="button" class="bdtile" data-act="bd:jump" data-to="now"><div class="tl1">開著的等待</div>' +
+      '<div class="big">' + w.length + "</div>" +
+      '<div class="sub">' + (w.length ? "跨專案 " + cross.length + (cross.length ? "：" + esc(pairs(cross, (x) => (x.fromProj || x.from) + " → " + (x.toProj || x.to))) : "") +
+        "<br>專案內 " + inner.length + (inner.length ? "：" + esc(pairs(inner, (x) => x.fromProj || x.from)) : "") +
+        "<br>最久的開了 " + esc(bdAge(oldest.since)) + "（" + esc(bdTime(oldest.since)) + "）" : "沒有開著的 ask") + "</div></button>";
+    const guessed = board.jing.filter((j) => j.item).length;
+    const t3 = '<button type="button" class="bdtile t-jing" data-act="bd:jump" data-to="jing"><div class="tl1">等 Jing</div>' +
+      '<div class="big">' + board.jing.length + "</div>" +
+      '<div class="sub">' + (board.jing.length ? "取自 Inbox 的待辦<br>" + guessed + " 件推得是哪個工作項目" : "Inbox 沒有等你的事") + "</div></button>";
+    const prs = bdAllPrs(cards);
+    const ps = {};
+    prs.forEach((r) => { const s = r.pr.unsure ? "" : r.pr.state || ""; ps[s] = (ps[s] || 0) + 1; });
+    const pcls = (s) => "s-" + (s ? (BD_PR[s] || ["", "unk"])[1] : "unk");
+    const plab = (s) => (s ? (BD_PR[s] || [s])[0] : "不明");
+    const porder = BD_PR_ORDER.filter((s) => ps[s]);
+    const t4 = '<button type="button" class="bdtile" data-act="bd:jump" data-to="prs"><div class="tl1">PR</div>' +
+      '<div class="big">' + prs.length + "</div>" +
+      '<div class="sbar">' + porder.map((s) => seg(pcls(s), ps[s])).join("") + "</div>" +
+      '<div class="legend">' + porder.map((s) => lg(pcls(s), plab(s), ps[s])).join("") + "</div>" +
+      '<div class="sub">狀態取自 Bitbucket／GitHub</div></button>';
+    return '<section class="bdstrip">' + t1 + t2 + t3 + t4 + "</section>";
+  }
+
+  // ---- The map: projects, and who waits on whom between them ------------
+
+  function bdGraph(mode) {
+    const narrow = phone();
+    const W = narrow ? 360 : 640, H = narrow ? 320 : 300, RX = narrow ? 44 : 48, RY = 16;
+    const names = [];
+    const add = (p) => { if (p && !names.includes(p) && names.length < 9) names.push(p); };
+    const inner = {};
+    const jingBy = {};
+    if (mode === "now") {
+      board.waits.forEach((w) => { add(w.fromProj); add(w.toProj); if (!bdCross(w) && w.fromProj) inner[w.fromProj] = (inner[w.fromProj] || 0) + 1; });
+      board.jing.forEach((j) => {
+        const c = j.item && board.cards[j.item];
+        const p = j.project || (c && c.projects[0]) || "";
+        if (p) { add(p); (jingBy[p] = jingBy[p] || []).push(j); }
+      });
+      bdCards().filter((c) => c.status !== "quiet" && c.status !== "done").forEach((c) => c.projects.forEach(add));
+    } else {
+      (board.meta.edges || []).slice().sort((a, b) => b.n - a.n).forEach((e) => { add(e.from); add(e.to); });
+    }
+    const jing = mode === "now" && Object.keys(jingBy).length > 0;
+    if (!names.length) return '<p class="bdempty">' + (mode === "now" ? "沒有開著的等待" : "這段時間沒有跨專案的 ask") + "</p>";
+    const pos = {};
+    const cx = W / 2, cy = H / 2, rx = W / 2 - RX - 8, ry = H / 2 - RY - 22;
+    if (names.length === 1 && !jing) pos[names[0]] = [cx, cy];
+    else if (names.length === 2 && !jing) { pos[names[0]] = [cx - rx * 0.7, cy]; pos[names[1]] = [cx + rx * 0.7, cy]; }
+    else names.forEach((n, i) => {
+      const a = -Math.PI / 2 + (2 * Math.PI * i) / names.length;
+      pos[n] = [cx + rx * Math.cos(a), cy + ry * Math.sin(a)];
+    });
+    if (jing) pos.Jing = [cx, cy];
+    const busy = new Set();
+    board.waits.forEach((w) => { busy.add(w.fromProj); busy.add(w.toProj); });
+    const trim = (px, py, qx, qy) => {
+      const dx = qx - px, dy = qy - py, d = Math.hypot(dx, dy) || 1, ux = dx / d, uy = dy / d;
+      const r = 1 / Math.sqrt((ux / RX) ** 2 + (uy / RY) ** 2);
+      return [px + ux * (r + 3), py + uy * (r + 3)];
+    };
+    const out = [];
+    const edge = (a, b, bend, cls, label, width, dash, mk) => {
+      const [x1, y1] = pos[a], [x2, y2] = pos[b];
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, dx = x2 - x1, dy = y2 - y1, d = Math.hypot(dx, dy) || 1;
+      const qx = mx - (dy / d) * bend, qy = my + (dx / d) * bend;
+      const [sx, sy] = trim(x1, y1, qx, qy), [ex, ey] = trim(x2, y2, qx, qy);
+      out.push('<path class="' + cls + '" d="M' + sx.toFixed(1) + "," + sy.toFixed(1) + " Q" + qx.toFixed(1) + "," + qy.toFixed(1) +
+        " " + ex.toFixed(1) + "," + ey.toFixed(1) + '" stroke-width="' + width + '" marker-end="url(#bdm-' + mk + ')"' +
+        (dash ? ' stroke-dasharray="5 4"' : "") + "/>");
+      // A label as long as its edge leaves room for: its words cut to fit,
+      // else what comes after "·" alone (how long it is open), else none.
+      const room = Math.hypot(ex - sx, ey - sy) - 8;
+      const fit = (s) => {
+        let w = 0, out = "";
+        for (const ch of String(s)) {
+          w += /[\u2e80-\uffff]/.test(ch) ? 11 : 6.5;
+          if (w > room) return out.length > 3 ? out.slice(0, -1) + "…" : "";
+          out += ch;
+        }
+        return out;
+      };
+      let text = label ? fit(label) : "";
+      if (label && (!text || text.endsWith("…")) && label.includes(" · ")) {
+        const [what, age] = label.split(" · ");
+        const short = fit(what.slice(0, Math.max(0, Math.floor((room - 6.5 * (age.length + 3)) / 11))) + "… · " + age);
+        text = short && !short.startsWith("…") ? short : fit(age);
+      }
+      if (text) {
+        const lx = 0.25 * sx + 0.5 * qx + 0.25 * ex, ly = 0.25 * sy + 0.5 * qy + 0.25 * ey - 5;
+        out.push('<text class="el" x="' + lx.toFixed(1) + '" y="' + ly.toFixed(1) + '" text-anchor="middle"><title>' + esc(label) + "</title>" + esc(text) + "</text>");
+      }
+    };
+    if (mode === "now") {
+      const by = {};
+      board.waits.filter(bdCross).forEach((w) => {
+        const f = w.fromProj, t = w.toProj;
+        if (!pos[f] || !pos[t] || f === t) return;
+        const key = f + "\u0000" + t;
+        (by[key] = by[key] || []).push(w);
+      });
+      Object.keys(by).forEach((key) => {
+        const [f, t] = key.split("\u0000"), ws = by[key];
+        const old = ws.reduce((a, b) => ((b.since || 0) < (a.since || 0) ? b : a));
+        const label = (ws.length > 1 ? ws.length + " 則" : bdClip(old.head, 24)) + " · " + bdAge(old.since);
+        edge(f, t, by[t + "\u0000" + f] ? 16 : 0, "e-now", label, 2.2, false, "now");
+      });
+      Object.keys(jingBy).forEach((p) => {
+        if (!pos[p]) return;
+        const js = jingBy[p];
+        edge(p, "Jing", 0, "e-jing", js.length > 1 ? js.length + " 件" : bdClip(js[0].title, 24), 2, false, "jing");
+      });
+    } else {
+      const es = board.meta.edges || [];
+      const has = new Set(es.map((e) => e.from + "\u0000" + e.to));
+      es.forEach((e) => {
+        if (!pos[e.from] || !pos[e.to]) return;
+        const back = has.has(e.to + "\u0000" + e.from);
+        edge(e.from, e.to, e.relay ? (back ? 40 : 28) : back ? 14 : 0, e.relay ? "e-relay" : "e-all",
+          (e.relay ? "轉述 " : "") + e.n, (1.2 + Math.min(e.n, 8) * 0.5).toFixed(1), e.relay, e.relay ? "relay" : "all");
+      });
+    }
+    Object.keys(pos).forEach((n) => {
+      const [x, y] = pos[n];
+      const k = n === "Jing" ? "jing" : busy.has(n) || mode === "all" ? "act" : "idle";
+      out.push('<g class="nd nd-' + k + '"><ellipse cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" rx="' + RX + '" ry="' + RY + '"/>' +
+        '<text x="' + x.toFixed(1) + '" y="' + (y + 4).toFixed(1) + '" text-anchor="middle" class="nl">' + esc(bdClip(n, 11)) + "</text></g>");
+      if (mode === "now" && inner[n]) {
+        out.push('<text class="bdg" x="' + x.toFixed(1) + '" y="' + (y + RY + 13).toFixed(1) + '" text-anchor="middle">內部 ' + inner[n] + "</text>");
+      }
+    });
+    const mk = (id, color) => '<marker id="bdm-' + id + '" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">' +
+      '<path d="M0,0 L10,5 L0,10 z" fill="' + color + '"/></marker>';
+    return '<svg class="bdg-svg" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' + (mode === "now" ? "開著的等待" : "跨專案的 ask") + '">' +
+      "<defs>" + mk("now", "#79c0ff") + mk("jing", "#f85149") + mk("all", "#8b949e") + mk("relay", "#d29922") + "</defs>" + out.join("") + "</svg>";
+  }
+
+  function bdNow() {
+    const n = (board.meta.edges || []).reduce((s, e) => s + e.n, 0);
+    const tabs = '<div class="gtabs">' +
+      '<button type="button" class="bdchip' + (board.graph === "now" ? " on" : "") + '" data-act="bd:graph" data-g="now">開著的</button>' +
+      '<button type="button" class="bdchip' + (board.graph === "all" ? " on" : "") + '" data-act="bd:graph" data-g="all">這段時間的跨專案 ask（' + n + "）</button></div>";
+    const key = '<div class="gkey"><span><i class="k-now"></i>開著的 ask</span><span><i class="k-jing"></i>等 Jing</span>' +
+      '<span><i class="k-all"></i>已結束（線越粗則數越多）</span><span><i class="k-relay"></i>轉述</span></div>';
+    return '<div class="bdnow"><div class="gcard">' + tabs + '<div class="gscroll">' + bdGraph(board.graph) + "</div>" + key + "</div>" +
+      '<div class="bdwaits">' + bdWaits() + "</div></div>";
+  }
+
+  function bdWaits() {
+    const w = board.waits;
+    const kids = {};
+    w.forEach((x) => { if (x.under) (kids[x.under] = kids[x.under] || []).push(x); });
+    const how = (x) => (x.working ? "在做" : x.status === "queued" ? "排隊中" : "沒在動");
+    const chain = (x, depth) => (kids[x.ask] || []).map((k) =>
+      '<button type="button" class="chain" data-act="bd:thread" data-ask="' + esc(k.ask) + '" style="padding-left:' + (4 + depth * 12) + 'px">└ ' +
+      esc(k.from) + " → " + esc(k.to) + ' <span class="age">' + esc(bdTime(k.since)) + " · " + how(k) + "</span> " + esc(bdClip(k.head, 60)) + "</button>" +
+      chain(k, depth + 1)).join("");
+    const row = (x) => '<div class="wait"><button type="button" class="wrow" data-act="bd:thread" data-ask="' + esc(x.ask) + '" title="在 Threads 打開">' +
+      '<span class="who">' + esc(x.from) + "</span>" + '<span class="arr">' + (x.kind === "handoff" ? "⇢" : "→") + "</span>" +
+      '<span class="who">' + esc(x.to) + "</span>" + '<span class="age">' + esc(bdTime(x.since)) + " · " + esc(bdAge(x.since)) + " · " + how(x) + "</span></button>" +
+      '<div class="what">' + esc(x.head) + " " + bdLink(x.item) + "</div>" + chain(x, 0) + "</div>";
+    const top = w.filter((x) => !x.under);
+    const cross = top.filter(bdCross), inner = top.filter((x) => !bdCross(x));
+    let html = "";
+    if (cross.length) html += '<div class="wl-h">跨專案</div>' + cross.map(row).join("");
+    if (inner.length) html += '<div class="wl-h">專案內</div>' + inner.map(row).join("");
+    if (!w.length) html += '<p class="bdempty">沒有開著的 ask</p>';
+    if (board.jing.length) {
+      html += '<div class="wl-h red">等 Jing <button type="button" class="bdmore" data-act="bd:jump" data-to="jing">（全部 ' + board.jing.length + " 件）</button></div>" +
+        board.jing.slice(0, 2).map((j) => '<div class="wait wj"><button type="button" class="wrow" data-act="bd:inbox" data-id="' + esc(j.id) + '">' +
+          '<span class="who">' + esc(j.agent) + '</span><span class="arr">→</span><span class="who red">Jing</span>' +
+          '<span class="age">' + esc(bdTime(j.at)) + " · " + esc(bdAge(j.at)) + "</span></button>" +
+          '<div class="what">' + esc(j.title) + " " + bdLink(j.item) + "</div></div>").join("");
+    }
+    return html;
+  }
+
+  // ---- The cards ----------------------------------------------------------
+
+  function bdPrChip(p, cardId) {
+    const [lab, cls] = bdPrState(p);
+    const dest = p.dest ? " → " + p.dest : "";
+    const title = (p.title || "") + (p.unsure ? "（上次沒查到，狀態可能已變）" : "") + (p.own ? "" : "（屬於 " + p.of + "）");
+    const inner = '<span class="prn">' + esc(p.repo + " #" + p.id) + '</span><span class="prs">' + esc(lab) + "</span>" +
+      (dest ? '<span class="at">' + esc(dest) + "</span>" : "");
+    const c = "bdpr s-" + cls + (p.own ? "" : " notown");
+    return p.url ? '<a class="' + c + '" href="' + esc(p.url) + '" title="' + esc(title) + '">' + inner + "</a>"
+      : '<span class="' + c + '" title="' + esc(title) + '">' + inner + "</span>";
+  }
+
+  function bdBlock(c) {
+    const b = c.block || {};
+    if (c.status === "jing" || (c.jingOf && c.jingOf.length)) {
+      const js = board.jing.filter((j) => (c.jingOf || []).includes(j.id));
+      if (js.length && c.status === "jing") {
+        return '<div class="blk"><span class="bl">等 Jing</span><span>' + js.map((j) =>
+          '<button type="button" class="bdjl" data-act="bd:inbox" data-id="' + esc(j.id) + '">' + esc(j.agent) + "：" + esc(j.title) + "</button>").join("、") +
+          '<span class="guess">（依 agent 推得）</span></span></div>';
+      }
+    }
+    if (b.kind === "open") {
+      const how = b.working ? "在做" : b.status === "queued" ? "排隊中" : "沒在動";
+      return '<div class="blk"><span class="bl">卡在</span><span>等 <b>' + esc(b.to) + "</b>（" + how + " · " + esc(bdAge(b.since)) + "）：" +
+        esc(b.head) + "</span></div>";
+    }
+    const lab = b.kind === "failed" ? "失敗" : b.kind === "cancelled" ? "撤回" : "最後";
+    return '<div class="blk"><span class="bl">' + lab + "</span><span>" + esc(b.from || "") + (b.kind === "answered" ? " 回覆" : "") +
+      " · " + esc(bdTime(b.since)) + "：" + esc(b.head || "") + "</span></div>";
+  }
+
+  function bdTimeline(c) {
+    const t = board.tl[c.id];
+    const folded = [];
+    if (c.fyi) folded.push(c.fyi + " 則 FYI");
+    if (c.acks) folded.push(c.acks + " 則「收到」");
+    const open = board.tlOpen.has(c.id);
+    const sum = '<button type="button" class="bdtlb" data-act="bd:tl" data-id="' + esc(c.id) + '" aria-expanded="' + open + '">' +
+      (open ? "▾ " : "▸ ") + "時間線 · " + c.asks + " 則 ask" +
+      (folded.length ? '<span class="fold">（折疊：' + folded.join("、") + "）</span>" : "") + "</button>";
+    if (!open) return '<div class="bdtl">' + sum + "</div>";
+    if (!t || (!t.events && !t.error)) return '<div class="bdtl">' + sum + '<p class="bdempty">讀取中…</p></div>';
+    if (t.error) return '<div class="bdtl">' + sum + '<p class="bdempty">讀不到：' + esc(t.error) + "</p></div>";
+    const all = board.tlAll.has(c.id);
+    const shown = t.events.filter((e) => all || !e.fold);
+    const hidden = t.events.length - shown.length;
+    return '<div class="bdtl">' + sum + "<ol>" + shown.map((e) =>
+      '<li class="bk-' + esc(e.kind) + (e.fold ? " folded" : "") + '"><span class="tt">' + esc(bdTime(e.at)) + "</span>" +
+      '<span class="kk">' + esc((e.relay ? "轉述" : BD_KIND[e.kind] || e.kind) + (e.auto ? "*" : "")) + "</span>" +
+      '<span class="tx"><span class="ft">' + esc(e.from) + " → " + esc(e.to) + "</span> " + esc(e.head) +
+      ' <button type="button" class="ref" data-act="bd:thread" data-ask="' + esc(e.ask) + '" title="在 Threads 打開">' + esc(e.ask) + "</button></span></li>").join("") +
+      "</ol>" + (hidden || all ? '<button type="button" class="bdmore" data-act="bd:tlall" data-id="' + esc(c.id) + '">' +
+        (all ? "收起 FYI／收到" : "顯示折疊的 " + hidden + " 則") + "</button>" : "") + "</div>";
+  }
+
+  function bdCard(c) {
+    const st = BD_STATUS[c.status] || [c.status, 9, false];
+    const fold = bdFolded(c);
+    const quiet = c.status === "quiet" || c.status === "done";
+    const head = '<button type="button" class="wh" data-act="bd:fold" data-id="' + esc(c.id) + '" aria-expanded="' + !fold + '">' +
+      '<span class="key">' + esc(c.id) + '</span><span class="pill">' + esc(st[0]) + "</span>" +
+      (c.status === "live" && c.jingOf && c.jingOf.length ? '<span class="tag t-jing">等 Jing</span>' : "") +
+      (c.cross ? '<span class="tag">跨專案</span>' : "") +
+      '<span class="n">' + c.asks + " 則 ask" + (c.open ? "（開著 " + c.open + "）" : "") + " · 最後 " + esc(bdTime(c.last)) + "</span></button>";
+    const title = '<h3 title="' + esc(c.askTitle ? "第一則 ask：" + c.askTitle : c.named ? "lead 取的名字" : "") + '">' + esc(c.title) + "</h3>";
+    const projs = c.projects.map((p) => '<span class="pj">' + esc(p) + "</span>").join("");
+    if (fold) {
+      return '<article class="wi st-' + esc(c.status) + ' folded" id="bd-w-' + esc(c.id) + '">' + head + title +
+        '<div class="meta">' + projs + (c.prs.length ? '<span class="ag">' + c.prs.length + " 個 PR</span>" : "") +
+        (quiet ? '<span class="ag">' + esc(bdBlockLine(c)) + "</span>" : "") + "</div></article>";
+    }
+    const labels = (c.labels || []).map((l) => '<span class="tk">' + esc(l) + "</span>").join("");
+    const meta = '<div class="meta">' + labels + projs + '<span class="ag">' + esc(c.agents.join("、")) + "</span></div>";
+    const prs = '<div class="prl">' + (c.prs.length ? c.prs.map((p) => bdPrChip(p, c.id)).join("") : '<span class="nopr">沒有 PR</span>') + "</div>";
+    const links = c.links && c.links.length ? '<div class="bdlinks">提到：' + c.links.map(bdLink).join(" ") + "</div>" : "";
+    return '<article class="wi st-' + esc(c.status) + '" id="bd-w-' + esc(c.id) + '">' + head + title + meta + prs + bdBlock(c) + links + bdTimeline(c) + "</article>";
+  }
+
+  function bdBlockLine(c) {
+    const b = c.block || {};
+    return b.head ? bdClip(b.head, 60) : "";
+  }
+
+  function bdItems(cards) {
+    const n = { all: cards.length, busy: 0, quiet: 0, done: 0 };
+    cards.forEach((c) => { if (c.status === "quiet") n.quiet++; else if (c.status === "done") n.done++; else n.busy++; });
+    const chip = (f, label) => '<button type="button" class="bdchip' + (board.filter === f ? " on" : "") + '" data-act="bd:filter" data-f="' + f + '">' +
+      label + " " + n[f] + "</button>";
+    return '<div class="bdchips">' + chip("all", "全部") + chip("busy", "還有事") + chip("quiet", "安靜") + chip("done", "完成") + "</div>";
+  }
+
+  function bdShown(cards) {
+    const f = board.filter;
+    return cards.filter((c) => f === "all" || (f === "busy" ? c.status !== "quiet" && c.status !== "done" : c.status === f));
+  }
+
+  // ---- The pull requests, by repository --------------------------------
+
+  function bdAllPrs(cards) {
+    const by = {};
+    cards.forEach((c) => (c.prs || []).forEach((p) => {
+      const k = bdPrKey(p);
+      const r = by[k] || (by[k] = { pr: p, items: [], last: 0 });
+      if (p.own && !r.pr.own) r.pr = p;
+      if (!r.items.includes(c.id)) r.items.push(c.id);
+      r.last = Math.max(r.last, p.last || 0);
+    }));
+    return Object.values(by);
+  }
+
+  function bdPrs(cards) {
+    const rows = bdAllPrs(cards);
+    if (!rows.length) return '<p class="bdempty">這段時間的 ask 沒有提到 PR</p>';
+    const repos = {};
+    rows.forEach((r) => { const k = r.pr.owner + "/" + r.pr.repo; (repos[k] = repos[k] || []).push(r); });
+    const order = Object.keys(repos).sort((a, b) => repos[b].length - repos[a].length || a.localeCompare(b));
+    return '<div class="tblw"><table class="prt"><thead><tr><th>PR</th><th>進</th><th>內容</th><th>狀態</th><th>工作項目</th><th>最後提到</th></tr></thead>' +
+      order.map((k) => '<tbody><tr class="rg"><th colspan="6">' + esc(k) + ' <span class="cnt">' + repos[k].length + "</span></th></tr>" +
+        repos[k].sort((a, b) => b.pr.id - a.pr.id).map((r) => {
+          const p = r.pr, [lab, cls] = bdPrState(p), own = r.items.find((i) => (board.cards[i] && (board.cards[i].prs || []).some((q) => bdPrKey(q) === bdPrKey(p) && q.own))) || r.items[0];
+          const num = p.url ? '<a href="' + esc(p.url) + '">#' + p.id + "</a>" : "#" + p.id;
+          const card = board.cards[own];
+          return "<tr><td class=\"pnum\">" + num + '</td><td class="pto">' + esc(p.dest || "") + '</td><td class="pt">' + esc(p.title || "（還沒查到）") +
+            '</td><td><span class="bdst s-' + cls + '">' + esc(lab) + "</span></td><td>" + bdLink(own) + ' <span class="pit">' + esc(bdClip(card ? card.title : "", 24)) + "</span>" +
+            (r.items.length > 1 ? ' <span class="pit">＋' + (r.items.length - 1) + " 項提到</span>" : "") +
+            '</td><td class="pat">' + esc(bdTime(r.last)) + "</td></tr>";
+        }).join("") + "</tbody>").join("") + "</table></div>";
+  }
+
+  // ---- What waits on Jing ----------------------------------------------
+
+  function bdJing() {
+    const note = '<div class="phase2">第一階段取自 Inbox 等你處理的事，工作項目是依 agent 最後在哪一項推得的。第二階段改由 lead 在回覆寫一行 <code>需要 Jing：…</code>，board 收集、去重。</div>';
+    if (!board.jing.length) return note + '<p class="bdempty">現在沒有等你的事</p>';
+    return note + '<ol class="jl">' + board.jing.map((j) =>
+      '<li class="ji"><div class="jh"><span class="who">' + esc(j.agent) + "</span>" + bdLink(j.item) +
+      '<span class="since">從 ' + esc(bdTime(j.at)) + "（" + esc(bdAge(j.at)) + "）</span>" +
+      '<span class="tag">' + esc(j.tag || j.kind) + "</span></div>" +
+      '<div class="bdjline">' + esc(j.title) + "</div>" + (j.preview && j.preview !== j.title ? '<div class="bdwhy">' + esc(j.preview) + "</div>" : "") +
+      '<button type="button" class="bdmore" data-act="bd:inbox" data-id="' + esc(j.id) + '">在 Inbox 處理 →</button></li>').join("") + "</ol>";
+  }
+
+  // ---- Drawing ------------------------------------------------------------
+  // Each part is drawn as text and put in only when it changed; a card
+  // that changed is put in alone, unless the cards' order did.
+
+  function bdSet(box, sel, html) {
+    const el = box.querySelector(sel);
+    if (el && board.html[sel] !== html) { el.innerHTML = html; board.html[sel] = html; }
+  }
+
+  function renderBoard() {
+    if (view !== "board") return;
+    const box = app.querySelector(".bdbody");
+    if (!box) return;
+    if (!board.got) {
+      box.innerHTML = board.error ? '<p class="bdempty">讀不到 board：' + esc(board.error) + "</p>" : '<p class="bdempty">讀取工作項目…</p>';
+      board.html = {};
+      return;
+    }
+    if (!box.querySelector(".bd-strip")) {
+      box.innerHTML = '<div class="bd-strip"></div>' +
+        '<h2 class="section" id="bd-now">現在 <span class="cnt">只列還開著的</span></h2><div class="bd-now"></div>' +
+        '<h2 class="section" id="bd-items">工作項目 <span class="cnt">還有事的在前，同一種依最後動靜</span></h2><div class="bd-chips"></div><div class="cards"></div>' +
+        '<div class="bd-foot"></div>' +
+        '<h2 class="section" id="bd-prs">所有 PR <span class="cnt">依 repo 分組 · 狀態取自 Bitbucket</span></h2><div class="bd-prs"></div>' +
+        '<h2 class="section red" id="bd-jing">等 Jing <span class="cnt bd-jn"></span></h2><div class="bd-jing"></div>';
+      board.html = {};
+      board.order = "";
+    }
+    const cards = bdCards();
+    bdSet(box, ".bd-strip", bdStrip(cards));
+    bdSet(box, ".bd-now", bdNow());
+    bdSet(box, ".bd-chips", bdItems(cards));
+    const shown = bdShown(cards);
+    const list = box.querySelector(".cards");
+    const order = shown.map((c) => c.id).join(" ");
+    const htmls = shown.map(bdCard);
+    if (order !== board.order) {
+      list.innerHTML = htmls.join("") || '<p class="bdempty">沒有這一類的工作項目</p>';
+      board.order = order;
+      shown.forEach((c, i) => (board.html["card:" + c.id] = htmls[i]));
+    } else {
+      shown.forEach((c, i) => {
+        if (board.html["card:" + c.id] === htmls[i]) return;
+        const el = list.querySelector("#bd-w-" + CSS.escape(c.id));
+        if (el) el.outerHTML = htmls[i];
+        board.html["card:" + c.id] = htmls[i];
+      });
+    }
+    const days = board.meta.days || 1;
+    bdSet(box, ".bd-foot", board.meta.more || days > 1
+      ? '<button type="button" class="ghost bdmore" data-act="bd:days" data-days="' + (days > 1 ? 1 : 7) + '">' +
+        (days > 1 ? "只看 24 小時內安靜／完成的" : "也列出 7 天內安靜／完成的") + "</button>" : "");
+    bdSet(box, ".bd-prs", bdPrs(cards));
+    bdSet(box, ".bd-jn", board.jing.length + " 件 · 取自 Inbox");
+    bdSet(box, ".bd-jing", bdJing());
+  }
+
+  function onBoardAction(act, el) {
+    const id = el.getAttribute("data-id");
+    if (act === "jump") {
+      const to = $("bd-" + el.getAttribute("data-to"));
+      if (to) to.scrollIntoView({ block: "start", behavior: "smooth" });
+    } else if (act === "graph") {
+      board.graph = el.getAttribute("data-g") === "all" ? "all" : "now";
+      renderBoard();
+    } else if (act === "filter") {
+      board.filter = el.getAttribute("data-f") || "all";
+      renderBoard();
+    } else if (act === "fold") {
+      const c = board.cards[id];
+      if (c) board.fold.set(id, !bdFolded(c));
+      renderBoard();
+    } else if (act === "tl") {
+      if (board.tlOpen.has(id)) board.tlOpen.delete(id);
+      else {
+        board.tlOpen.add(id);
+        const c = board.cards[id], t = board.tl[id];
+        if (!t || t.error || (c && t.last !== c.last)) { board.tl[id] = { asking: true }; emit("board-timeline", { id }); }
+      }
+      renderBoard();
+    } else if (act === "tlall") {
+      if (board.tlAll.has(id)) board.tlAll.delete(id); else board.tlAll.add(id);
+      renderBoard();
+    } else if (act === "goto") {
+      const c = board.cards[id];
+      if (!c) return;
+      if (board.filter !== "all" && !bdShown([c]).length) board.filter = "all";
+      board.fold.set(id, false);
+      renderBoard();
+      const card = $("bd-w-" + id);
+      if (card) {
+        card.scrollIntoView({ block: "center", behavior: "smooth" });
+        card.classList.add("hl");
+        setTimeout(() => card.classList.remove("hl"), 1600);
+      }
+    } else if (act === "thread") {
+      showThreads({ ask: el.getAttribute("data-ask") });
+    } else if (act === "inbox") {
+      inbox.sel = id || "";
+      showInbox();
+    } else if (act === "days") {
+      board.days = +el.getAttribute("data-days") > 1 ? 7 : 1;
+      boardDaysKeep(board.days);
+      emit("board-days", { days: board.days });
+    }
+  }
+
   window.GM = {
     flash: (msg) => setStatus(msg),
+
+    // The Board, in parts: the whole (FULL), or the cards that changed and
+    // the ids gone since the version the page has -- one it does not have
+    // is asked for whole again.  WAITS, JING and META come when they changed.
+    boardPatch: (p) => {
+      if (!p) return;
+      if (!p.full && p.base !== board.v) { emit("board-resend"); return; }
+      if (p.full) board.cards = {};
+      (p.cards || []).forEach((c) => (board.cards[c.id] = c));
+      (p.drop || []).forEach((id) => delete board.cards[id]);
+      if ("waits" in p) board.waits = p.waits || [];
+      if ("jing" in p) board.jing = p.jing || [];
+      if (p.meta) board.meta = p.meta;
+      board.v = p.v;
+      board.got = true;
+      board.error = "";
+      // An open timeline whose card moved on is asked for again.
+      board.tlOpen.forEach((id) => {
+        const c = board.cards[id], t = board.tl[id];
+        if (c && t && !t.asking && t.last !== c.last) { t.asking = true; emit("board-timeline", { id }); }
+      });
+      boardBadge();
+      renderBoard();
+    },
+
+    boardTimeline: (p) => {
+      if (!p || !p.id) return;
+      const c = board.cards[p.id];
+      board.tl[p.id] = p.error ? { error: String(p.error) } : { events: p.events || [], last: c ? c.last : p.last, asking: false };
+      renderBoard();
+    },
+
+    boardError: (p) => {
+      board.error = String((p && p.error) || "error");
+      if (!board.got) renderBoard();
+    },
 
     // The Threads tab's list and what is open now, pushed while it is
     // shown.  The desk opens the newest thread when none is open.
@@ -7879,7 +8463,8 @@
   // here is, once Emacs has sent anything.  Each of Emacs's calls says
   // so after it has run; the kit hears only the first that ends a load.
   const READY_BY = { inbox: "renderInbox", agents: "renderHerd", log: "renderLog", memory: "renderMemory",
-                     sessions: "setContext", search: "setContext", threads: "renderThreads", docs: "renderDocs" };
+                     sessions: "setContext", search: "setContext", threads: "renderThreads", docs: "renderDocs",
+                     board: "boardPatch" };
   Object.keys(window.GM).forEach((fn) => {
     const f = window.GM[fn];
     if (typeof f !== "function") return;
