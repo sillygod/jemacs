@@ -93,6 +93,47 @@ gone as its id, the open asks only when they changed."
       (ghostherd-memory-page--handle '((op . "board-unwatch")))
       (should-not ghostherd-board--watching))))
 
+(ert-deftest ghostherd-test-board-watch-brings-the-inbox ()
+  "Asked with `inbox', the board's watch starts the Inbox's too, its looks
+first -- one intent, not two a round trip apart on a phone's link; asked
+without, it does not.  On the Board only what needs the user is pushed,
+counted with the rest; the Inbox tab's own watch gets them all again.  The
+board let go, the Inbox's watch is the page's to let go."
+  (ghostherd-board-test--with
+    (let ((ghostherd-inbox--watching nil) (ghostherd-inbox--timer nil) (ghostherd-inbox--sig nil)
+          (ghostherd-inbox--needs-only nil)
+          (items (list (list :id "question:a" :kind "question" :group "need" :at 2)
+                       (list :id "report:b" :kind "report" :group "update" :at 1))))
+      (cl-letf (((symbol-function 'ghostherd-inbox--all) (lambda (&rest _) items)))
+        (setq reply (lambda (m _p) (pcase m ("herd_board" (ghostherd-board-test--reply)) ("herd_inbox_state" '(:state nil)))))
+        (ghostherd-memory-page--handle '((op . "board-watch") (days . 1)))
+        (should-not ghostherd-inbox--watching)
+        (should-not (ghostherd-test--call calls "renderInbox"))
+        (ghostherd-memory-page--handle '((op . "board-unwatch")))
+        (setq requests nil calls nil)
+        (ghostherd-memory-page--handle '((op . "board-watch") (days . 1) (inbox . t)))
+        (should ghostherd-inbox--watching)
+        (should ghostherd-board--watching)
+        (let ((asked (mapcar #'car requests)))
+          (should (< (cl-position "herd_pending_proposals" asked :test #'equal)
+                     (cl-position "herd_board" asked :test #'equal))))
+        (let ((p (ghostherd-test--call calls "renderInbox")))
+          (should (equal (mapcar (lambda (it) (plist-get it :id)) (append (plist-get p :items) nil)) '("question:a")))
+          (should (equal (plist-get p :count) 1))
+          (should (eq (plist-get p :needsOnly) t)))
+        (should (ghostherd-test--call calls "boardPatch"))
+        (ghostherd-memory-page--handle '((op . "board-unwatch")))
+        (should ghostherd-inbox--watching)
+        ;; The Inbox tab: every item again.
+        (setq calls nil)
+        (ghostherd-memory-page--handle '((op . "inbox-watch")))
+        (let ((p (ghostherd-test--call calls "renderInbox")))
+          (should (equal (mapcar (lambda (it) (plist-get it :id)) (append (plist-get p :items) nil)) '("question:a" "report:b")))
+          (should-not (plist-member p :needsOnly)))
+        (ghostherd-memory-page--handle '((op . "inbox-unwatch")))
+        (should-not ghostherd-inbox--watching)
+        (should-not ghostherd-inbox--needs-only)))))
+
 (ert-deftest ghostherd-test-board-pr-states-tail-and-title ()
   "A card's PRs carry what the forge said, the look a chore; a quiet item
 with a PR of its own still open is `tail'; one with no name a lead gave

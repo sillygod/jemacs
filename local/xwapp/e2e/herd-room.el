@@ -193,6 +193,14 @@ older ones precede it."
     (list :hits (nreverse hits) :total (length hits) :entries (length all))))
 
 (defvar e2e-board-n 0 "How many times the Board was read: its card says so.")
+;; With E2E_NEEDS, the lead's 需要 Jing line on the item -- herd_needs has
+;; it for the Inbox, herd_board on its card -- until the page says it is
+;; handled (herd_board_need_close).  With E2E_BOARD_MS, herd_board takes
+;; that long, as a big herd's does (herd-board-open.js).
+(defvar e2e-needs
+  (and (getenv "E2E_NEEDS")
+       (list (list :id 7 :agent "lead-fox" :text "Pick the fox page's colour: amber or teal"
+                   :at (- (* 1000 (float-time)) 600000) :ask "aaaa0002" :item "w1" :itemTitle "Build the fox page"))))
 (defun e2e-board ()
   "The Board, played as the sidecar's reply reads (arrays lists, false
 nil): one item at work, its title new each read -- so every look has a
@@ -201,7 +209,7 @@ change to send a page that watches it."
     (list :items (list (list :id "w1" :title (format "Build the fox page (look %d)" (cl-incf e2e-board-n))
                              :named t :status "live" :labels nil :asks 1 :open 1 :fyi 0 :acks 0 :relays 0 :failed 0
                              :first (- now 60000) :last now :agents (list "lead-fox" "rd-api") :projects (list "fox")
-                             :cross nil :prs nil :links nil :needs nil :deploys nil :tickets nil
+                             :cross nil :prs nil :links nil :needs (copy-sequence e2e-needs) :deploys nil :tickets nil
                              :block (list :kind "open" :ask "aaaa0001" :from "lead-fox" :to "rd-api"
                                           :since (- now 60000) :status "delivered" :working t :head "Build the fox page")))
           :waits nil :edges nil :needs nil
@@ -219,12 +227,18 @@ change to send a page that watches it."
                   ("herd_threads" (list :live 0 :threads nil))
                   ("herd_board" (e2e-board))
                   ("herd_board_counts" (list :jing 0 :orphan 0))
-                  ("herd_needs" (list :needs nil))
+                  ("herd_needs" (list :needs (copy-sequence e2e-needs)))
+                  ("herd_board_need_close"
+                   (setq e2e-needs (seq-remove (lambda (n) (equal (plist-get n :id) (plist-get params :id))) e2e-needs))
+                   (list :ok t))
                   ("herd_sub_conversation"
                    (let ((f (ghostherd-memory-page--sub-file (plist-get params :path) (plist-get params :sub))))
                      (list :entries (and (file-exists-p f) (e2e-read f)))))
                   (_ nil))))
-    (run-at-time 0.015 nil (lambda () (funcall callback result)))
+    (run-at-time (if (equal method "herd_board")
+                     (/ (string-to-number (or (getenv "E2E_BOARD_MS") "15")) 1000.0)
+                   0.015)
+                 nil (lambda () (funcall callback result)))
     nil))
 (advice-add 'ghostherd-memory-request-async :override #'e2e-sidecar)
 
