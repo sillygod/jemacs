@@ -167,8 +167,17 @@ top-level call) still serves them; saying it again costs nothing."
 
 ;;; Helpers
 
+(defconst ghostherd-memory-page--whole-calls
+  '("renderHerd" "renderHerdAgain" "renderInbox" "threadsBadge" "boardBadge" "importProgress" "setScreen")
+  "The page's calls that are each the whole of what one part of it shows,
+made again as it changes: one waiting to go -- behind a slow `next' --
+is dropped for a newer of its kind (xwapp's \"The last of its kind\").
+`setScreen' is one per agent.")
+
 (defun ghostherd-memory-page--js (fn obj)
-  (xwapp-js ghostherd-memory-page--app fn obj))
+  (xwapp-js ghostherd-memory-page--app fn obj nil
+            (and (member fn ghostherd-memory-page--whole-calls)
+                 (if (equal fn "setScreen") (concat fn ":" (or (plist-get obj :name) "")) fn))))
 
 (defun ghostherd-memory-page--js-later (fn obj)
   "Call FN with OBJ in the page as a call that can wait behind every

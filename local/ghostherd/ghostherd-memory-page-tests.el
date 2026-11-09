@@ -3956,5 +3956,22 @@ refused: it starts no agent.  What goes wrong after is shown on the page."
         (should (equal said '((primary "morning"))))
         (should (equal (length ran) 3))))))
 
+(ert-deftest ghostherd-test-page-whole-calls-are-the-last-of-their-kind ()
+  "The page's calls that are each the whole of what one part shows go
+with a key -- one waiting behind a slow `next' is dropped for the newer
+(xwapp's \"The last of its kind\"), a screen per agent; the rest go as
+they are, each in its turn."
+  (let (sent)
+    (cl-letf (((symbol-function 'xwapp-js) (lambda (_app fn _obj &optional later key) (push (list fn later key) sent))))
+      (ghostherd-memory-page--js "renderHerd" '(:agents []))
+      (ghostherd-memory-page--js "renderInbox" '(:items []))
+      (ghostherd-memory-page--js "setScreen" '(:name "rd-1" :text "x"))
+      (ghostherd-memory-page--js "boardPatch" '(:v 2 :base 1))
+      (ghostherd-memory-page--js "setConversation" '(:name "rd-1"))
+      (ghostherd-memory-page--js "logAdd" '(:id 3)))
+    (should (equal (reverse sent)
+                   '(("renderHerd" nil "renderHerd") ("renderInbox" nil "renderInbox") ("setScreen" nil "setScreen:rd-1")
+                     ("boardPatch" nil nil) ("setConversation" nil nil) ("logAdd" nil nil))))))
+
 (provide 'ghostherd-memory-page-tests)
 ;;; ghostherd-memory-page-tests.el ends here

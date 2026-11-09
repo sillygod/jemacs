@@ -304,6 +304,34 @@ async function desk() {
         await sleep(1500);
         check(W("a room left before it is drawn is not timed; the next one is"), count() === before + 1, { before, after: count() });
       }
+      // ---- The herd at work while the room opens ---------------------------
+      // As on 2026-11-09 12:56 (a room 24 s, one next of 374 KB): the
+      // Agents tab's snapshot made again every few hundred ms while a
+      // slow next is on its way.  Each copy waiting behind it but the last
+      // is of no use to the page: the next after carries one.
+      if (name === "slow") {
+        await page.tap('.tab[data-tab="agents"]');
+        await until(() => page.evaluate((p) => !!document.querySelector('.pgroup[data-project="' + p + '"]'), PROJECT), 15000);
+        await sleep(1500);
+        await s.askEmacs("POST", "/e2e-churn?ms=300");
+        const at = Date.now() / 1000;
+        t0 = Date.now();
+        await tapRoom(page);
+        await until(() => page.evaluate(() => !!document.querySelector(".rcol .rbody .ent")), 60000);
+        const churnFirst = Date.now() - t0;
+        await until(async () => Object.values(await columns(page)).every((c) => c.n >= COLUMN), 120000);
+        const churnAll = Date.now() - t0;
+        await s.askEmacs("POST", "/e2e-churn?ms=0");
+        const flushes = fs.readFileSync(path.join(s.dir, "log.jsonl"), "utf8").trim().split("\n").map(JSON.parse)
+          .filter((l) => l.at >= at && l.what.flush).map((l) => l.what.flush);
+        const herds = flushes.map((f) => f.filter((c) => c.fn === "renderHerd").length);
+        const biggest = flushes.reduce((m, f) => Math.max(m, f.reduce((a, c) => a + c.bytes, 0)), 0);
+        console.log(`   the herd at work: drawn ${s1(churnFirst)} · all ${s1(churnAll)} · ${flushes.length} nexts, ` +
+                    `renderHerd ${herds.reduce((a, b) => a + b, 0)} (at most ${Math.max(0, ...herds)} in one) · biggest ${kb(biggest)} KB`);
+        check(W("the herd at work: a next carries its snapshot once, not every copy made while one was on its way"),
+              herds.length > 0 && Math.max(...herds) <= 1, herds);
+        check(W("the herd at work: the column in view drawn within 4 s of the tap"), churnFirst <= 4000, churnFirst);
+      }
       check(W("no page errors"), errors.length === 0, errors.slice(0, 4));
       await ctx.close();
     } finally {

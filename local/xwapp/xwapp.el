@@ -383,16 +383,18 @@ breaker, so a page that starts rejecting scripts stops being driven."
           (xwidget-webkit-execute-script xw safe)
         (error (xwapp--poll-failed app))))))
 
-(defun xwapp-js (app fn obj &optional later)
+(defun xwapp-js (app fn obj &optional later key)
   "Call NAMESPACE[FN] with JSON-encoded OBJ in APP's page.
 LATER non-nil: in a browser tab, the call can wait behind every other --
 see \"Calls that can wait\"; a symbol or string there names it for
-`xwapp-js-forget'.  In Emacs's own page every call runs at once."
+`xwapp-js-forget'.  KEY non-nil: the call is whole, what the page has of
+its kind -- one of the same KEY not yet sent is dropped for it (\"The
+last of its kind\").  In Emacs's own page every call runs at once."
   (let ((ns (xwapp-namespace app)))
     (if (xwapp--get app :page)
         (xwapp--call app (format "{\"ns\":%s,\"fn\":%s,\"arg\":%s}"
                                  (json-encode ns) (json-encode fn) (json-encode obj))
-                     later)
+                     later key)
       (when-let* ((xw (xwapp-session app)))
         (xwapp--exec
          app xw
@@ -766,6 +768,8 @@ A request on it came through the proxy; one on `xwapp--server' did not.")
 :outbox   calls not yet sent to it, newest first
 :later    calls that can wait, (NAME . CALL) each, oldest first: see
           \"Calls that can wait\"
+:keyed    of those in :outbox, the ones a newer call of the same KEY
+          takes the place of, (KEY . CALL) each: see \"The last of its kind\"
 :when-sent  functions to call once the calls in :outbox now are out
 :peer     the tailnet address its page last came from, through the proxy
 :seen    non-nil when it last said you could be looking at it
@@ -2139,19 +2143,37 @@ long it took\")."
 ;; for it, a few seconds at most, when `xwapp-tailscale-hold' says so
 ;; ("Kicking the path").
 
+;; The last of its kind.
+;;
+;; While a `next' answer is on its way -- 20 s for 370 KB at a phone's
+;; slow link, seen live on 2026-11-09 -- Emacs goes on making calls, and
+;; they wait in :outbox for the next.  An app's snapshot -- the whole of
+;; what one part of the page shows, made again each time it changes --
+;; would pile up there, every copy but the last of no use to the page,
+;; and make that next as slow in turn.  So a call can say it is one
+;; (`xwapp-js' KEY): a newer one of the same KEY takes its place while
+;; it waits, going after the calls made since, as it was made last.
+
 (defconst xwapp--later-budget (* 48 1024)
   "Bytes of calls a `next' carries at most, when some can wait: about a
 second at a phone's slow link, gzip'd.")
 
-(defun xwapp--call (app json &optional later)
+(defun xwapp--call (app json &optional later key)
   "Send JSON, one call, to APP's browser page.
 Scrubbed and size-capped like the xwidget path: an oversized or unclean
 payload is dropped rather than queued.  LATER non-nil: it can wait
-\(\"Calls that can wait\"), named LATER."
+\(\"Calls that can wait\"), named LATER.  KEY non-nil: it takes the
+place of the one of that KEY not yet sent (\"The last of its kind\")."
   (when-let* ((safe (xwapp--script-safe json)))
     (if later
         (xwapp--put app :later (append (xwapp--get app :later) (list (cons later safe))))
-      (xwapp--put app :outbox (cons safe (xwapp--get app :outbox))))
+      (let ((keyed (xwapp--get app :keyed)))
+        (when-let* ((key) (old (assoc key keyed)))
+          (xwapp--put app :outbox (delq (cdr old) (xwapp--get app :outbox)))
+          (setq keyed (delq old keyed)))
+        (xwapp--put app :outbox (cons safe (xwapp--get app :outbox)))
+        (when key (setq keyed (cons (cons key safe) keyed)))
+        (xwapp--put app :keyed keyed)))
     ;; On the next turn, so the calls of one command go out together.
     (when (and (xwapp--get app :waiting) (not (xwapp--get app :flush))
                (not (and later (xwapp--holding-p app))))
@@ -2192,11 +2214,13 @@ of those that can wait as many as `xwapp--later-budget' leaves room for."
         (push (cdr (pop later)) took))
       (setq calls (append calls (nreverse took)))
       (when-let* ((req (process-get proc 'xwapp-req)))
-        (plist-put req :tf (float-time)))
+        (plist-put req :tf (float-time))
+        (plist-put req :calls (xwapp--calls-said calls)))
       (process-put proc 'xwapp-when-sent (xwapp--get app :when-sent))
       (xwapp--put app :when-sent nil)
       (xwapp--put app :waiting nil)
       (xwapp--put app :outbox nil)
+      (xwapp--put app :keyed nil)
       (xwapp--put app :later later)
       (xwapp--put app :sending proc)
       (xwapp--timer app :gone xwapp--gone-after #'xwapp--gone)
@@ -2211,6 +2235,25 @@ of those that can wait as many as `xwapp--later-budget' leaves room for."
                                                   sent)
                                 (xwapp--respond proc 200 "application/json" body nil sent))))
           (xwapp--respond proc 200 "application/json" body nil sent))))))
+
+(defconst xwapp--calls-said-max 5
+  "Kinds of call a `next' is said to have carried at most: the biggest.")
+
+(defun xwapp--calls-said (calls)
+  "What CALLS, a `next' answer's, were -- ((FN COUNT BYTES) ...), each
+kind of call by its function's name, the biggest first, the first
+`xwapp--calls-said-max' -- for the page's timings to say what a slow one
+carried.  Names alone: nothing they said."
+  (let (by)
+    (dolist (c calls)
+      (let* ((fn (if (string-match "\\`{\"ns\":\"[^\"]*\",\"fn\":\"\\([A-Za-z0-9_$]\\{1,40\\}\\)\"" c)
+                     (match-string 1 c)
+                   "?"))
+             (e (assoc fn by)))
+        (if e
+            (setcdr e (list (1+ (nth 1 e)) (+ (nth 2 e) (string-bytes c))))
+          (push (list fn 1 (string-bytes c)) by))))
+    (seq-take (sort by (lambda (a b) (> (nth 2 a) (nth 2 b)))) xwapp--calls-said-max)))
 
 (defun xwapp--sent (app proc)
   "PROC, the answer to APP's page's `next', is out, or failed to go: the
@@ -2287,7 +2330,7 @@ Only another page, in a tab or in Emacs, takes it from one that waits."
     ;; Before answering: the sentinel must not take the hang-up for a
     ;; page that went.  An answer still going out to it goes on, to a
     ;; page that is not the app's.
-    (dolist (key '(:waiting :page :outbox :later :when-sent :seen :restored :sending))
+    (dolist (key '(:waiting :page :outbox :keyed :later :when-sent :seen :restored :sending))
       (xwapp--put app key nil))
     (when proc
       (xwapp--refuse proc "taken"))))
@@ -2668,6 +2711,9 @@ start, :how.  Nothing when ADDR is none; never ADDR itself."
                      when (and v (> v 0)) append (list k (funcall round v)))
             (when (plist-get r :b) (list :b (plist-get r :b)))
             (when (plist-get r :z) (list :z t))
+            ;; What a `next' carried, by kind: what a slow one was slow with.
+            (when (and e (plist-get e :calls))
+              (list :calls (mapcar (lambda (c) (vector (nth 0 c) (nth 1 c) (nth 2 c))) (plist-get e :calls))))
             ;; Served by Emacs, it was not the browser's own copy.
             (when (and (plist-get r :c) (not e)) (list :c t))
             (when e
@@ -3072,7 +3118,39 @@ it reaches it."
                 ("peer-relay" " · peer relay")
                 ("direct" (if (plist-get peer :lan) " · direct, LAN" " · direct"))
                 (_ (if p1 (concat " · " p1) ""))))
-            (if kick (concat " · " (xwapp--timing-kick-said kick)) ""))))
+            (if kick (concat " · " (xwapp--timing-kick-said kick)) "")
+            (let ((said (xwapp--timing-next-said record)))
+              (if said (concat " · " said) "")))))
+
+(defconst xwapp--timing-next-big (* 64 1024)
+  "Bytes past which the biggest `next' of a slow moment is said, with what
+it carried.")
+
+(defun xwapp--timing-next-said (record)
+  "The biggest `next' answer of RECORD, when it was big, and what it
+carried -- \"next 374 KB: renderLog 1.4 MB, setChat 15 KB\" -- or nil.
+Its bytes as they went (gzip'd); each kind's as Emacs made them."
+  (let ((big nil))
+    (dolist (r (plist-get record :reqs))
+      (when (and (equal (plist-get r :p) "next") (numberp (plist-get r :b))
+                 (>= (plist-get r :b) xwapp--timing-next-big)
+                 (or (null big) (> (plist-get r :b) (plist-get big :b))))
+        (setq big r)))
+    (when big
+      (concat (format "next %s" (xwapp--timing-bytes (plist-get big :b)))
+              (when-let* ((calls (append (plist-get big :calls) nil)))
+                (concat ": " (mapconcat (lambda (c)
+                                          (let ((c (append c nil)))
+                                            (format "%s%s %s" (nth 0 c)
+                                                    (if (> (nth 1 c) 1) (format " ×%d" (nth 1 c)) "")
+                                                    (xwapp--timing-bytes (nth 2 c)))))
+                                        calls ", ")))))))
+
+(defun xwapp--timing-bytes (n)
+  "N bytes, short: \"374 KB\", \"1.4 MB\"."
+  (cond ((>= n (* 1024 1024)) (format "%.1f MB" (/ n 1048576.0)))
+        ((>= n 1024) (format "%d KB" (round n 1024.0)))
+        (t (format "%d B" n))))
 
 (defun xwapp-timing-summary-phases (line)
   "What LINE, as `xwapp-timing-summary' writes one, says its moment

@@ -1988,6 +1988,73 @@ name are dropped when forgotten."
       (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p2") "{}")
       (should-not (xwapp--get app :later)))))
 
+(ert-deftest xwapp-test-browser-the-last-of-its-kind ()
+  "A call of a KEY takes the place of the one of that KEY still waiting,
+after the calls made since; calls of another key, or of none, stay.  A
+`next' sent carries each kind once, and is told what it carried, by kind,
+the biggest first -- names and bytes, nothing they said."
+  (xwapp-test--with-browser
+    (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+    (let ((xwapp--reqs (make-vector xwapp--reqs-max nil)) (xwapp--reqs-at 0)
+          (said (lambda (next) (mapcar (lambda (c) (list (alist-get 'fn c) (alist-get 'arg c)))
+                                       (xwapp-test--json (cdr (xwapp-test--answer next)))))))
+      (xwapp-js app "herd" "h1" nil "herd")
+      (xwapp-js app "flash" "a")
+      (xwapp-js app "screen" "s1" nil "screen:x")
+      (xwapp-js app "herd" "h2" nil "herd")
+      (xwapp-js app "screen" "y1" nil "screen:y")
+      (xwapp-js app "flash" "b")
+      (xwapp-js app "herd" "h3" nil "herd")
+      (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1"))))
+        (should (equal (funcall said next)
+                       '(("flash" "a") ("screen" "s1") ("screen" "y1") ("flash" "b") ("herd" "h3"))))
+        (let ((req (seq-find (lambda (r) (and r (equal (plist-get r :path) "next") (plist-get r :calls)))
+                             (append xwapp--reqs nil))))
+          (should (equal (mapcar (lambda (c) (list (nth 0 c) (nth 1 c))) (plist-get req :calls))
+                         '(("screen" 2) ("flash" 2) ("herd" 1))))
+          (should (cl-every (lambda (c) (> (nth 2 c) 20)) (plist-get req :calls)))))
+      ;; Sent: a new one is no longer of the one gone.
+      (xwapp-js app "herd" "h4" nil "herd")
+      (xwapp-js app "herd" "h5" nil "herd")
+      (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1"))))
+        (should (equal (funcall said next) '(("herd" "h5")))))
+      ;; A page that says hello anew starts with none of them.
+      (xwapp-js app "herd" "stale" nil "herd")
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p2") "{}")
+      (should-not (xwapp--get app :keyed))
+      (xwapp-js app "herd" "h6" nil "herd")
+      (should (= 1 (length (xwapp--get app :outbox)))))))
+
+(ert-deftest xwapp-test-calls-said ()
+  "What a `next' carried, by the name of each call's function: how many
+and how many bytes, the biggest first, `xwapp--calls-said-max' at most;
+a call not of the form, `?'."
+  (let ((c (lambda (fn n) (format "{\"ns\":\"GM\",\"fn\":\"%s\",\"arg\":\"%s\"}" fn (make-string n ?x)))))
+    (should (equal (mapcar (lambda (x) (list (nth 0 x) (nth 1 x))) (xwapp--calls-said
+                     (list (funcall c "renderHerd" 900) (funcall c "setChat" 100) (funcall c "renderHerd" 900)
+                           "{\"xwapp\":\"phone\"}" (funcall c "a" 1) (funcall c "b" 2) (funcall c "c" 3))))
+                   '(("renderHerd" 2) ("setChat" 1) ("c" 1) ("b" 1) ("a" 1))))
+    (should (equal (car (car (xwapp--calls-said (list "{\"xwapp\":\"phone\"}")))) "?"))
+    (should (equal (nth 2 (car (xwapp--calls-said (list (funcall c "renderHerd" 900)))))
+                   (string-bytes (funcall c "renderHerd" 900))))))
+
+(ert-deftest xwapp-test-timing-names-a-big-next ()
+  "A slow moment's line names its biggest `next', when it was big, and
+what it carried -- the kinds as the record keeps them."
+  (let ((r (list :kind "room" :d 24.0 :sum '((emacs . 21.7) (page . 1.7))
+                 :reqs (list (list :p "next" :n 14 :b 9000 :calls [["renderHerd" 1 120000]])
+                             (list :p "next" :n 15 :b 374188
+                                   :calls [["renderLog" 1 1500000] ["renderHerd" 3 360000] ["setChat" 1 15000]])
+                             (list :p "intent" :n 13 :b 300)))))
+    (should (equal (xwapp-timing-summary r)
+                   (concat "room 24.0 s: Emacs answering 21.7 s · page 1.7 s"
+                           " · next 365 KB: renderLog 1.4 MB, renderHerd ×3 352 KB, setChat 15 KB")))
+    ;; Read back as before: the bytes are no phase.
+    (should (equal (mapcar #'car (xwapp-timing-summary-phases (xwapp-timing-summary r))) '(emacs page)))
+    ;; No big one: nothing said.
+    (plist-put r :reqs (list (list :p "next" :n 14 :b 9000 :calls [["renderHerd" 1 120000]])))
+    (should (equal (xwapp-timing-summary r) "room 24.0 s: Emacs answering 21.7 s · page 1.7 s"))))
+
 (ert-deftest xwapp-test-browser-when-sent ()
   "What waits for the calls made so far is called once the `next' that
 carries them is out -- not before, nor for one that can wait; with
