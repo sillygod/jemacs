@@ -2795,10 +2795,20 @@ words are Traditional Chinese.
   a relay dashed; beside it every open ask, =from → to= (=⇢= a
   handoff), how long and whether its taker is at it, the asks made
   answering it nested under it.  A click opens its thread in Threads.
-- One card per item, the live, waiting-on-you and 收尾 ones first and
-  open, the quiet and done folded to a line: its title (a lead's name,
-  else its first own PR's title, else its first ask's first sentence,
-  the lead's openers taken off), its ticket labels, projects and agents,
+- One card per item, the live, waiting-on-you, 沒人接 and 收尾 ones first
+  and open.  The default view (全部) shows only those as cards, then the
+  items at rest of some size -- a lead named it, or it took 3 asks or more
+  -- a line each, and folds the rest by project into one line each
+  (=shop：零星 23 則 · 最後 33 分前=), a tap away: on a day of the herd's,
+  most items are one ask -- an FYI, a relay, a one-off look -- finished or
+  dropped, and only a lead can say which.  還有事, 安靜 and 完成 list their
+  items whole.  A card's title is a lead's name, else its first own PR's
+  title, else the first sentence of its first asks that says something:
+  links, markdown, bare numbering, acknowledgements (=回一句收到即可=),
+  thanks, openers (=來自 lead-x=, =補充=, =接續 ID=, =這是…的回報=), the
+  work's rules (=唯讀，不要改程式=) and an approval with nothing after it
+  are passed over, and a sentence just after with a PR or a ticket is
+  preferred to one that says no work; its ticket labels, projects and agents,
   its PRs with their state and the branch they go into (another item's
   PR dashed), what it waits on, the items it names.  Its timeline opens
   on a tap, asked for then: each ask and answer, an ask that wants only

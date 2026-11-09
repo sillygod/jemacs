@@ -284,13 +284,11 @@ _OPENERS = [re.compile(p, re.IGNORECASE) for p in (
     r"^[（(][^）)\n]{0,60}[）)][，,。.:：\s]*",
     r"^來自\s*[\w.-]+[^。\n]{0,80}?[。.]\s*",
     r"^[\w.-]+\s*(?:轉來|轉述|轉達|轉交|轉\s+[\w.-]+\s*的回覆)[^:：。\n]{0,60}[:：。]?\s*",
-    r"^(?:緊急|急|urgent)[，,:：!！\s]+",
+    r"^(?:緊急件|急件|緊急|急|urgent)[，,:：!！\s]+",
     r"^(?:新工作|新題目|新任務|新的?工作|new task)[^：:。\n]{0,40}[：:。]\s*",
     r"^(?:資安事件|incident)\s*(?:ClickUp\s*)?[0-9a-z]+[^。\n]{0,40}[。.]\s*",
     r"^(?:Jing\s*(?:已經|同意|說|要)[^：:\n]{0,30}[：:])\s*",
 )]
-_SKIP = re.compile(r"^(?:背景|context|background|規則|rules?|全程唯讀|唯讀)\s*[:：]?", re.IGNORECASE)
-_SENTENCE = re.compile(r"(?<=[。！？!?])\s*|(?<=[.;；])\s+")
 
 
 def head(text: str | None, width: int = HEAD_MAX) -> str:
@@ -302,24 +300,223 @@ def head(text: str | None, width: int = HEAD_MAX) -> str:
     return ""
 
 
-def title(body: str | None) -> str:
-    """An item's name from the ask that began it: its first sentence that
-    says what the work is -- the lead's openers off, background and rules
-    skipped -- cut to TITLE_MAX."""
-    lines = [_MARKS.sub("", _NOISE.sub("", ln)).replace("**", "").replace("`", "").strip()
-             for ln in (body or "").splitlines()]
-    for ln in lines:
-        for _ in range(4):
-            before = ln
-            for o in _OPENERS:
-                ln = o.sub("", ln, count=1).strip()
-            if ln == before:
-                break
-        if not ln or _SKIP.match(ln):
+# ---- An item's title, when no lead named it -------------------------------------
+#
+# The first line of the first ask is a poor name: measured on a day's
+# items, it was often a bare "1.", an artifact's link, "看完回一句收到即可",
+# thanks, "接續 1a2b3c4d", or the rules of the work ("唯讀，不要改程式").
+# So each sentence of the item's first asks is cleaned -- markdown, links
+# and the clauses that only acknowledge or thank taken off -- and the
+# first that says something is the title (`_says'): not an aside in
+# brackets, an opener, the rules of the work, an approval with no object,
+# a reference to another ask alone.  The first sentence that says
+# something is the topic as a rule; one just after it with a PR, a ticket
+# or a verb of work, when it has none, is preferred.  No model is asked.
+
+_FENCE = re.compile(r"^\s*(```|~~~)")
+_LINK = re.compile(r"\[([^\]\n]*)\]\([^)\n]*\)")
+_URL = re.compile(r"(?:https?://|www\.)\S+|\b[\w.-]+/artifact/\S+|\bai/artifact/\S+")
+_TAGS = re.compile(r"</?[a-zA-Z][^>\n]{0,80}>")
+_BARE = re.compile(r"\A[\s\W\d]*\Z|\A\s*(?:[A-Za-z]|\d{1,3}|[ivx]{1,4})[.)、]?\s*\Z", re.IGNORECASE)
+_HEX = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{8}(?![0-9A-Za-z])")
+_SENT = re.compile(r"(?<=[。！？])|(?<=[.;!?])\s+")
+# A line of configuration or code: `key=value', braces, arrows.
+_CODE = re.compile(r"\w=\S|[{}<>]|::|->|=>")
+# A clause that only acknowledges, asks for an acknowledgement, or thanks.
+_ACKISH = re.compile(
+    r"回一句|收到(?:即可|就好|就行|了)?|不用(?:做事|回|動作)|看完回|只需要?回|僅供參考|\bFYI\b|謝謝|感謝|多謝|很好|做得(?:很|非常|真)|"
+    r"非常(?:關鍵|完整|有用|好)|很有用|辛苦了|thanks?\b|thank you|great work|nice work|\bno action\b|\bjust acknowledge",
+    re.IGNORECASE)
+# What frames the work rather than says it: where a message comes from, what
+# it goes on with, its urgency, its order.
+_FRAME = re.compile(
+    r"\A(?:這是.{0,40}?(?:的)?(?:回報|結果|回覆|補充)|這是.{0,40}(?:發現|提出|整理|查到|要)的|你的工作是|來自\s*[\w.-]+|補充|接續|承上|續上|給.{0,10}用的?(?:補充)?|你要的|"
+    r"這是你.{0,30}要的|[\w.-]+\s*回覆你|回覆你|緊急|急件|急|新工作|新題目|新任務|另一件事|這是另一件事|優先度|前提變了|"
+    r"背景|context|background|規則|rules?\b|現況|目前狀況|狀況|要做的|目標|說明|附註|note\b|"
+    r"new task|urgent|follow[- ]?up|re:)",
+    re.IGNORECASE)
+# The rules of the work: read-only, what not to touch, when.
+_RULE = re.compile(r"唯讀|不要|不需要|別碰|只讀|規則一樣|排在.{0,20}後|請盡快|盡快回覆|read[- ]only|do not|don't|only read", re.IGNORECASE)
+# The user's approval said before the work: weighs a little against.
+_NOD = re.compile(r"\A(?:Jing|使用者|user)\s*(?:已經|已|同意|說|要|核准|approved|agreed|wants)", re.IGNORECASE)
+_PR_NUM = re.compile(r"(?<![\w&])#\d{2,6}\b|\bPR\b|pull request", re.IGNORECASE)
+_TICKET = re.compile(r"\bCU-[0-9a-z]+|ClickUp|app\.clickup\.com", re.IGNORECASE)
+_WORK = re.compile(
+    r"開(?!始)|修|改|拿掉|移除|刪|加(?!點)|新增|換|輪換|部署|上線|查|調查|分析|盤點|寫|同步|確認|審|檢查|合併|凍結|封鎖|關閉|升級|遷移|重啟|"
+    r"測試|更新|設定|整理|找出|比對|回收|撤銷|收尾|判斷|評估|"
+    r"\b(?:merge|rotate|fix|add|remove|delete|deploy|investigate|review|audit|update|upgrade|migrate|build|implement|"
+    r"write|check|find|open|close|revert|test|refactor|rename)\b",
+    re.IGNORECASE)
+
+
+def _clean(line: str) -> str:
+    "LINE without markdown, links, tags and the bracketed framing of the herd."
+    t = _NOISE.sub("", line)
+    t = _LINK.sub(r"\1", t)
+    t = _MARKS.sub("", t)
+    t = _URL.sub("", _TAGS.sub("", t))
+    t = t.replace("**", "").replace("__", "").replace("`", "").replace("\\*", "*")
+    t = re.sub(r"[（(]\s*[）)]", "", t)
+    # A bracket a link opened at the line's end, the link gone with it.
+    t = re.sub(r"[（(]\s*\Z", "", t)
+    return re.sub(r"\s+", " ", t).strip(" \t-–—:：")
+
+
+def _clauses(sent: str) -> list[str]:
+    "SENT's clauses, split at its commas and semicolons outside brackets."
+    out, cur, depth = [], "", 0
+    for ch in sent:
+        if ch in "（(「【[":
+            depth += 1
+        elif ch in "）)」】]":
+            depth = max(0, depth - 1)
+        if ch in "，,；;" and depth == 0:
+            out.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    return [c for c in out + [cur] if c.strip()]
+
+
+def _unframe(clause: str) -> str:
+    """CLAUSE without what only frames it, when more follows: "急件：分析
+    X" is "分析 X", "這是 X 的結果" is "X 的結果"."""
+    m = re.match(r"\A這是\s*(.{2,40}?的(?:結果|回報|回覆|補充|進度).*)\Z", clause)
+    if m:
+        return m.group(1)
+    m = re.match(r"\A([^：:]{1,24})[：:]\s*(.+)\Z", clause)
+    if m and _FRAME.match(m.group(1)):
+        return m.group(2).strip()
+    return clause
+
+
+def _candidates(body: str | None) -> list[str]:
+    "BODY's sentences, cleaned, in order: those it may be named by."
+    out: list[str] = []
+    fenced = False
+    for ln in (body or "").splitlines()[:40]:
+        if _FENCE.match(ln):
+            fenced = not fenced
             continue
-        s = _SENTENCE.split(ln, maxsplit=1)[0].strip() or ln
-        return s if len(s) <= TITLE_MAX else s[: TITLE_MAX - 1].rstrip() + "…"
-    return head(body, TITLE_MAX)
+        if fenced or not ln.strip():
+            continue
+        line = _clean(ln)
+        for sent in _SENT.split(line):
+            # A bracket the sentence before closed: not this one's.
+            sent = sent.strip().lstrip("）)」』]】 ").strip()
+            if not sent:
+                continue
+            for _ in range(4):  # the lead's openers off (`_OPENERS')
+                before = sent
+                for o in _OPENERS:
+                    sent = o.sub("", sent, count=1).strip()
+                if sent == before:
+                    break
+            # What only acknowledges or thanks goes, clause by clause; so does
+            # what only frames it, when anything else is left.
+            parts = _clauses(sent)
+            kept = [_unframe(c.strip()) for c in parts if not _ACKISH.search(c)]
+            said = [c for c in kept if not (_FRAME.match(c) and len(c) <= 30)] or kept
+            # Nothing taken off: the sentence as written, its commas its own.
+            if said != [c.strip() for c in parts]:
+                sent = "，".join(said)
+            sent = sent.strip(" ，,。")
+            if not sent:
+                continue
+            out.append(sent)
+            # "Opener：what it is" -- what follows the colon, alone, too.
+            m = re.match(r"\A([^：:]{0,39}[^：:\d\s])[：:]\s*(?!\d)(.+)\Z", sent)
+            if m:
+                out.append(m.group(2).strip())
+    return out
+
+
+def _score(sent: str) -> float:
+    "How well SENT says what the work is; -inf for one that says nothing."
+    core = _HEX.sub("", sent).strip(" ，,。.：:（）()")
+    if len(core) < 4 or _BARE.match(core):
+        return float("-inf")
+    s = 0.0
+    if _PR_NUM.search(sent):
+        s += 3
+    if _TICKET.search(sent):
+        s += 1.5
+    if _WORK.search(core):
+        s += 2
+    if _FRAME.match(sent):
+        s -= 3
+    if _RULE.search(sent) and not _PR_NUM.search(sent):
+        s -= 2
+    if _NOD.match(sent):
+        s -= 1
+    if len(core) < 8:
+        s -= 1.5
+    if len(_HEX.findall(sent)) and len(core) < 16:
+        s -= 2  # mostly another ask's id: "接續 1a2b3c4d"
+    return s
+
+
+def _named(sent: str) -> bool:
+    "SENT names a PR or a ticket."
+    return bool(_PR_NUM.search(sent) or _TICKET.search(sent))
+
+
+def _strong(sent: str) -> bool:
+    """SENT names a PR or a ticket, or a verb of work -- not the user's
+    approval or wish ("Jing 要整理一份報告"), the context of the work."""
+    if _named(sent):
+        return True
+    return not _NOD.match(sent) and bool(_WORK.search(_HEX.sub("", sent)))
+
+
+def _says(sent: str) -> bool:
+    """Whether SENT says something of the work: not an aside, an opener,
+    the work's rules, an approval with no object, another ask's id alone,
+    and either strong (`_strong') or a sentence of some length."""
+    core = _HEX.sub("", sent).strip(" ，,。.：:（）()")
+    if len(core) < 4 or _BARE.match(core) or sent[:1] in "（(【[":
+        return False
+    named = bool(_PR_NUM.search(sent) or _TICKET.search(sent))
+    # What brackets hold is an aside: a rule in one does not make the sentence one.
+    bare = re.sub(r"[（(][^）)]*[）)]", "", sent)
+    if _FRAME.match(sent) or (_RULE.search(bare) and not named):
+        return False
+    # The user's approval with nothing after it: "Jing 已經說要做了".
+    if _NOD.match(sent) and not named and len(core) < 14:
+        return False
+    if _HEX.search(sent) and len(core) < 16:
+        return False
+    if _CODE.search(sent) and not _strong(sent):
+        return False
+    return _strong(sent) or len(core) >= 12
+
+
+def _cut(t: str) -> str:
+    return t if len(t) <= TITLE_MAX else t[: TITLE_MAX - 1].rstrip() + "…"
+
+
+def title(body: str | None, *more: str | None) -> str:
+    """An item's name, when no lead gave it one: the first sentence of BODY,
+    its first ask, that says something (`_says') -- one of the next two
+    preferred when it names a PR or a ticket and the first is not strong
+    (`_strong') -- else of MORE, the
+    asks after it; cut to TITLE_MAX.  When none says anything, the best by
+    `_score', else BODY's first line."""
+    for text in (body,) + more:
+        cands = _candidates(text)
+        for i, sent in enumerate(cands):
+            if not _says(sent):
+                continue
+            # A verb of work alone does not outweigh the topic: the next
+            # sentences are often the steps, the rules, where to write.
+            if not _strong(sent):
+                nxt = [c for c in cands[i + 1: i + 3] if _says(c) and _named(c)]
+                if nxt:
+                    sent = nxt[0]
+            return _cut(sent)
+    scored = [(_score(c) - 1.5 * n, c) for n, text in enumerate((body,) + more) for c in _candidates(text)]
+    scored = [x for x in scored if x[0] > float("-inf")]
+    return _cut(max(scored, key=lambda x: x[0])[1] if scored else head(body, TITLE_MAX))
 
 
 # ---- Where an ask goes ----------------------------------------------------------
@@ -508,7 +705,7 @@ def card(item: dict[str, Any], asks: list[dict[str, Any]], snap: dict[str, dict[
                  "head": head(a.get("reply") if a["status"] == "answered" else (a.get("error") or a["status"]))}
     last = max([last_at(asks)] + [e["at"] for e in events])
     return {
-        "id": item["id"], "title": item.get("title") or title(first["body"]) or "(untitled)",
+        "id": item["id"], "title": item.get("title") or title(*[a["body"] for a in asks[:3]]) or "(untitled)",
         "named": bool(item.get("title")), "status": status(item, asks), "labels": labels,
         "asks": len(asks), "open": len(open_),
         "fyi": sum(1 for a in asks if a.get("fyi")),
