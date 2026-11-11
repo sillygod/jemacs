@@ -1731,8 +1731,9 @@ go past `xwapp--gzip-keep'."
 (defun xwapp--gzip (file etag then &optional lean)
   "Call THEN with FILE gzip'd, its ETag being ETAG -- or with nil, when
 it could not be.  At once when kept; else when gzip, a process of its
-own, is done: one for all who ask for it meanwhile.  LEAN: its comment
-lines sent blank (`xwapp--lean'), ETAG then the lean bytes' own."
+own, is done: one for all who ask for it meanwhile.  LEAN, the app that
+asked: its comment lines sent blank (`xwapp--lean') when that is safe,
+ETAG then the lean bytes' own."
   (if-let* ((bytes (xwapp--gzip-kept etag)))
       (funcall then bytes)
     (let ((waiting (gethash etag xwapp--gzipping)))
@@ -1747,22 +1748,65 @@ lines sent blank (`xwapp--lean'), ETAG then the lean bytes' own."
 ;; but a `//' comment, its newline kept, so an error's line is the
 ;; file's.  Only a whole line, and only for scripts with no string or
 ;; template that runs over a line -- a line there that starts `//' would
-;; be data.  The xwidget, and a browser that does not take gzip, have
-;; the file as it is.
+;; be data.  So the script is looked at first (`xwapp--lean-unsafe'): a
+;; line of code with an odd number of backticks, or ending in a
+;; backslash, and it goes as it is, said once for each version
+;; (`xwapp-lean-refused-functions').  Wrong, the look only sends a
+;; script whole that could have gone lean -- never one changed.  The
+;; xwidget, and a browser that does not take gzip, have the file as it
+;; is.
+
+(defvar xwapp-lean-refused-functions nil
+  "Functions called as (APP FILE WHY) when APP's script FILE goes whole
+though APP asked for its scripts lean: WHY, the line of it that might be
+inside a string.  Once for each version of the file.")
+
+(defvar xwapp--lean-refused (make-hash-table :test 'equal)
+  "The ETags of the scripts told of as going whole.")
+
+(defun xwapp--lean-unsafe (bytes)
+  "Why BYTES, a script, may not go lean, or nil: its first line of code --
+not a `//' comment alone, which goes blank -- with an odd number of
+backticks (a template it opens or closes runs over the line), or that
+ends in a backslash (a string that runs on).  A comment line within such
+a string would be its data."
+  (let ((n 0) why)
+    (dolist (line (split-string bytes "\n"))
+      (setq n (1+ n))
+      (unless (or why (string-match-p "\\`[ \t]*//" line))
+        (cond ((cl-oddp (cl-count ?\` line))
+               (setq why (format "line %d: a template string may run over it" n)))
+              ((string-match-p "\\\\\r?\\'" line)
+               (setq why (format "line %d: a string may run on past it" n))))))
+    why))
 
 (defun xwapp--lean (bytes)
   "BYTES, a script, each line that is only a `//' comment made empty."
   (replace-regexp-in-string "^[ \t]*//.*$" "" bytes t t))
+
+(defun xwapp--lean-bytes (app file etag bytes)
+  "BYTES, APP's script FILE of ETAG, lean -- or as they are when that is
+not safe (`xwapp--lean-unsafe'), told once for its ETAG."
+  (if-let* ((why (xwapp--lean-unsafe bytes)))
+      (progn
+        (unless (gethash etag xwapp--lean-refused)
+          (puthash etag t xwapp--lean-refused)
+          (message "xwapp: %s goes whole, not lean -- %s" (file-name-nondirectory file) why)
+          (run-hook-with-args 'xwapp-lean-refused-functions app file why))
+        bytes)
+    (xwapp--lean bytes)))
 
 (defun xwapp--lean-etag (etag)
   "The ETag of a file's lean bytes, the file's being ETAG."
   (concat (substring etag 0 -1) "-lean\""))
 
 (defun xwapp--gzip-start (file etag &optional lean)
-  "Gzip FILE, of ETAG (LEAN, its comment lines blank); hand the bytes to
-who waits for them."
+  "Gzip FILE, of ETAG (LEAN, the app that asked its comment lines blank);
+hand the bytes to who waits for them."
   (xwapp--deflate
-   (condition-case nil (funcall (if lean #'xwapp--lean #'identity) (xwapp--bytes (file-truename file)))
+   (condition-case nil
+       (let ((bytes (xwapp--bytes (file-truename file))))
+         (if lean (xwapp--lean-bytes lean file etag bytes) bytes))
      (error nil))
    (lambda (bytes)
      (let ((waiting (gethash etag xwapp--gzipping)))
@@ -1888,7 +1932,7 @@ it: see \"The page's own files go gzip'd\"."
                              ;; Plain: the file as it is, under its own ETag.
                              (xwapp--respond proc 200 type (xwapp--bytes file)
                                              (funcall keep (if lean (xwapp--etag file) etag)))))
-                         lean))
+                         (and lean app)))
            (t
             (xwapp--respond proc 200 type (xwapp--bytes file) (funcall keep etag)))))
       (xwapp--respond proc 404))))

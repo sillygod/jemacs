@@ -1,10 +1,13 @@
 // An agent whose directory is gone (ask 0c54c5b6): its worktree removed
 // outside the herd.  Its card says so and where its branch stands, with a
 // Stop that asks first -- and says the commits a branch still has; the
-// Inbox has it under Needs you, worded by its branch, with a Stop that
-// tells Emacs.  The Inbox items are Emacs's own: `ghostherd-inbox--agent-items'
-// in a batch Emacs, not a copy here.  Desk and phone.
+// Board's 要你處理 has it, worded by its branch, with a Stop that tells
+// Emacs.  The items are Emacs's own: `ghostherd-inbox--agent-items' in a
+// batch Emacs of its own home (e2e-guard.el), not a copy here.  Desk and phone.
+const fs = require("fs");
+const os = require("os");
 const path = require("path");
+const { guardEnv, realTouched } = require("./appslib");
 const { execFileSync } = require("child_process");
 const { webkit } = require("playwright");
 const { phonePage, HERD, sleep, boardUnfold } = require("./herdlib");
@@ -34,9 +37,15 @@ function emacsItems() {
                           (ghostherd-inbox--agent-items
                            (list :name "${RISK}" :kind "grok" :state "idle" :role ""
                                  :project "~/src/jnotes/" :gone (funcall g "rd-reading" "ahead" 3))))))))))`;
+  // A home of its own, your state kept out of reach (e2e-guard.el).
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "herd-gone-"));
   const out = execFileSync(process.env.EMACS || "emacs",
-    ["-Q", "--batch", "-L", path.join(LOCAL, "ghostherd"), "-L", path.join(LOCAL, "xwapp"), "--eval", el],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    ["-Q", "--batch", "-l", path.join(__dirname, "e2e-guard.el"), "-L", path.join(LOCAL, "ghostherd"), "-L", path.join(LOCAL, "xwapp"), "--eval", el],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+      env: Object.assign({}, process.env, guardEnv(dir), { E2E_DIR: dir, E2E_LOCAL: LOCAL }) });
+  const touched = realTouched(dir);
+  fs.rmSync(dir, { recursive: true, force: true });
+  if (touched.length) throw new Error("the e2e Emacs reached your own state:\n  " + touched.join("\n  "));
   return JSON.parse(out).map((it) => Object.assign({ read: false, override: null }, it));
 }
 

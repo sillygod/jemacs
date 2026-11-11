@@ -35,12 +35,33 @@ const log = () => { try { return fs.readFileSync(path.join(E, "log.jsonl"), "utf
 // no Emacs is led to ping a real device.  OPTS.env: more of Emacs's
 // environment.  OPTS.spawn(ENV, EL): start that Emacs another way -- in a
 // terminal, say -- returning what has a kill().
+// An e2e's Emacs has a home of its own, in the run's directory: what the
+// herd keeps under ~ -- ~/.ghostherd, `user-emacs-directory', the CLIs'
+// transcripts, its tmux server -- is the run's.  Your own is E2E_REAL_HOME, for
+// e2e-guard.el, which each e2e's Emacs loads first: it notes what it
+// would still read or write of your state, and the run fails then
+// (`realTouched').
+function guardEnv(run) {
+  const home = path.join(run, "home");
+  // Its ~/.emacs.d there, as Emacs -Q takes it: what it keeps there kept.
+  fs.mkdirSync(path.join(home, ".emacs.d"), { recursive: true });
+  // And its tmux, a server of its own: yours is under /tmp, not ~.
+  return { HOME: home, E2E_REAL_HOME: os.homedir(), XDG_CONFIG_HOME: path.join(home, ".config"), GROK_HOME: path.join(home, ".grok"),
+           TMUX_TMPDIR: run };
+}
+// What the run's Emacs reached of your own state, noted by e2e-guard.el.
+function realTouched(run) {
+  try {
+    return [...new Set(fs.readFileSync(path.join(run, "real-touched.txt"), "utf8").split("\n").filter(Boolean))];
+  } catch (e) { return []; }
+}
+
 async function start(opts) {
   opts = opts || {};
   const run = E = fs.mkdtempSync(path.join(os.tmpdir(), "xwapp-e2e-"));
   if (opts.setup) opts.setup(run);
   const port = await freePort();
-  const env = Object.assign({}, process.env, opts.env || {}, { E2E_DIR: E, E2E_PORT: String(port), E2E_LOCAL: LOCAL });
+  const env = Object.assign({}, process.env, opts.env || {}, guardEnv(run), { E2E_DIR: E, E2E_PORT: String(port), E2E_LOCAL: LOCAL });
   const el = path.join(__dirname, opts.el || "apps.el");
   const emacs = opts.spawn ? opts.spawn(env, el)
     : spawn(EMACS, ["-Q", "--batch", "-l", el], { env, stdio: ["ignore", "ignore", "pipe"] });
@@ -182,8 +203,10 @@ async function start(opts) {
     proxy.close();
     emacs.kill();
     await sleep(200);
+    const touched = realTouched(run);
     if (process.env.KEEP) console.log("kept " + run);
     else fs.rmSync(run, { recursive: true, force: true });
+    if (touched.length) throw new Error("the e2e Emacs reached your own state (e2e-guard.el):\n  " + touched.slice(0, 20).join("\n  "));
   };
   return { browser, urls, away, stop, dir: run, port, secretOf: (app) => urls[app].split("/")[3], traffic,
     setLink: (l) => { if (link) Object.assign(link, l); },
@@ -311,4 +334,4 @@ async function sideways(page) {
   });
 }
 
-module.exports = { start, watch, phoneEyes, measure, sideways, until, sleep, log, BOX, PHONE };
+module.exports = { guardEnv, realTouched, start, watch, phoneEyes, measure, sideways, until, sleep, log, BOX, PHONE };

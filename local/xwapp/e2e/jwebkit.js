@@ -5,7 +5,10 @@
 // to the page puts the text in the focused field as typing would, the
 // field hearing xw-paste first, as the xwapp kit's do.  Esc takes the
 // focus off the field.  The scripts are Emacs's: jwebkit.el, in batch.
+const fs = require("fs");
+const os = require("os");
 const path = require("path");
+const { guardEnv, realTouched } = require("./appslib");
 const { execFileSync } = require("child_process");
 const { webkit } = require("playwright");
 const LOCAL = process.env.LOCAL || path.resolve(__dirname, "../..");
@@ -14,9 +17,16 @@ const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "F
 const TEXT = "pasted «text» 你好 😀\nline two";
 
 // The scripts, as jwebkit makes them.
-const js = JSON.parse(execFileSync(process.env.EMACS || "emacs", ["-Q", "--batch", "-L", path.join(LOCAL, "jwebkit"), "-l", "jwebkit",
+// A home of its own, your state kept out of reach (e2e-guard.el).
+const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "jwebkit-"));
+const js = JSON.parse(execFileSync(process.env.EMACS || "emacs", ["-Q", "--batch", "-l", path.join(__dirname, "e2e-guard.el"),
+  "-L", path.join(LOCAL, "jwebkit"), "-l", "jwebkit",
   "--eval", "(princ (json-encode (list :ace (jwebkit--ace-inject-js) :paste (jwebkit--paste-js " + JSON.stringify(TEXT) +
-  ") :empty (jwebkit--paste-js \"\") :blur jwebkit--blur-js)))"], { encoding: "utf8" }));
+  ") :empty (jwebkit--paste-js \"\") :blur jwebkit--blur-js)))"],
+  { encoding: "utf8", env: Object.assign({}, process.env, guardEnv(DIR), { E2E_DIR: DIR, E2E_LOCAL: LOCAL }) }));
+const TOUCHED = realTouched(DIR);
+fs.rmSync(DIR, { recursive: true, force: true });
+if (TOUCHED.length) throw new Error("the e2e Emacs reached your own state:\n  " + TOUCHED.join("\n  "));
 
 const PAGE = `<!DOCTYPE html><body style="font: 16px sans-serif">
 <input id="text" type="text" value="">

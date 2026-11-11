@@ -10,12 +10,22 @@
 ;; under this run's directory, and nothing reaches a CLI or the network.
 (require 'cl-lib)
 (defvar e2e-here (file-name-directory (or load-file-name buffer-file-name)))
+;; First: what of your own state this Emacs would still reach, noted (its
+;; HOME is the run's: appslib's `guardEnv').
+(load (expand-file-name "e2e-guard" e2e-here) nil t)
 (defvar e2e-dir (getenv "E2E_DIR"))
 (defvar e2e-local (or (getenv "E2E_LOCAL") (expand-file-name "../.." e2e-here)))
 (add-to-list 'load-path (expand-file-name "xwapp" e2e-local))
 (add-to-list 'load-path (expand-file-name "ghostherd" e2e-local))
 (setq user-emacs-directory (file-name-as-directory (expand-file-name "emacs.d" e2e-dir)))
 (make-directory user-emacs-directory t)
+;; The herd's own state, under ~/.ghostherd, the run's too -- its HOME is
+;; already (appslib's guardEnv); said here for one run another way.
+(setq ghostherd-handoff-leads-file (expand-file-name "ghostherd/handoff-leads.eld" e2e-dir)
+      ghostherd-worktree-root (expand-file-name "ghostherd/worktrees" e2e-dir)
+      ghostherd-memory-dir (expand-file-name "ghostherd/memory" e2e-dir)
+      ghostherd-guard-root (expand-file-name "ghostherd/guard/" e2e-dir)
+      ghostherd-primary-directory (expand-file-name "ghostherd/primary/" e2e-dir))
 (require 'xwapp)
 (setq xwapp--keep t
       xwapp-state-file (expand-file-name "state.eld" e2e-dir)

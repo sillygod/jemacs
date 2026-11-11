@@ -305,9 +305,12 @@
 
   const sanitize = XW.sanitizer();
 
-  // "[tool Bash] npm test" is how the importers note a tool call.
+  // "[tool Bash] npm test" is how the importers note a tool call.  A
+  // backtick in code is written \x60 where a line would have one alone:
+  // xwapp sends this file lean only while none could open a template that
+  // runs over a line (`xwapp--lean-unsafe').
   function toolMarks(src) {
-    return src.replace(/^\[tool ([^\]\n`]{1,80})\]/gm, (m, name) => "`⚙ " + name + "`");
+    return src.replace(/^\[tool ([^\]\n\x60]{1,80})\]/gm, (m, name) => "\x60⚙ " + name + "\x60");
   }
 
   function markdown(src) {
@@ -372,7 +375,7 @@
   function stripMd(src) {
     return String(src || "")
       .replace(/```[\s\S]*?```/g, " ")              // code fences
-      .replace(/`([^`]+)`/g, "$1")                  // inline code
+      .replace(/\x60([^\x60]+)\x60/g, "$1")         // inline code
       .replace(/\*\*([^*]+)\*\*/g, "$1")            // bold
       .replace(/__([^_]+)__/g, "$1")                // bold
       .replace(/(^|[^\w*])\*([^*\n]+)\*/g, "$1$2")  // italic *x*

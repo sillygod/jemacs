@@ -3608,6 +3608,28 @@ item is fetched by its ask with no report fetch."
                      '(("report:lead-a:1" "words of lead-a" t) ("report:lead-b:1" "words of lead-b" t))))
       (should (equal ghostherd-inbox--detail-req "question:lead-y:1")))))
 
+(ert-deftest ghostherd-test-page-scripts-go-lean ()
+  "The herd page asks xwapp for its scripts lean, and each of its ui/*.js
+passes xwapp's look (`xwapp--lean-unsafe') -- a look too strict would
+turn lean off unseen -- and goes a good deal smaller.  One that did not
+would be said in the herd's log, once; another app's, not."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (should (xwapp--get ghostherd-memory-page--app :lean))
+  (let ((files (directory-files (expand-file-name "ui" ghostherd-memory-page--dir) t "\\.js\\'")))
+    (should files)
+    (dolist (f files)
+      (let ((bytes (xwapp--bytes f)))
+        (should-not (xwapp--lean-unsafe bytes))
+        (should (< (length (xwapp--lean bytes)) (* 0.9 (length bytes)))))))
+  (let (logged)
+    (cl-letf (((symbol-function 'ghostherd--log-add) (lambda (&rest args) (push args logged))))
+      (run-hook-with-args 'xwapp-lean-refused-functions ghostherd-memory-page--app "/x/ui/app.js"
+                          "line 3: a template string may run over it")
+      (run-hook-with-args 'xwapp-lean-refused-functions 'another-app "/x/ui/app.js" "line 3: a template")
+      (should (= 1 (length logged)))
+      (should (equal (seq-take (car logged) 2) '("herd" life)))
+      (should (string-match-p "app.js goes to a phone whole, not lean -- line 3" (nth 2 (car logged)))))))
+
 ;;; Images a reply names
 
 (defconst ghostherd-test--image-id "0123456789abcdef0123456789abcdef")
