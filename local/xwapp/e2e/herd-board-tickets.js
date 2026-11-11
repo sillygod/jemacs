@@ -36,6 +36,8 @@ async function shoot(page, width, file) {
       await page.click('.tab[data-tab="board"]');
       await page.evaluate((p) => GM.boardPatch(p), FULL);
       await sleep(150);
+      // Cards start folded: the two whose parts are tapped here opened, as a tap does.
+      for (const id of ["c1a2b3", "d4e5f6"]) { await page.click("#bd-w-" + id + " .wh"); await sleep(40); }
       const rows = await rowsOf(page);
       check("desk: one row per ticket the shown items carry, the latest named first",
         rows.map((r) => r.id).join() === "86b2k1,86c001,86b2k9,86c002,86c003", rows.map((r) => r.id));

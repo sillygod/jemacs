@@ -26,7 +26,7 @@ const s1 = (ms) => (ms == null ? "—" : (ms / 1000).toFixed(2) + " s");
 const median = (xs) => { const v = xs.filter((x) => x != null).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : null; };
 // What the page shows: of the line, 要你處理's card of it, or -- before --
 // the 等 Jing section's line under the board; of the board, its tiles.
-const SEEN = () => [!!document.querySelector('.bdneeds [data-id="need:7"]') ||
+const SEEN = () => [!!document.querySelector('.bdneeds .bdng[data-agent="lead-fox"]') ||
   [...document.querySelectorAll(".bd-jing .ji")].some((l) => /amber or teal/.test(l.textContent)),
   !!document.querySelector(".bd-strip .bdtile")];
 const BOARD = () => !!document.querySelector(".bd-strip .bdtile");
@@ -109,7 +109,10 @@ const BOARD = () => !!document.querySelector(".bd-strip .bdtile");
       check(W("opened, the Board asks once (board-watch, the Inbox with it), and Emacs sends the Inbox's push, then the board"),
         asked.includes("board-watch") && !asked.includes("inbox-watch") &&
         fns().indexOf("renderInbox") >= 0 && fns().indexOf("renderInbox") < fns().indexOf("boardPatch"), { asked, sent: [...new Set(fns())] });
-      const ids = await page.$$eval(".bdneeds .ibcard", (cs) => cs.map((c) => c.getAttribute("data-id")));
+      // Its group, folded (nothing in it stops an agent), opened.
+      if (!(await page.$('.bdng.open[data-agent="lead-fox"]'))) await page.tap('.bdngt[data-agent="lead-fox"]');
+      await sleep(100);
+      const ids = await page.$$eval(".bdneeds .bdnrow", (cs) => cs.map((c) => c.getAttribute("data-id")));
       check(W("the lead's line once: the Inbox's item and the board's line are one"), ids.join() === "need:7", ids);
 
       // ---- Asleep past the gone, and woken: both asked for again ------------
@@ -125,16 +128,14 @@ const BOARD = () => !!document.querySelector(".bd-strip .bdtile");
       const woke = log(s.dir).slice(nap).filter((w) => w.intent).map((w) => w.intent);
       check(W("woken on the Board: it asks for the Inbox's push and the board again, by itself"),
         woke.includes("inbox-watch") && woke.includes("board-watch"), woke);
-      const still = await until(() => page.evaluate(() => !!document.querySelector('.bdneeds [data-id="need:7"]')), 15000);
+      const still = await until(() => page.evaluate(() => !!document.querySelector('.bdneeds .bdnrow[data-id="need:7"]')), 15000);
       check(W("and what needs you is still on top"), still);
 
       // ---- Handled on the Board: gone there and from the Inbox ---------------
-      await page.tap('.bdneeds [data-act="ib:pick"][data-id="need:7"]');
-      await until(() => page.evaluate(() => !!document.querySelector('.bdneeds [data-act="ib:need-done"]')), 5000);
-      await page.tap('.bdneeds [data-act="ib:need-done"]');
+      await page.tap('.bdneeds [data-act="ib:need-done"][data-id="need:7"]');
       const closed = await until(() => log(s.dir).some((w) => w.rpc === "herd_board_need_close"), 15000);
       await sleep(link.rtt * 4 + 3000);
-      const left = await page.$$eval(".bdneeds .ibcard", (cs) => cs.length);
+      const left = await page.$$eval(".bdneeds .bdnrow", (cs) => cs.length);
       const quiet = await page.evaluate(() => { const p = document.querySelector(".bd-need .bdneednone"); return p ? Math.round(p.getBoundingClientRect().height) : 0; });
       check(W("Handled on the Board: Emacs closes the line, and 要你處理 is a quiet line"), closed && left === 0 && quiet > 0 && quiet < 40,
         { closed, left, quiet });
