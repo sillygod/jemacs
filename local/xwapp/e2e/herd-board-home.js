@@ -76,12 +76,12 @@ const push = async (page, items) => {
       // ---- One red count ------------------------------------------------------------
       const head = await page.textContent(".bd-need > h2.section");
       const listed = +(/(\d+) 件/.exec(head) || [])[1];
-      check(W("one red count, the Board's: as many as 要你處理 lists"), (await page.textContent("#board-n")) === String(listed) && listed === 4 &&
+      check(W("one red count, the Board's: as many as 要你處理 lists"), (await page.textContent("#board-n")) === String(listed) && listed === 5 &&
         (await page.$$(".tab .count.badge.red")).length === 1, { head, badge: await page.textContent("#board-n") });
       const left = intents.length;
       await tap('.tab[data-tab="agents"]');
       await sleep(100);
-      check(W("the tab closed, it keeps that count until Emacs looks -- asked at once"), (await page.textContent("#board-n")) === "4" &&
+      check(W("the tab closed, it keeps that count until Emacs looks -- asked at once"), (await page.textContent("#board-n")) === "5" &&
         ops(intents.slice(left), "board-peek").length === 1, intents.slice(left).map((i) => i.op));
       await page.evaluate(() => GM.boardBadge({ count: 5, needs: 4, bare: 1 }));
       check(W("and shows Emacs's look, counted the same way, when it comes"), (await page.textContent("#board-n")) === "5");

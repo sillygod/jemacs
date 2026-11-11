@@ -1,10 +1,10 @@
 // The Board folded, on a big day (board-big-fixture.js: 60 需要 Jing lines
 // of one lead over 20 items, 7 of another, a question that stops an agent;
 // 63 items).  要你處理 by agent: a group a line -- its counts, how new, 到對話,
-// 整組已處理 -- the one with what stops an agent first and open, the rest
+// 整組標為已處理 -- the one with what stops an agent first and open, the rest
 // folded; in a group its latest report's lines, then the earlier ones by
 // item, folded; an entry one line, its words once, opened in place.
-// 整組已處理 asks for a second tap, handles the group's lines alone, in one
+// 整組標為已處理 asks for a second tap, handles the group's lines alone, in one
 // intent, and says how many.  Cards a line or two until opened, kept so
 // for the device; sections folded by their heads, kept; chips on top to
 // each.  到對話: the agent's room, at the entry that said it, flashed -- held
@@ -72,9 +72,9 @@ const chatItems = (name, es) => es.map((e) => e.role === "user"
         groups.map((g) => g.a).join() === [LEAD2, AGY, LEAD].join() || groups.map((g) => g.a).join() === [AGY, LEAD2, LEAD].join(), groups.map((g) => g.a));
       const beta = groups.find((g) => g.a === LEAD2), alpha = groups.find((g) => g.a === LEAD), gamma = groups.find((g) => g.a === AGY);
       check(W("a group with what stops an agent opens by itself; the rest are folded"), beta.open && gamma.open && !alpha.open, groups);
-      check(W("a group's head: its counts by kind, how new, 到對話, 整組已處理 where it has lines"),
+      check(W("a group's head: its counts by kind, how new, 到對話, 整組標為已處理 where it has lines"),
         /需要 Jing 60/.test(alpha.head) && /19m/.test(alpha.head) && /會卡住 agent 1/.test(beta.head) && /需要 Jing 7/.test(beta.head) &&
-        alpha.talk && gamma.talk && alpha.all === "整組已處理" && !gamma.all, groups);
+        alpha.talk && gamma.talk && alpha.all === "整組標為已處理" && !gamma.all, groups);
       const top = await page.evaluate(() => ({ total: document.querySelector("#app").scrollHeight,
         need: Math.round(document.querySelector("#bd-need").getBoundingClientRect().height) }));
       check(W("68 waits fold into a screenful"), top.need < (where === "phone" ? 700 : 500), top);
@@ -104,7 +104,7 @@ const chatItems = (name, es) => es.map((e) => e.role === "user"
           btns: [...r.querySelectorAll(".bdnl > button")].map((x) => x.getAttribute("data-act")),
           tag: r.querySelector(".ibtag").textContent, age: r.querySelector(".ibage").textContent };
       });
-      check(W("an entry is one line: tag, title, age, 已處理, 到對話 -- its words once, no preview"),
+      check(W("an entry is one line: tag, title, age, 標為已處理, 到對話 -- its words once, no preview"),
         line.titleH <= 22 && line.times === 1 && !line.prev && line.tag === "需要 Jing" && /m$/.test(line.age) &&
         line.btns.join() === "ib:pick,ib:need-done,bd:talk", line);
       await tap('.bdng[data-agent="' + LEAD + '"] .bdnrow .bdnr');
@@ -118,15 +118,15 @@ const chatItems = (name, es) => es.map((e) => e.role === "user"
       await sleep(80);
       check(W("tapped again: folded"), !(await page.$(".bdnrow.open")));
 
-      // ---- 整組已處理 -------------------------------------------------------
+      // ---- 整組標為已處理 -----------------------------------------------------
       const n0 = intents.length;
       await tap('.bdng[data-agent="' + LEAD2 + '"] [data-act="bd:nall"]');
       await sleep(80);
       const armed = await page.$eval('.bdng[data-agent="' + LEAD2 + '"] [data-act="bd:nall"]', (b) => ({ t: b.textContent, arm: b.classList.contains("arm") }));
-      check(W("整組已處理 asks again first, sending nothing"), armed.arm && armed.t === "確定？處理 7 件" &&
+      check(W("整組標為已處理 asks again first, sending nothing"), armed.arm && armed.t === "確定？標 7 件" &&
         !ops(intents.slice(n0), "board-need-done").length, armed);
       await sleep(5300);
-      check(W("left alone, it lets go"), (await page.textContent('.bdng[data-agent="' + LEAD2 + '"] [data-act="bd:nall"]')) === "整組已處理");
+      check(W("left alone, it lets go"), (await page.textContent('.bdng[data-agent="' + LEAD2 + '"] [data-act="bd:nall"]')) === "整組標為已處理");
       await tap('.bdng[data-agent="' + LEAD2 + '"] [data-act="bd:nall"]');
       await sleep(80);
       await tap('.bdng[data-agent="' + LEAD2 + '"] [data-act="bd:nall"]');
@@ -139,7 +139,7 @@ const chatItems = (name, es) => es.map((e) => e.role === "user"
         toast: (document.querySelector(".bd-need .ibtoast") || {}).textContent || "",
         head: document.querySelector(".bd-need .section").textContent }), LEAD2);
       check(W("its lines gone at once, what stops the agent left, how many said"),
-        after.rows.join() === "blocked:" + LEAD2 && /已處理 lead-beta 的 7 件「需要 Jing」/.test(after.toast) && /62 件/.test(after.head), after);
+        after.rows.join() === "blocked:" + LEAD2 && /已把 lead-beta 的 7 件「需要 Jing」標為已處理/.test(after.toast) && /62 件/.test(after.head), after);
       await push(2);
       check(W("a push from before Emacs closed them does not bring them back"),
         (await page.$$eval('.bdng[data-agent="' + LEAD2 + '"] .bdnrow', (rs) => rs.length)) === 1);
@@ -150,10 +150,13 @@ const chatItems = (name, es) => es.map((e) => e.role === "user"
         pill: (w.querySelector(".pill") || {}).textContent, tags: [...w.querySelectorAll(".tag")].map((t) => t.textContent) })));
       check(W("every card starts folded, a line or two"), cards.length > 20 && cards.every((c) => c.folded && c.h <= 64),
         cards.filter((c) => !c.folded || c.h > 64).slice(0, 3));
-      const orph = BIG.cards.find((c) => c.status === "orphan");
-      const jc = cards.find((c) => c.id === "a10000"), oc = cards.find((c) => c.id === orph.id);
-      check(W("folded, one waiting on Jing or nobody's still shows it: marked, and how many"),
-        jc.urgent && /^等 Jing \d+$/.test(jc.pill) && oc.urgent && oc.pill === "沒人接" && oc.tags.some((t) => /^等 Jing \d+$/.test(t)), { jc, oc });
+      // One waited on long: its lead's wait, not 沒人接 -- nor is the one
+      // whose last ask went nowhere besides, its lines open.
+      const long = BIG.cards.find((c) => c.late);
+      const jc = cards.find((c) => c.id === "a10000"), lc = cards.find((c) => c.id === long.id);
+      check(W("folded, one waiting on Jing still shows it, how long once long: marked, and how many -- none nobody's"),
+        jc.urgent && /^等 Jing \d+$/.test(jc.pill) && lc.urgent && /^等你 \d+ 小時 · \d+$/.test(lc.pill) &&
+        !cards.some((c) => c.pill === "沒人接"), { jc, lc });
       const card0 = await page.$eval("#bd-w-a10000 .wfold", (b) => b.textContent);
       check(W("its line or two: title, status, projects, asks, PRs"), /alpha 的工作 a10000/.test(card0) && /alpha、infra/.test(card0) &&
         /\d+ ask/.test(card0) && /2 PR/.test(card0), card0);

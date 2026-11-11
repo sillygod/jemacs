@@ -32,11 +32,13 @@ A lead ends an answer or a report with its fixed lines (`fixed_lines'):
 "需要 Jing：..." what the user must do, "部署：..." what went where --
 either colon, the item's id in brackets after the word when the message
 covers more than one.  The herd keeps them as the item's events.  A need
-ends (`need_states') when the user marks it handled (on the Board, or in
-the Inbox, where it shows), when its lead writes need lines in that item
-again -- what is still needed it says again, and "需要 Jing：無" ends them
-all -- or when the item is closed.  A 部署 line marks the PRs it names
-deployed.
+ends (`need_states') when it is marked handled -- by the user, on the
+Board, or by the lead that wrote it (`herd need done', the user having
+answered it in the chat, or the lead having said it again in another
+item), who and why kept with it -- when its lead writes need lines in
+that item again -- what is still needed it says again, and "需要 Jing：無"
+ends them all -- or when the item is closed.  A 部署 line marks the PRs
+it names deployed.
 
 An item is never taken for done by its quiet: a piece of work nobody
 picked up looks just as quiet as one finished.  It is `live' while an ask
@@ -44,8 +46,10 @@ in it is open, `quiet' when none is, and `done' only once a lead closed
 it (and nothing was asked in it since).  What the forge says of its pull
 requests, and what waits on the user, are Emacs's to add (the Board tab,
 ghostherd-memory-page.el): `tail', its asks answered and a PR still open;
-`jing', the user's to act on; `orphan' (沒人接), quiet for hours with a
-need still open or its last ask gone nowhere (`unanswered').
+`jing', the user's to act on -- `late' (等你 N 小時) once quiet for hours
+with a need still open: its lead waits on the user, it is no less its
+lead's; `orphan' (沒人接), quiet for hours with its last ask gone nowhere
+(`unanswered') and no need open: nobody has it.
 
 Nothing here touches the store: herd.py keeps the items and calls these on
 rows it read.
@@ -596,9 +600,9 @@ def is_lead(name: str, snap: dict[str, dict[str, Any]]) -> bool:
 
 
 def need_states(events: list[dict[str, Any]], closed_at: str | None = None) -> dict[int, str]:
-    """How each need among EVENTS (one item's) stands: `open'; `done', the
-    user marked it handled; `replaced', its lead wrote need lines in that
-    item again later -- what is still needed it says again, and "需要
+    """How each need among EVENTS (one item's) stands: `open'; `done', it
+    was marked handled -- by the user, or its lead (`closed_by'); `replaced',
+    its lead wrote need lines in that item again later -- what is still needed it says again, and "需要
     Jing：無" ends them all (`none'); `closed', the item was closed after it."""
     needs = [e for e in events if e["kind"] == "need"]
     latest: dict[str, str] = {}
@@ -672,20 +676,31 @@ def shown(c: dict[str, Any], since: float) -> bool:
 
 def urgent(c: dict[str, Any], orphan_since: float) -> str | None:
     """What an item standing C (a card, or `standing') counts for on the
-    Board tab's badge: `orphan' -- nobody has it (沒人接): not live, not
-    done, a need still open or its last ask gone nowhere, and quiet since
-    before ORPHAN_SINCE (ms); `jing' -- a lead's need waits on the user;
-    else None."""
+    Board tab's badge: `jing' -- not live, not done, a lead's need waits on
+    the user, however long (`late' says it waited long); `orphan' --
+    nobody has it (沒人接): not live, not done, no need open, its last ask
+    gone nowhere (failed, cancelled, its taker stopped with no answer) and
+    quiet since before ORPHAN_SINCE (ms); else None.  A need open is its
+    lead's wait on the user, never nobody's: answered, the lead goes on."""
     if c["status"] in ("live", "done"):
         return None
-    if (c["needs"] or c["unanswered"]) and (c["last"] or 0) < orphan_since:
+    if c["needs"]:
+        return "jing"
+    if c["unanswered"] and (c["last"] or 0) < orphan_since:
         return "orphan"
-    return "jing" if c["needs"] else None
+    return None
+
+
+def late(c: dict[str, Any], orphan_since: float) -> bool:
+    """Whether an item standing C waits on the user long (等你 N 小時): a
+    need open (`urgent' `jing') and quiet since before ORPHAN_SINCE (ms)."""
+    return urgent(c, orphan_since) == "jing" and (c["last"] or 0) < orphan_since
 
 
 def windows(days: float, orphan_hours: float, now: datetime | None = None) -> tuple[float, float]:
-    """The Board's window of DAYS and the 沒人接 line ORPHAN_HOURS back from
-    NOW, as ms -- what `shown' and `urgent' take."""
+    """The Board's window of DAYS and the line ORPHAN_HOURS back from NOW
+    past which an item is 沒人接 or waits on the user long, as ms -- what
+    `shown', `urgent' and `late' take."""
     now = now or datetime.now(timezone.utc)
     return (ms((now - timedelta(days=days)).isoformat()),
             ms((now - timedelta(hours=max(0.0, float(orphan_hours)))).isoformat()))
@@ -828,9 +843,13 @@ def timeline(asks: list[dict[str, Any]], events: list[dict[str, Any]] | None = N
                         "from": to, "to": a["from_name"], "head": head(a.get("error") or a["status"]), "key": True})
     states = need_states(events, item.get("closed_at"))
     for e in events:
-        out.append({"kind": e["kind"], "at": ms(e["at"]), "ask": e.get("ask"), "from": e.get("agent") or "",
-                    "to": "Jing" if e["kind"] == "need" else "", "head": e["text"], "key": True,
-                    "state": states.get(e["id"]), "event": e["id"]})
+        ev = {"kind": e["kind"], "at": ms(e["at"]), "ask": e.get("ask"), "from": e.get("agent") or "",
+              "to": "Jing" if e["kind"] == "need" else "", "head": e["text"], "key": True,
+              "state": states.get(e["id"]), "event": e["id"]}
+        # Marked handled: by whom -- the user, or its lead -- why, and when.
+        if ev["state"] == "done":
+            ev.update(by=e.get("closed_by") or "user", why=e.get("closed_why") or "", closedAt=ms(e.get("closed_at")))
+        out.append(ev)
     for k, o in (opened or {}).items():
         if o["ask"] in ids:
             repo_num = k.split("/", 1)[1]

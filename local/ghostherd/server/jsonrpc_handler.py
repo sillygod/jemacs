@@ -64,6 +64,9 @@ AGENT_METHODS = frozenset({
     # The Board's work items, as `herd item' lists, shows and changes them:
     # a lead's (the herd refuses a worker's change).
     "herd_items", "herd_board_item", "herd_item_edit",
+    # A lead's own 需要 Jing lines, `herd need list' and `need done': its
+    # own alone (the herd refuses another's).
+    "herd_need_list", "herd_need_done",
     # What tasks cost, as numbers: `herd cost' from a lead at a review --
     # its task list, the user's words in it, only its own project's.
     "herd_costs",
@@ -198,6 +201,8 @@ class JsonRpcHandler:
             "herd_needs": self._herd_needs,
             "herd_board_counts": self._herd_board_counts,
             "herd_board_need_close": self._herd_board_need_close,
+            "herd_need_list": self._herd_need_list,
+            "herd_need_done": self._herd_need_done,
             "herd_item_edit": self._herd_item_edit,
             "herd_report": self._herd_report,
             "herd_link": self._herd_link,
@@ -647,6 +652,21 @@ class JsonRpcHandler:
         except (TypeError, ValueError):
             raise ValueError("id must be a need's number") from None
         return get_herd().need_close(event)
+
+    def _herd_need_list(self, params: dict) -> dict:
+        "`herd need list': an agent's own need lines still open; the user's, every lead's."
+        return get_herd().need_list(_opt_str(params, "by") or "")
+
+    def _herd_need_done(self, params: dict) -> dict:
+        "`herd need done ID... [--why W]': a lead marks its own need lines handled."
+        ids = params.get("ids")
+        if (not isinstance(ids, list) or not ids or len(ids) > 200
+                or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids)):
+            raise ValueError("ids must be a list of need lines' numbers")
+        why = params.get("why")
+        if why is not None and not isinstance(why, str):
+            raise ValueError("why must be a string")
+        return get_herd().need_done(ids, by=_opt_str(params, "by") or "", why=why or "")
 
     def _herd_items(self, params: dict) -> dict:
         "`herd item list': the items, compact."

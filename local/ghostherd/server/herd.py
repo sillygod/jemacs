@@ -352,6 +352,34 @@ def _and(words: list[str]) -> str:
     return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
 
 
+# A lead's own 需要 Jing lines (`herd need'): why one was marked handled,
+# kept to this; the lines leads marked handled the Board lists, this many
+# at most; the open lines a lead is told of as its turn begins
+# (`needs_note'), this many, each its words cut to NEEDS_NOTE_WIDTH.
+NEED_WHY_MAX = 200
+ENDED_MAX = 40
+NEEDS_NOTE_LINES = 10
+NEEDS_NOTE_WIDTH = 80
+
+
+def needs_note(lines: list[dict[str, Any]]) -> str:
+    """What a lead is told of its need LINES still open (`Herd._needs_note'),
+    oldest first: each its id, item and words, NEEDS_NOTE_LINES at most, and
+    how to close those the user has answered or it has said again in
+    another item.  Said through a hook, so the same words for every CLI;
+    the command as the herd's other notes give it."""
+    rows = ["  %s  %s  %s" % (e["id"], ("item " + e["item"]) if e.get("item") else "(no item)",
+                              _head(e.get("text"), NEEDS_NOTE_WIDTH)) for e in lines[:NEEDS_NOTE_LINES]]
+    more = len(lines) - len(rows)
+    return "\n".join(
+        ["herd: your 需要 Jing lines still open on the user's Board (%d, oldest first):" % len(lines)]
+        + rows
+        + (['  ... and %d more: "$GHOSTHERD_HERD" need list' % more] if more > 0 else [])
+        + ["Close each one the user has answered (in this chat or elsewhere) or that you have since said again "
+           "under another item, saying why -- leave the rest open, they still wait on the user:",
+           '  "$GHOSTHERD_HERD" need done ID... --why "one line"'])
+
+
 def _body(body: Any) -> str:
     "An ask's text, which it must have."
     if body is None or not str(body).strip():
@@ -492,6 +520,9 @@ class HerdStore:
         self._copies_ok = False
         # Lead -> until when it is not picked to stop (HANDOFF_STOP_BACKOFF).
         self._stop_backoff: dict[str, float] = {}
+        # Lead -> (its conversation, the ids of its open need lines) as last
+        # told it (`_needs_note'): told again only when one is new.
+        self._needs_told: dict[str, tuple[str, frozenset[int]]] = {}
         self._mu = threading.Lock()
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -1182,7 +1213,8 @@ class HerdStore:
         # or -- a report's -- the item the lead was last at work in, found
         # once its asks are placed (`resolved'); the line may name it (REF).
         # MSG is its message's hash: one message read twice is one line.  A
-        # need the user marked handled is CLOSED_AT.
+        # need marked handled is CLOSED_AT, by CLOSED_BY -- `user', or the
+        # lead that wrote it (`herd need done') -- for CLOSED_WHY.
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS item_events (
@@ -1205,6 +1237,8 @@ class HerdStore:
             """
         )
         self._conn.execute("CREATE INDEX IF NOT EXISTS item_events_by_item ON item_events (item)")
+        if "closed_why" not in {r[1] for r in self._conn.execute("PRAGMA table_info(item_events)")}:
+            self._conn.execute("ALTER TABLE item_events ADD COLUMN closed_why TEXT")
         # Since when lines are kept: replies read again when the Board grew
         # its events, answered before, are not taken for needs open now.
         self._conn.execute("INSERT OR IGNORE INTO meta (k, v) VALUES ('board_events_since', ?)",
@@ -2940,11 +2974,96 @@ class HerdStore:
             self._conn.commit()
         return {"id": int(event), "closed": cur.rowcount == 1}
 
+    def need_done(self, ids: list[int], by: str, why: str = "") -> dict[str, Any]:
+        """`herd need done': BY, a lead, marks its own need lines IDS handled
+        -- the user answered them in the chat, or it wrote them again in
+        another item -- for WHY, kept with each and shown on the Board.  Only
+        the lines BY wrote: another's is refused, each said why, as is one
+        no longer open; the rest are closed."""
+        by = (by or "").strip()
+        if not by or by == "user":
+            raise ValueError("only an agent closes its own 需要 Jing lines; the user marks them on the Board")
+        why = " ".join((why or "").split())[:NEED_WHY_MAX]
+        now = datetime.now(timezone.utc).isoformat()
+        closed: list[int] = []
+        skipped: list[dict[str, Any]] = []
+        with self._mu:
+            self._assign_items()
+            open_ids = {e["id"] for e in self._open_lines()}
+            for i in dict.fromkeys(int(x) for x in ids):
+                row = self._conn.execute(
+                    "SELECT agent, closed_by FROM item_events WHERE id = ? AND kind = 'need'", (i,)).fetchone()
+                if row is None:
+                    skipped.append({"id": i, "why": "no such 需要 Jing line"})
+                elif (row[0] or "") != by:
+                    skipped.append({"id": i, "why": f"{row[0] or 'nobody'}'s line, not yours"})
+                elif i not in open_ids:
+                    skipped.append({"id": i, "why": f"already marked handled by {row[1]}" if row[1]
+                                    else "no longer open (said again in its item, or the item closed)"})
+                else:
+                    self._conn.execute(
+                        "UPDATE item_events SET closed_at = ?, closed_by = ?, closed_why = ? WHERE id = ?",
+                        (now, by, why or None, i))
+                    closed.append(i)
+            self._conn.commit()
+        return {"closed": closed, "skipped": skipped, "open": len(self.need_list(by)["lines"])}
+
+    def need_list(self, by: str = "") -> dict[str, Any]:
+        """`herd need list': BY's 需要 Jing lines still open -- the user's
+        (`user', or none): every lead's -- oldest first, each its id, item,
+        words and when."""
+        by = (by or "").strip()
+        with self._mu:
+            self._assign_items()
+            lines = self._open_lines(None if by in ("", "user") else by)
+        return {"lines": lines}
+
+    def _open_lines(self, agent: str | None = None) -> list[dict[str, Any]]:
+        """The need lines open now -- AGENT's, or every lead's -- oldest
+        first: each its id, agent, item, words, ask and when (ms).  Caller
+        holds `_mu`."""
+        closed = {r[0]: r[1] for r in self._conn.execute("SELECT id, closed_at FROM work_items")}
+        out = []
+        for item, evs in self._events().items():
+            states = board.need_states(evs, closed.get(item) if item else None)
+            out += [dict(board._event(e), item=item or "") for e in evs
+                    if states.get(e["id"]) == "open" and (agent is None or (e.get("agent") or "") == agent)]
+        out.sort(key=lambda e: (e["at"] or 0, e["id"]))
+        return out
+
+    def _needs_note(self, session: str, conversation: str | None) -> str | None:
+        """What a lead is told as its turn begins of its need lines still
+        open: a short list -- id, item, words, NEEDS_NOTE_LINES at most --
+        and how to close those the user has answered or it has said again
+        in another item.  Only when one is open it was not told of in this
+        conversation: not every turn, and not for a list grown only
+        shorter.  Told is as handed to its hook: a hook that gave up
+        waiting for it (3 s) leaves it untold to the lead until a line is
+        new -- `herd need list' says them all any time.  Caller holds
+        `_mu`."""
+        if not board.is_lead(session, self._thread_snap()):
+            return None
+        # The answers' lines are read as their asks are placed: those first.
+        self._assign_items()
+        lines = self._open_lines(session)
+        ids = frozenset(e["id"] for e in lines)
+        conv = conversation or (self._conn.execute(
+            "SELECT conversation FROM links WHERE session = ?", (session,)).fetchone() or [None])[0] or ""
+        was_conv, was = self._needs_told.get(session, ("", frozenset()))
+        if not ids:
+            self._needs_told.pop(session, None)
+            return None
+        self._needs_told[session] = (conv, ids)
+        if conv == was_conv and ids <= was:
+            return None
+        return needs_note(lines)
+
     def board_counts(self, days: float = 1, orphan_hours: float = 4) -> dict[str, Any]:
         """How many items the Board would show waiting on the user (a lead's
         need open) and how many nobody has (沒人接) -- of those, BARE the
-        ones with no need open, which 要你處理 lists apart (the others ride
-        on their lines, the Inbox's): the Board tab's badge, for a page that
+        ones with no need open, which 要你處理 lists apart (now every one:
+        an item with a need open is its lead's wait, never nobody's; kept
+        for an Emacs that reads it): the Board tab's badge, for a page that
         has not the tab open.  The Board's own window of DAYS and its own
         rules -- `board.shown', `board.urgent', the same `board' marks its
         cards with -- on the asks' few columns and the events alone: no
@@ -2984,27 +3103,28 @@ class HerdStore:
         for the Inbox, every few seconds: the events alone, not the board."""
         with self._mu:
             self._assign_items()
-            events = self._events()
-            rows = {r[0]: (r[1], r[2]) for r in self._conn.execute("SELECT id, title, closed_at FROM work_items")}
-            out = []
-            for item, evs in events.items():
-                title, closed = rows.get(item, (None, None)) if item else (None, None)
-                states = board.need_states(evs, closed)
-                mine = [e for e in evs if states.get(e["id"]) == "open"]
-                if mine and item and not title:
-                    first = self._conn.execute(
-                        "SELECT a.body FROM asks a JOIN ask_item i ON i.ask = a.id WHERE i.item = ? "
-                        "ORDER BY a.created_at LIMIT 1", (item,)).fetchone()
-                    title = board.title(first[0]) if first else ""
-                for e in mine:
-                    out.append(dict(board._event(e), item=item or "", itemTitle=title or ""))
-        out.sort(key=lambda e: -(e["at"] or 0))
+            out = self._open_lines()
+            titles: dict[str, str] = {}
+            for e in out:
+                item = e["item"]
+                if item and item not in titles:
+                    row = self._conn.execute("SELECT title FROM work_items WHERE id = ?", (item,)).fetchone()
+                    title = row[0] if row else None
+                    if not title:
+                        first = self._conn.execute(
+                            "SELECT a.body FROM asks a JOIN ask_item i ON i.ask = a.id WHERE i.item = ? "
+                            "ORDER BY a.created_at LIMIT 1", (item,)).fetchone()
+                        title = board.title(first[0]) if first else ""
+                    titles[item] = title or ""
+                e["itemTitle"] = titles.get(item, "")
+        out.sort(key=lambda e: (-(e["at"] or 0), -e["id"]))
         return {"needs": out}
 
     def _events(self) -> dict[str | None, list[dict[str, Any]]]:
         "Every event, by item (None: of no item).  Caller holds `_mu`."
         cur = self._conn.execute(
-            "SELECT id, item, kind, text, none, ref, ask, agent, src, at, closed_at, closed_by FROM item_events ORDER BY at")
+            "SELECT id, item, kind, text, none, ref, ask, agent, src, at, closed_at, closed_by, closed_why "
+            "FROM item_events ORDER BY at")
         names = [d[0] for d in cur.description]
         out: dict[str | None, list[dict[str, Any]]] = {}
         for r in cur.fetchall():
@@ -3102,6 +3222,7 @@ class HerdStore:
             c = board.card(items[it], asks, snap, owner, known, events.get(it), opened, deployed)
             if board.shown(c, since):
                 c["orphan"] = board.urgent(c, orphan_since) == "orphan"
+                c["late"] = board.late(c, orphan_since)
                 cards.append(c)
             else:
                 more = True
@@ -3117,8 +3238,19 @@ class HerdStore:
         loose = [board._event(e) for e, st in
                  ((e, board.need_states(events.get(None, [])).get(e["id"])) for e in events.get(None, []))
                  if st == "open"]
+        # The lines leads marked handled themselves (`herd need done') in the
+        # window: gone from 要你處理, it says by whom and why.
+        ended = sorted(({"id": e["id"], "item": it or "", "text": e["text"], "agent": e.get("agent") or "",
+                         "by": e["closed_by"], "why": e.get("closed_why") or "", "at": board.ms(e["at"]),
+                         "closedAt": board.ms(e["closed_at"]),
+                         "itemTitle": (items.get(it) or {}).get("title") or ""}
+                        for it, evs in events.items() for e in evs
+                        if e["kind"] == "need" and e.get("closed_at") and (e.get("closed_by") or "user") != "user"
+                        and e["closed_at"] >= cutoff),
+                       key=lambda e: -(e["closedAt"] or 0))[:ENDED_MAX]
         return {
             "items": cards, "waits": board.waits(open_rows, snap), "edges": board.edges(recent), "needs": loose,
+            "ended": ended,
             # `xproj', not `cross': Emacs reads a key `cross' as a card's flag.
             "counts": {"asks": len(recent),
                        "xproj": sum(1 for r in recent if r["from_proj"] and r["to_proj"] and r["from_proj"] != r["to_proj"]),
@@ -5148,7 +5280,14 @@ class HerdStore:
         # "需要 Jing：...", "部署：..." -- which the Board keeps (board.py).
         if last and state in ("done", "waiting", "idle", "auto"):
             self.note_report_lines(session, last)
-        return {"session": session, "state": state, "closed_ask": closed}
+        out = {"session": session, "state": state, "closed_ask": closed}
+        # A lead's turn begins: its need lines still open, when one is new.
+        if state == "working":
+            with self._mu:
+                note = self._needs_note(session, conversation)
+            if note:
+                out["note"] = note
+        return out
 
     def _not_its_own(self, session: str, cli: str | None, pid: int | None,
                      ancestors: list[int] | None, headless: bool = False) -> str | None:

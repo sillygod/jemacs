@@ -54,14 +54,16 @@ const card = (id, status, extra) => Object.assign({
   block: { kind: "answered", ask: "aa" + id, from: "rd-alpha", to: LEAD, since: now - 60 * min, head: "做好了，等 lead 看" }, closed: null }, extra || {});
 
 const CARDS = [];
-// The 23 items with lines open: waiting on Jing (or, quiet that long, nobody's).
+// The 23 items with lines open: waiting on Jing -- quiet four hours and
+// more, long (`late', 等你 N 小時); one's last ask went nowhere besides,
+// still its lead's wait, not nobody's.
 const byItem = {};
 NEEDS.forEach((n) => (byItem[n.item] = byItem[n.item] || []).push(n));
 Object.keys(byItem).forEach((id, i) => {
   const ns = byItem[id], alpha = id.startsWith("a1");
   const last = Math.max(...ns.map((n) => n.at));
-  CARDS.push(card(id, i === 5 ? "orphan" : "jing", {
-    asks: 6 + (i % 9), last, agents: alpha ? [LEAD, "rd-alpha"] : [LEAD2, "rd-beta"], projects: alpha ? ["alpha", "infra"] : ["beta"],
+  CARDS.push(card(id, "jing", {
+    asks: 6 + (i % 9), last, late: last < now - 240 * min, agents: alpha ? [LEAD, "rd-alpha"] : [LEAD2, "rd-beta"], projects: alpha ? ["alpha", "infra"] : ["beta"],
     cross: alpha, labels: i % 3 ? ["CU-86" + hex(i, 4)] : [],
     needs: ns.map((n) => ({ id: n.id, kind: "need", text: n.text, agent: n.agent, ask: n.ask, at: n.at })),
     prs: [pr(alpha ? "alpha" : "beta", 400 + i, i % 3 ? "OPEN" : "MERGED", i), pr("infra", 600 + i, "MERGED", i)],

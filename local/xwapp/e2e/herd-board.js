@@ -59,18 +59,20 @@ async function shoot(page, width, file) {
 
       const tiles = await page.$$eval(".bdtile", (ts) => ts.map((t) => ({ big: t.querySelector(".big").textContent, sub: t.querySelector(".sub").textContent })));
       check("desk: the tiles count items, open waits, what needs you and PRs",
-        tiles.map((t) => t.big).join() === "17,4,4,6", tiles.map((t) => t.big));
+        tiles.map((t) => t.big).join() === "18,4,5,6", tiles.map((t) => t.big));
       check("desk: the items tile says what the asks were", /34 則 ask：跨專案 9、FYI 4、轉述 1、撤回／失敗 2/.test(tiles[0].sub), tiles[0].sub);
       check("desk: the waits tile names the cross-project pairs and the oldest", /跨專案 2：shop → billing、infra → ops-helm/.test(tiles[1].sub) &&
         /專案內 2/.test(tiles[1].sub) && /最久的開了 20 分/.test(tiles[1].sub), tiles[1].sub);
       check("desk: the board tab's red count, the page's one: as many as 要你處理 lists",
-        (await page.textContent("#board-n")) === "4" && tiles[2].big === "4", { badge: await page.textContent("#board-n"), tile: tiles[2].big });
-      check("desk: the 要你處理 tile counts what stops an agent and what else needs Jing (the item nobody has rides on its line)",
-        /會卡住 agent 2/.test(tiles[2].sub) && /需要 Jing 2/.test(tiles[2].sub), tiles[2].sub);
+        (await page.textContent("#board-n")) === "5" && tiles[2].big === "5", { badge: await page.textContent("#board-n"), tile: tiles[2].big });
+      check("desk: the 要你處理 tile counts what stops an agent, what else needs Jing (a line waited on long too), and what nobody has",
+        /會卡住 agent 2/.test(tiles[2].sub) && /需要 Jing 2/.test(tiles[2].sub) && /沒人接 1/.test(tiles[2].sub), tiles[2].sub);
 
       const order = await page.$$eval(".bdarea .wi", (ws) => ws.map((w) => w.id.slice(5) + ":" + w.querySelector(".pill").textContent + (w.classList.contains("folded") ? ":f" : "")));
-      check("desk: on top what needs Jing's eye -- live, waiting on Jing, nobody's, a PR open -- then the items at rest of some size, each folded",
-        order.join(" ") === "c1a2b3:進行中:f d4e5f6:進行中:f e7f8a9:進行中:f b1c2d3:等 Jing 1:f c6d7e8:沒人接:f f0a1b2:收尾:f 9a8b7c:安靜:f 0f1e2d:完成:f", order);
+      check("desk: on top what needs Jing's eye -- live, waiting on Jing (long: 等你 N 小時), nobody's, a PR open -- then the items at rest of some size, each folded",
+        order.join(" ") === "c1a2b3:進行中:f d4e5f6:進行中:f e7f8a9:進行中:f b1c2d3:等 Jing 1:f c6d7e8:等你 7 小時 · 1:f e9f0a1:沒人接:f f0a1b2:收尾:f 9a8b7c:安靜:f 0f1e2d:完成:f", order);
+      check("desk: one waited on long is marked urgent as one waiting on Jing is, not as nobody's",
+        await page.$eval("#bd-w-c6d7e8", (w) => w.classList.contains("urgent") && w.classList.contains("late") && w.classList.contains("st-jing")));
       const folds = await page.$$eval(".bdfoldh", (fs) => fs.map((f) => f.querySelector(".fl").textContent));
       check("desk: the rest at rest, a line a project, the latest first",
         folds.join(" | ") === "shop：零星 3 則 · 最後 40 分前 | billing：零星 3 則 · 最後 1 小時前 | infra：零星 2 則（完成 1） · 最後 5 小時前 | mobile：零星 1 則 · 最後 8 小時前", folds);
@@ -80,7 +82,7 @@ async function shoot(page, width, file) {
       check("desk: a tap opens that project's cards", opened.join() === "51a004,51a005,a3b4c5", opened);
       check("desk: the others stay folded", !(await page.$('.bdfold[data-p="shop"] .wi')));
 
-      await openCards(page, ["c1a2b3", "e7f8a9", "b1c2d3", "c6d7e8"]);
+      await openCards(page, ["c1a2b3", "e7f8a9", "b1c2d3", "c6d7e8", "e9f0a1"]);
       const c1 = await page.$eval("#bd-w-c1a2b3", (w) => ({
         prs: [...w.querySelectorAll(".bdpr")].map((p) => p.textContent), blk: w.querySelector(".blk").textContent,
         tags: [...w.querySelectorAll(".tk,.pj")].map((t) => t.textContent), tl: w.querySelector(".bdtlb").textContent }));
@@ -91,9 +93,23 @@ async function shoot(page, width, file) {
       const pr57 = await page.$eval('#bd-w-e7f8a9 .bdpr.notown', (p) => p.getAttribute("title"));
       check("desk: a PR another item owns is dashed and says whose", /屬於 b1c2d3/.test(pr57), pr57);
       const jingBlk = await page.$eval("#bd-w-b1c2d3 .blk", (b) => b.textContent);
-      check("desk: an item waiting on Jing says what its lead wrote, with Handled", /等 Jing在今晚的維護時段/.test(jingBlk) && /已處理/.test(jingBlk), jingBlk);
-      const orphan = await page.$eval("#bd-w-c6d7e8 .blk", (b) => b.textContent);
-      check("desk: an item nobody has says how long it is quiet and what is left", /沒人接安靜 7 小時，還有「需要 Jing」沒處理：三個方案選一個/.test(orphan), orphan);
+      check("desk: an item waiting on Jing says what its lead wrote, with 標為已處理", /等 Jing在今晚的維護時段/.test(jingBlk) && /標為已處理/.test(jingBlk), jingBlk);
+      // 標為已處理 is a button, and looks one: a filled face, not a state's green word.
+      const mark = await page.$eval('#bd-w-b1c2d3 [data-act="bd:need-done"]', (b) => {
+        const s = getComputedStyle(b);
+        return { t: b.textContent, tag: b.tagName, bg: s.backgroundColor, color: s.color, border: s.borderTopStyle, shadow: s.boxShadow, cursor: s.cursor };
+      });
+      check("desk: 標為已處理 is a verb on a filled, raised button, in the text's colour -- not green",
+        mark.t === "標為已處理" && mark.tag === "BUTTON" && mark.bg !== "rgba(0, 0, 0, 0)" && mark.border === "solid" &&
+        mark.shadow !== "none" && mark.cursor === "pointer" && mark.color.indexOf("63, 185, 80") < 0, mark);
+      const late = await page.$eval("#bd-w-c6d7e8", (w) => ({ blk: w.querySelector(".blk").textContent, pill: w.querySelector(".pill").textContent,
+        reply: !!w.querySelector('[data-act="bd:reply-open"]'), hand: !!w.querySelector('[data-act="bd:hand"]') }));
+      check("desk: one waited on long says how long, that its lead waits on Jing, and what it wrote",
+        late.blk.startsWith("等你 7 小時安靜 7 小時，lead-infra 在等你回三個方案選一個：全站、只 API、只登入") && late.pill === "等你 7 小時", late);
+      check("desk: and is answered from itself, to its lead -- no 交給 lead", late.reply && !late.hand, late);
+      const orphan = await page.$eval("#bd-w-e9f0a1", (w) => ({ blk: w.querySelector(".blk").textContent, hand: !!w.querySelector('[data-act="bd:hand"]') }));
+      check("desk: an item nobody has: its last ask went nowhere, how long quiet, and 交給 lead",
+        orphan.blk.startsWith("沒人接安靜 6 小時，最後一則 ask 失敗：lead-infra → cdnfix：把 CDN 快取規則改成依路徑") && orphan.hand, orphan);
       const dep = await page.$eval("#bd-w-c1a2b3 .bddep", (b) => b.textContent);
       check("desk: a card shows its last 部署 line", /部署billing #88 → production 三站/.test(dep), dep);
 
@@ -138,13 +154,15 @@ async function shoot(page, width, file) {
       await page.evaluate((t) => GM.boardTimeline(t), TIMELINE);
       await sleep(80);
       const lis = await page.$$eval("#bd-w-c1a2b3 .bdtl li", (ls) => ls.map((l) => l.querySelector(".kk").textContent));
-      check("desk: the timeline's key events: the first ask, the PR opened, the need, its merge and deploy, what is open",
-        lis.join() === "ask,開 PR,Jing,merge,部署,handoff,ask", lis);
-      check("desk: a need handled says so", (await page.textContent("#bd-w-c1a2b3 .bdtl li.past")).includes("已處理"));
-      check("desk: its summary counts the key events", (await page.textContent("#bd-w-c1a2b3 .bdtlb")).includes("7 件關鍵事件"));
+      check("desk: the timeline's key events: the first ask, the PR opened, the needs, its merge and deploy, what is open",
+        lis.join() === "ask,開 PR,Jing,Jing,merge,部署,handoff,ask", lis);
+      const past = await page.$$eval("#bd-w-c1a2b3 .bdtl li.past .nst", (ns) => ns.map((n) => n.textContent));
+      check("desk: a need handled says by whom: Jing, or its lead and why",
+        past.join("|") === "Jing 標為已處理|lead-shop 標為已處理：Jing 在對話裡回了", past);
+      check("desk: its summary counts the key events", (await page.textContent("#bd-w-c1a2b3 .bdtlb")).includes("8 件關鍵事件"));
       await page.click('#bd-w-c1a2b3 [data-act="bd:tlall"]');
       await sleep(80);
-      check("desk: every ask and answer on asking, the FYI and 收到 too", (await page.$$("#bd-w-c1a2b3 .bdtl li")).length === 10);
+      check("desk: every ask and answer on asking, the FYI and 收到 too", (await page.$$("#bd-w-c1a2b3 .bdtl li")).length === 11);
 
       // A patch: the card that changed alone.
       await page.evaluate(() => { document.querySelector("#bd-w-d4e5f6").dataset.mark = "kept"; });
@@ -157,7 +175,7 @@ async function shoot(page, width, file) {
       check("desk: an open timeline whose card moved on is asked for again", ops(intents, "board-timeline").length === 2);
       await page.evaluate(() => GM.boardPatch({ v: 3, base: 2, full: false, cards: [], drop: ["3c4d5e"] }));
       await sleep(80);
-      check("desk: an item gone is dropped", !(await page.$("#bd-w-3c4d5e")) && (await page.textContent(".bdtile .big")) === "16");
+      check("desk: an item gone is dropped", !(await page.$("#bd-w-3c4d5e")) && (await page.textContent(".bdtile .big")) === "17");
       await page.evaluate(() => GM.boardPatch({ v: 9, base: 7, full: false, cards: [], drop: [] }));
       await sleep(80);
       check("desk: a version missed asks for the whole again", ops(intents, "board-resend").length === 1);
@@ -176,7 +194,7 @@ async function shoot(page, width, file) {
       // Filters.
       await page.click('[data-act="bd:filter"][data-f="busy"]');
       await sleep(80);
-      check("desk: 還有事 keeps the live, waiting-on-Jing, nobody's and tail ones", (await page.$$(".bdarea .wi")).length === 6 && !(await page.$(".bdfoldh")));
+      check("desk: 還有事 keeps the live, waiting-on-Jing, nobody's and tail ones", (await page.$$(".bdarea .wi")).length === 7 && !(await page.$(".bdfoldh")));
       await page.click('[data-act="bd:filter"][data-f="quiet"]');
       await sleep(80);
       check("desk: 安靜 lists every quiet item, none folded away", (await page.$$(".bdarea .wi")).length === 9 && !(await page.$(".bdfoldh")));
