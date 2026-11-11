@@ -191,21 +191,19 @@ const open = (page) => page.$$eval(".bdneeds .bdnrow.open", (cs) => cs.map((c) =
           : c.id === "b1c2d3" ? Object.assign({}, c, { needs: [] }) : c)) })), BOARD);
       await sleep(100);
       const none = await page.evaluate(() => { const p = document.querySelector(".bd-need .bdneednone");
-        return { text: p && p.textContent, h: p ? Math.round(p.getBoundingClientRect().height) : 0, head: !!document.querySelector(".bd-need .section"),
+        return { text: p && p.textContent, h: p ? Math.round(p.getBoundingClientRect().height) : 0, head: !!document.querySelector(".bd-need > h2.section.red"),
                  cards: document.querySelectorAll(".bdneeds .bdnrow").length }; });
       check(W("nothing left: one quiet line, not a section"), none.text === "現在沒有要你處理的" && none.h > 0 && none.h < 30 && !none.head && !none.cards, none);
       await sleep(6200);
       check(W("what was done is said a while, then the line alone"), !(await page.$(".bd-need .ibtoast")));
       const leaving = intents.length;
-      await tap('.tab[data-tab="inbox"]');
-      await sleep(120);
-      const inInbox = await page.evaluate(() => [...document.querySelectorAll(".inboxpage [data-id]")].map((e) => e.getAttribute("data-id")));
-      check(W("the Inbox has none of them either"), handled.every((id) => !inInbox.includes(id)), inInbox);
-      check(W("leaving the Board for the Inbox keeps its watch"), !ops(intents.slice(leaving), "inbox-unwatch").length &&
-        ops(intents.slice(leaving), "board-unwatch").length === 1, intents.slice(leaving).map((i) => i.op));
+      check(W("no Inbox tab to find them in: the Board is where they are"), !(await page.$('.tab[data-tab="inbox"]')) &&
+        !(await page.$$eval("[data-id]", (es) => es.map((e) => e.getAttribute("data-id"))))
+          .some((id) => handled.includes(id)));
       await tap('.tab[data-tab="agents"]');
       await sleep(80);
-      check(W("leaving for Agents lets the Inbox's watch go"), ops(intents.slice(leaving), "inbox-unwatch").length === 1);
+      check(W("leaving the Board lets its watch and the items' go"), ops(intents.slice(leaving), "inbox-unwatch").length === 1 &&
+        ops(intents.slice(leaving), "board-unwatch").length === 1, intents.slice(leaving).map((i) => i.op));
 
       // ---- The stretch: 7 days, for the whole page -------------------------------
       await tap('.tab[data-tab="board"]');

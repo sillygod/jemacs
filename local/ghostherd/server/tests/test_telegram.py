@@ -299,6 +299,22 @@ def test_a_failed_ask_says_what_and_why(tmp_path):
     reset_herd()
 
 
+def test_a_push_links_to_what_it_is_about_on_the_board(tmp_path):
+    """A push with the Board's address of what it is about (Emacs's
+    `ghostherd--board-url') has a button to it, before the room's."""
+    bot, herd = _bot(tmp_path)
+    board = "https://box.tail0.ts.net/open/ghostherd#board/at/ask-failed%3Ad725ee06"
+    push = _push(herd, kind="ask-failed", session="lead-tmp", project="/tmp/shop", url=ROOM, board=board,
+                 ask="d725ee06", to="qa", error="refused", head="Test it")
+    _text, markup = bot.prepare_push(push, 0)
+    assert markup == {"inline_keyboard": [[{"text": "Open on the Board", "url": board}],
+                                          [{"text": "Open the room", "url": ROOM}]]}
+    # One Telegram would refuse is left out, the message kept.
+    _text, markup = bot.prepare_push(dict(push, board="ghostherd#board"), 0)
+    assert markup == {"inline_keyboard": [[{"text": "Open the room", "url": ROOM}]]}
+    reset_herd()
+
+
 def test_a_lead_started_for_a_handoff_says_for_whom(tmp_path):
     bot, herd = _bot(tmp_path)
     push = _push(herd, kind="lead-started", session="lead-tmp", project="/tmp/shop/", url=ROOM,

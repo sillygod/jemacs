@@ -43,6 +43,8 @@ it (GM.renderHerd), its JSON as written."
       (xwapp-create :buffer-name "*herd*"
                     :index (expand-file-name "ghostherd/ui/index.html" e2e-tree)
                     :prefixes '("ghmem:") :namespace "GM" :idle-title "Herd"
+                    ;; As ghostherd's own: its scripts go to a phone lean.
+                    :lean t
                     :handler (lambda (intent)
                                (e2e-note (list :intent intent))
                                (pcase (alist-get 'op intent)

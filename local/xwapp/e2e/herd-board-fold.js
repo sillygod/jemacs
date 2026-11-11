@@ -308,7 +308,9 @@ const chatItems = (name, es) => es.map((e) => e.role === "user"
       if (await page.$('.bdsecb[data-sec="now"][hidden]')) { await tap('.bdsech[data-sec="now"]'); await sleep(80); }
       const wq = await page.$eval(waitTalk, (b) => ({ name: b.getAttribute("data-name"), ask: b.getAttribute("data-ask"), want: b.getAttribute("data-want") }));
       check(W("an open ask's 到對話 is to its taker, as it came in"), wq.name === "rd-alpha" && wq.ask === "op000001" && wq.want === "ask-in", wq);
-      check(W("no page errors"), !errors.length, errors);
+      // A reload drops the intent on its way: WebKit says so as an error.
+      const errs = errors.filter((e) => !/access control checks|network connection was lost/.test(e));
+      check(W("no page errors"), !errs.length, errs);
       await ctx.close();
     }
   } finally {

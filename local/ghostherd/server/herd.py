@@ -2942,11 +2942,13 @@ class HerdStore:
 
     def board_counts(self, days: float = 1, orphan_hours: float = 4) -> dict[str, Any]:
         """How many items the Board would show waiting on the user (a lead's
-        need open) and how many nobody has (沒人接): the Board tab's badge,
-        for a page that has not the tab open.  The Board's own window of
-        DAYS and its own rules -- `board.shown', `board.urgent', the same
-        `board' marks its cards with -- on the asks' few columns and the
-        events alone: no cards, no text."""
+        need open) and how many nobody has (沒人接) -- of those, BARE the
+        ones with no need open, which 要你處理 lists apart (the others ride
+        on their lines, the Inbox's): the Board tab's badge, for a page that
+        has not the tab open.  The Board's own window of DAYS and its own
+        rules -- `board.shown', `board.urgent', the same `board' marks its
+        cards with -- on the asks' few columns and the events alone: no
+        cards, no text."""
         since, orphan_since = board.windows(self._board_days(days), orphan_hours)
         with self._mu:
             self._assign_items()
@@ -2961,13 +2963,15 @@ class HerdStore:
         by: dict[str, list[dict[str, Any]]] = {}
         for r in rows:
             by.setdefault(r["item"], []).append(r)
-        out = {"jing": 0, "orphan": 0}
+        out = {"jing": 0, "orphan": 0, "bare": 0}
         for it, asks in by.items():
             if it not in items:
                 continue
             st = board.standing(items[it], asks, events.get(it, []))
             if board.shown(st, since) and (u := board.urgent(st, orphan_since)):
                 out[u] += 1
+                if u == "orphan" and not st["needs"]:
+                    out["bare"] += 1
         return out
 
     @staticmethod

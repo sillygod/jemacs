@@ -7,7 +7,7 @@
 const path = require("path");
 const { execFileSync } = require("child_process");
 const { webkit } = require("playwright");
-const { phonePage, HERD, sleep } = require("./herdlib");
+const { phonePage, HERD, sleep, boardUnfold } = require("./herdlib");
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
 const DESK = { viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2, isMobile: false, hasTouch: false };
@@ -85,15 +85,16 @@ const herd = () => {
       check(W("Stop in the dialog tells Emacs, for that agent"),
         stops().length === 1 && stops()[0].name === SAFE, stops());
 
-      // ---- The Inbox ----
-      await tap('.tab[data-tab="inbox"]');
+      // ---- The Board's 要你處理 (once the Inbox's) ----
+      await tap('.tab[data-tab="board"]');
       await sleep(80);
-      await page.evaluate((it) => GM.renderInbox({ items: it, count: it.length }), ITEMS);
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: it.length, needsOnly: true }), ITEMS);
       await sleep(120);
-      const card = (n) => (where === "phone" ? ".ibcard" : ".ibrow") + '[data-id="gone:' + n + '"]';
-      check(W("the Inbox lists both under Needs you"), !!(await page.$(card(SAFE))) && !!(await page.$(card(RISK))));
-      check(W("the badge counts them"), (await page.$eval("#inbox-n", (e) => e.textContent)) === "2");
-      await tap(card(SAFE));
+      await boardUnfold(page);
+      const card = (n) => '.bdnrow[data-id="gone:' + n + '"]';
+      check(W("要你處理 lists both"), !!(await page.$(card(SAFE))) && !!(await page.$(card(RISK))));
+      check(W("the badge counts them"), (await page.$eval("#board-n", (e) => e.textContent)) === "2");
+      await tap(card(SAFE) + " .bdnr");
       await sleep(120);
       const text = await page.textContent(".app");
       check(W("a merged one: safe to stop, and why"),
@@ -107,7 +108,7 @@ const herd = () => {
         stops().length === 2 && stops()[1].name === SAFE, stops());
       check(W("and the item leaves"), !(await page.$(card(SAFE))));
       // The one whose branch has commits.
-      if (!(await page.$('[data-act="ib:stop-gone"][data-id="gone:' + RISK + '"]'))) await tap(card(RISK));
+      if (!(await page.$('[data-act="ib:stop-gone"][data-id="gone:' + RISK + '"]'))) await tap(card(RISK) + " .bdnr");
       await sleep(120);
       const risk = await page.textContent(".app");
       check(W("one with commits: how many, and that work may be lost"),

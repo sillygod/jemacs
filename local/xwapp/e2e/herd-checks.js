@@ -1,5 +1,5 @@
 // The herd's checks (ask bd7efaa8): a fact made into a rule run before each
-// shell call.  A check proposal on the Memory tab and in the Inbox shows
+// shell call.  A check proposal on the Memory tab and on the Board shows
 // the fact, the hint and what it denies and lets through, and is approved
 // as "Turn the check on"; the Memory tab's Checks list each store's checks
 // on or off with how many calls each denied and the last of them, and
@@ -10,7 +10,7 @@
 const { webkit } = require("playwright");
 const fs = require("fs");
 const path = require("path");
-const { phonePage } = require("./herdlib");
+const { phonePage, boardPick } = require("./herdlib");
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -158,8 +158,8 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
       await sleep(40);
       check(W("no checks, no section"), (await page.$eval("#mem-checks", (e) => e.innerHTML)) === "");
 
-      // ---- The Inbox: a check proposal to approve ----
-      await page.evaluate(() => document.querySelector('.tab[data-tab="inbox"]').click());
+      // ---- The Board (once the Inbox): a check proposal to approve ----
+      await page.evaluate(() => document.querySelector('.tab[data-tab="board"]').click());
       await page.evaluate((r) => GM.renderInbox({ count: 1, items: [{
         id: "proposal:p-lint", group: "need", kind: "proposal", tag: "Proposal", tone: "purple",
         agent: "claude-dp", cli: "claude", project: "-src-dp", at: Date.now() - 60e3,
@@ -168,10 +168,9 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
         preview: r.hint, facts: ["Grep cli binaries cheaply"], lint: true, hint: r.hint,
         catches: r.catches, passes: r.passes, proposalId: "p-lint", read: false, override: null }] }), RULE);
       await sleep(120);
-      if (label === "desk") await page.click('.ibrow[data-id="proposal:p-lint"]');
-      else if (await page.$('.ibcard[data-id="proposal:p-lint"]')) await page.tap('.ibcard[data-id="proposal:p-lint"]');
+      await boardPick(page, "proposal:p-lint", label === "desk" ? null : (sel) => page.tap(sel));
       await sleep(120);
-      check(W("the Inbox item shows the hint and the examples"),
+      check(W("the item on the Board shows the hint and the examples"),
         await page.evaluate(() => !!document.querySelector(".ibprop .ckhint") && document.querySelectorAll(".ibprop .ckno").length === 2
           && document.querySelectorAll(".ibprop .ckok").length === 3));
       check(W("no diff for a check"), !(await page.$(".ibprop .ibdiff")));
@@ -180,9 +179,9 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
       await tap('.ibprop [data-act="ib:prop-approve"]');
       await sleep(80);
       const ia = sent(intents, "memory-proposal-approve");
-      check(W("the Inbox's Turn the check on approves it by its id"),
+      check(W("the Board's Turn the check on approves it by its id"),
         ia.length === before + 1 && ia[ia.length - 1].id === "p-lint", ia[ia.length - 1]);
-      check(W("nothing runs off the Inbox's edge"), (await overflow(page)) <= 0, await overflow(page));
+      check(W("nothing runs off the Board's edge"), (await overflow(page)) <= 0, await overflow(page));
       check(W("no page errors"), errors.length === 0, errors);
       await ctx.close();
     }

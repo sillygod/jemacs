@@ -39,7 +39,7 @@ const files = (traffic) => traffic.filter((t) => /\/ui\//.test(t.path));
     check("its files and the kit's came gzip'd", big.length >= 5 && big.every((t) => t.status === 200 && t.enc === "gzip"),
       big.map((t) => name(t) + " " + t.status + " " + (t.enc || "plain") + " " + t.bytes));
     const app = first.find((t) => /ghostherd\/ui\/app\.js$/.test(name(t)));
-    check("app.js some 88 KB, not 314", app && app.bytes < 120000, app && app.bytes);
+    check("app.js gzip'd and lean, some 105 KB, not 495", app && app.bytes < 120000, app && app.bytes);
     check("and it works: its agents shown, its intents going", await tab.$$eval(".arow", (r) => r.length) > 30 &&
       (await tab.evaluate(() => typeof GM.renderHerd === "function")));
     // What changes, its nexts: gzip'd once past what the proxy's socket

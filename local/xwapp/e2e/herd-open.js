@@ -105,9 +105,12 @@ async function open(s, ctx, page) {
     const m = (window.__marks = {});
     const at = () => Math.round(performance.timeOrigin + performance.now());
     const look = () => {
-      if (!m.inbox && document.querySelector(".ibcard")) m.inbox = at();
-      if (!m.zero && document.querySelector(".ibempty:not(.ibcoming)")) m.zero = at();
-      if (!m.coming && document.querySelector(".ibcoming")) m.coming = at();
+      // The Board's 要你處理 (once the Inbox): drawn with its lines; or its
+      // quiet line saying none, or that it is on its way.
+      const none = document.querySelector(".bd-need .bdneednone");
+      if (!m.inbox && document.querySelector(".bd-need .bdnrow")) m.inbox = at();
+      if (!m.zero && none && /現在沒有/.test(none.textContent)) m.zero = at();
+      if (!m.coming && none && /看看有沒有/.test(none.textContent)) m.coming = at();
       const n = document.getElementById("sessions-n");
       if (!m.count && n && n.textContent) m.count = at();
     };
@@ -128,7 +131,7 @@ async function open(s, ctx, page) {
 }
 
 function show(name, r) {
-  console.log(`     ${name}: DOMContentLoaded ${r.dcl} ms · Inbox drawn ${r.inbox} ms · ` +
+  console.log(`     ${name}: DOMContentLoaded ${r.dcl} ms · 要你處理 drawn ${r.inbox} ms · ` +
               `${r.before.length} requests, ${kb(r.before.reduce((a, q) => a + q.bytes, 0))} KB before it ` +
               `(${kb(r.nextBefore)} KB of next)`);
   if (process.env.TIMES)
@@ -190,12 +193,12 @@ function show(name, r) {
       }
       if (name !== names[0]) continue;
 
-      // ---- Opening on the Inbox waits for nothing it does not show ----
+      // ---- Opening on the Board, what needs you first, waits for nothing it does not show ----
       for (const [when, r] of [["cold", cold], ["again", warm]]) {
-        check(`${name} ${when}: the Inbox is drawn`, r.drawn);
-        check(`${name} ${when}: no session list comes before the Inbox (next ≤ 64 KB before it)`,
+        check(`${name} ${when}: 要你處理 is drawn`, r.drawn);
+        check(`${name} ${when}: no session list comes before 要你處理 (next ≤ 64 KB before it)`,
           r.nextBefore <= 64 * 1024, { nextKB: kb(r.nextBefore) });
-        check(`${name} ${when}: the Inbox says it is on its way, not "Inbox zero", until it comes`,
+        check(`${name} ${when}: 要你處理 says it is on its way, not that there is none, until it comes`,
           r.coming !== null && r.zero === null, { coming: r.coming, zero: r.zero, inbox: r.inbox });
       }
       const lists = loaded.filter((e) => e.what.rpc === "memory_list");
@@ -203,13 +206,13 @@ function show(name, r) {
         lists.length === 2 && lists.every((e) => e.what.limit === 1), lists.map((e) => e.what.limit));
       const ops = loaded.filter((e) => e.what.intent).map((e) => e.what.intent);
       const first = ops.slice(ops.lastIndexOf("xwapp-seen") + 1);
-      check(`${name}: the Inbox is the first thing the page asks of Emacs`, first[0] === "inbox-watch", first.slice(0, 4));
+      check(`${name}: the Board, what needs you with it, is the first thing the page asks of Emacs`, first[0] === "board-watch", first.slice(0, 4));
       check(`${name}: the Sessions tab's badge is their count`, badge === "928", badge);
 
       // ---- The Sessions tab asks for them as it shows ----
       check(`${name}: Sessions says the list is on its way`, /Listing the sessions/.test(coming), coming.slice(0, 60));
       check(`${name}: Sessions lists all 928`, listed);
-      await page.tap('.tab[data-tab="inbox"]');
+      await page.tap('.tab[data-tab="board"]');
       await sleep(300);
       await page.tap('.tab[data-tab="search"]');
       await sleep(300);

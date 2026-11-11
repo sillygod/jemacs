@@ -4,7 +4,7 @@
 // for the whole message; the Inbox's way in.  The phone: the list, then the
 // thread as a conversation.  Fixture data, Emacs played by threads-fixture.
 const { webkit } = require("playwright");
-const { phonePage, sleep } = require("./herdlib");
+const { phonePage, sleep, boardPick, EMPTY_BOARD } = require("./herdlib");
 const { LIST, DETAILS, serve } = require("./threads-fixture");
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
@@ -112,7 +112,7 @@ const ITEMS = [
       await page.evaluate((d) => GM.renderThread(d), DETAILS.t1);
       await sleep(100);
 
-      // The Inbox's way in: the thread is drawn inline below the item, with a
+      // The way in from the Board (once the Inbox): the thread is drawn inline below the item, with a
       // quiet "Open in Threads" link in its header (shown once Emacs pushes the
       // thread for the picked item -- no always-on button any more).
       const STUB = {
@@ -123,23 +123,23 @@ const ITEMS = [
                 { name: "claude-jnotes", kind: "claude", project: "jnotes", role: "", worktree: false }],
         msgs: [{ kind: "ask", from: "lead-jnotes", to: "claude-jnotes", at: now - 40e3, head: "h", text: "full" }], waiting: [],
       };
-      await page.click('.tab[data-tab="inbox"]');
+      await page.click('.tab[data-tab="board"]');
       check("desk: leaving the tab stops watching it", intents.some((i) => i.op === "threads-unwatch"));
-      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1 }), ITEMS);
+      await page.evaluate(([it, b]) => { GM.renderInbox({ items: it, count: 1, needsOnly: true }); GM.boardPatch(b); }, [ITEMS, EMPTY_BOARD]);
       await sleep(100);
-      await page.click('.ibrow[data-id="handoff:h1"]');
+      await boardPick(page, "handoff:h1");
       await sleep(80);
-      check("desk: picking an Inbox item asks for its detail", intents.some((i) => i.op === "inbox-detail" && i.id === "handoff:h1" && i.ask === "h1"));
+      check("desk: opening an item on the Board asks for its detail", intents.some((i) => i.op === "inbox-detail" && i.id === "handoff:h1" && i.ask === "h1"));
       await page.evaluate((th) => GM.inboxDetailData({ for: "handoff:h1", thread: th }), STUB);
       await sleep(60);
       await page.click('.ibthwrap [data-act="th:from-inbox"]');
       await sleep(250);
-      check("desk: Open in Threads on an Inbox item opens the thread of its ask",
+      check("desk: Open in Threads on an item on the Board opens the thread of its ask",
         opens(intents).slice(-1)[0] === "h1" && (await page.textContent(".thh1")) === "claude -p children closed asks" &&
         (await page.getAttribute('.tab[data-tab="threads"]', "class")).includes("on"));
-      await page.click('.tab[data-tab="inbox"]');
-      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1 }), ITEMS);
-      await page.click('.ibrow[data-id="question:lead-jnotes:3"]');
+      await page.click('.tab[data-tab="board"]');
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1, needsOnly: true }), ITEMS);
+      await boardPick(page, "question:lead-jnotes:3");
       await sleep(80);
       await page.evaluate((th) => GM.inboxDetailData({ for: "question:lead-jnotes:3", thread: th }), STUB);
       await sleep(60);

@@ -483,7 +483,8 @@ def _sentence(text: str) -> str:
 
 def push_keyboard(push: dict[str, Any], session: dict[str, Any] | None = None) -> dict | None:
     """A blocked agent's answers and screen, when it is still in the
-    herd; a used-up one's relay; the room, when the push has its address."""
+    herd; a used-up one's relay; what it is about on the herd page's
+    Board, and the room, when the push has their addresses."""
     rows = []
     if push.get("kind") == "blocked" and session:
         rows.extend(answer_rows(session))
@@ -491,9 +492,9 @@ def push_keyboard(push: dict[str, Any], session: dict[str, Any] | None = None) -
     if push.get("kind") == "used-up" and session and RELAY_KIND.match(push.get("to") or ""):
         rows.append([_btn(f"Relay to {push['to']}", f"rl:{session['short']}:{push['to']}"),
                      _btn("screen", f"sc:{session['short']}")])
-    room = _link("Open the room", push.get("url"))
-    if room:
-        rows.append(room)
+    for row in (_link("Open on the Board", push.get("board")), _link("Open the room", push.get("url"))):
+        if row:
+            rows.append(row)
     return {"inline_keyboard": rows} if rows else None
 
 

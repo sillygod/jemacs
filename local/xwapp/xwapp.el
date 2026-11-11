@@ -249,6 +249,13 @@ FAIL-FN is called as `xwapp-json-callback' describes."
 (defun xwapp-create (&rest slots)
   "A new app, of SLOTS: the keywords of `xwapp''s slots, and :reopen.
 
+:lean, non-nil, sends the app's own scripts (its .js, not the kit's)
+lean where they go gzip'd -- to a browser over the tailnet, the phone's
+slow link -- each line that is a comment alone sent blank (`xwapp--lean'):
+only for scripts with no string that runs over a line, whose lines are
+code or comment.  The line numbers stay; a browser here (the xwidget)
+has the file as it is.
+
 :reopen is a function that does what the app's command does before
 showing its page, for a browser tab that comes back to an app that is
 not open: one left open while Emacs restarted, or let go while the
@@ -261,8 +268,10 @@ restart.  Name an autoloaded function there: once Emacs is up,
 `xwapp-resume' loads the app through it, to listen for the tab."
   (let ((app (apply #'xwapp--make
                      (cl-loop for (key value) on slots by #'cddr
-                              unless (eq key :reopen) append (list key value))))
+                              unless (memq key '(:reopen :lean)) append (list key value))))
         (reopen (plist-get slots :reopen)))
+    (when (plist-get slots :lean)
+      (xwapp--put app :lean t))
     (when reopen
       (xwapp--put app :reopen reopen)
       (xwapp--restore app))
@@ -271,6 +280,12 @@ restart.  Name an autoloaded function there: once Emacs is up,
 (defun xwapp-reopen (app)
   "APP's :reopen, or nil; see `xwapp-create'."
   (xwapp--get app :reopen))
+
+(defun xwapp-set-lean (app lean)
+  "Send APP's own scripts lean where they go gzip'd, or not, as LEAN
+says: `xwapp-create''s :lean, for an app made before -- one a reload
+does not make again."
+  (xwapp--put app :lean (and lean t)))
 
 (defvar-local xwapp--xw nil
   "The xwidget this app buffer was created with.")
@@ -1713,26 +1728,47 @@ go past `xwapp--gzip-keep'."
           (push tag kept))))
     (setq xwapp--gzipped-order (nreverse kept))))
 
-(defun xwapp--gzip (file etag then)
+(defun xwapp--gzip (file etag then &optional lean)
   "Call THEN with FILE gzip'd, its ETag being ETAG -- or with nil, when
 it could not be.  At once when kept; else when gzip, a process of its
-own, is done: one for all who ask for it meanwhile."
+own, is done: one for all who ask for it meanwhile.  LEAN: its comment
+lines sent blank (`xwapp--lean'), ETAG then the lean bytes' own."
   (if-let* ((bytes (xwapp--gzip-kept etag)))
       (funcall then bytes)
     (let ((waiting (gethash etag xwapp--gzipping)))
       (puthash etag (cons then waiting) xwapp--gzipping)
       (unless waiting
-        (xwapp--gzip-start file etag)))))
+        (xwapp--gzip-start file etag lean)))))
 
-(defun xwapp--gzip-start (file etag)
-  "Gzip FILE, of ETAG; hand the bytes to who waits for them."
+;; A script's comments are a third of it and more -- the herd's app.js
+;; 96 KB of 495, 38 KB of 143 gzip'd -- bytes a phone's link carries on
+;; every load that nothing runs.  An app that asks for it (`xwapp-create'
+;; :lean) has its scripts' comment lines sent blank: a line of nothing
+;; but a `//' comment, its newline kept, so an error's line is the
+;; file's.  Only a whole line, and only for scripts with no string or
+;; template that runs over a line -- a line there that starts `//' would
+;; be data.  The xwidget, and a browser that does not take gzip, have
+;; the file as it is.
+
+(defun xwapp--lean (bytes)
+  "BYTES, a script, each line that is only a `//' comment made empty."
+  (replace-regexp-in-string "^[ \t]*//.*$" "" bytes t t))
+
+(defun xwapp--lean-etag (etag)
+  "The ETag of a file's lean bytes, the file's being ETAG."
+  (concat (substring etag 0 -1) "-lean\""))
+
+(defun xwapp--gzip-start (file etag &optional lean)
+  "Gzip FILE, of ETAG (LEAN, its comment lines blank); hand the bytes to
+who waits for them."
   (xwapp--deflate
-   (condition-case nil (xwapp--bytes (file-truename file)) (error nil))
+   (condition-case nil (funcall (if lean #'xwapp--lean #'identity) (xwapp--bytes (file-truename file)))
+     (error nil))
    (lambda (bytes)
      (let ((waiting (gethash etag xwapp--gzipping)))
        (remhash etag xwapp--gzipping)
        ;; Kept only when still of this version of the file.
-       (when (and bytes (equal (xwapp--etag file) etag))
+       (when (and bytes (equal (funcall (if lean #'xwapp--lean-etag #'identity) (xwapp--etag file)) etag))
          (xwapp--gzip-keep etag bytes))
        (dolist (then (nreverse waiting))
          (xwapp--done (lambda () (funcall then bytes))))))))
@@ -1831,6 +1867,10 @@ it: see \"The page's own files go gzip'd\"."
                (size (file-attribute-size (file-attributes (file-truename file))))
                (varies (and etag size (xwapp--gzip-type-p type size)))
                (gzip (and varies (xwapp--takes-gzip-p headers)))
+               ;; Its own scripts, not the kit's, lean where it asked.
+               (lean (and gzip (xwapp--get app :lean) (equal (file-name-extension file) "js")
+                          (string-prefix-p (file-name-directory (xwapp-index app)) file)))
+               (etag (if lean (xwapp--lean-etag etag) etag))
                (keep (lambda (tag)
                        `(("Cache-Control" . "no-cache")
                          ,@(when tag `(("ETag" . ,tag)))
@@ -1845,7 +1885,10 @@ it: see \"The page's own files go gzip'd\"."
                            (if bytes
                                (xwapp--respond proc 200 type bytes
                                                (cons '("Content-Encoding" . "gzip") (funcall keep tag)))
-                             (xwapp--respond proc 200 type (xwapp--bytes file) (funcall keep etag))))))
+                             ;; Plain: the file as it is, under its own ETag.
+                             (xwapp--respond proc 200 type (xwapp--bytes file)
+                                             (funcall keep (if lean (xwapp--etag file) etag)))))
+                         lean))
            (t
             (xwapp--respond proc 200 type (xwapp--bytes file) (funcall keep etag)))))
       (xwapp--respond proc 404))))

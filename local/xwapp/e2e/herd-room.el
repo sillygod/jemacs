@@ -226,7 +226,7 @@ change to send a page that watches it."
                   ("herd_pending_proposals" (list :proposals nil))
                   ("herd_threads" (list :live 0 :threads nil))
                   ("herd_board" (e2e-board))
-                  ("herd_board_counts" (list :jing 0 :orphan 0))
+                  ("herd_board_counts" (list :jing 0 :orphan 0 :bare 0))
                   ("herd_needs" (list :needs (copy-sequence e2e-needs)))
                   ("herd_board_need_close"
                    (setq e2e-needs (seq-remove (lambda (n) (equal (plist-get n :id) (plist-get params :id))) e2e-needs))

@@ -1,4 +1,5 @@
-// The Inbox's replies (ask 7c6eb080): a report is answered as a question
+// The replies the Inbox had (ask 7c6eb080), on the Board now: a report of
+// no work item, under 最近回報, is answered as a question
 // is -- Reply opens the same box, compact until pressed -- and either box
 // takes images as a room's does: the Image button, a paste.  Sent, the
 // images go after the text, a file name a line, to the agent, its lead
@@ -7,7 +8,7 @@
 // clipboard) and phone (a photo picked there, sent in a request).
 const path = require("path");
 const { webkit } = require("playwright");
-const { phonePage, sleep } = require("./herdlib");
+const { phonePage, sleep, EMPTY_BOARD, boardPick, ROW } = require("./herdlib");
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
 const DESK = { viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2, isMobile: false, hasTouch: false };
@@ -36,13 +37,11 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
         ? { intents, host: "127.0.0.1", context: DESK } : { intents });
       const W = (n) => where + ": " + n;
       const tap = (sel) => (where === "phone" ? page.tap(sel) : page.click(sel));
-      const open = async (id) => {
-        if (where === "desk") return page.click('.ibrow[data-id="' + id + '"]');
-        if (await page.$('button.ibcard[data-id="' + id + '"]')) await page.tap('button.ibcard[data-id="' + id + '"]');
-      };
-      const push = () => page.evaluate((it) => GM.renderInbox({ items: it, count: 1 }), ITEMS);
+      const open = (id) => boardPick(page, id, tap);
+      const push = () => page.evaluate((it) => GM.renderInbox({ items: it, count: 1, needsOnly: true }), ITEMS);
       await sleep(150);
       await push();
+      await page.evaluate((b) => GM.boardPatch(b), EMPTY_BOARD);
       await sleep(100);
 
       // ---- A report: compact, Reply opens the box a question has ----
@@ -85,7 +84,7 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
       check(W("the image shows above the box"),
         (await page.$$eval('.ibreply[data-name="lead-.emacs.d"] .attach .chip', (es) => es.map((e) => e.textContent))).join("|").includes("clip-1.png"));
       await page.fill('.ibreplybox[data-id="' + R + '"]', "Good -- merge the first two");
-      // The steady tick redraws the Inbox: the box stays open, its text and image kept.
+      // The steady tick redraws the list: the box stays open, its text and image kept.
       await push();
       await sleep(80);
       check(W("a redraw keeps the box open, its text and its image"),
@@ -117,13 +116,13 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
       // An IME composition open (CJK): a push waits for it to end.
       const NEW = "report:claude-jnotes:3";
       const more = ITEMS.concat([mk({ id: NEW, agent: "claude-jnotes", title: "Notes synced", preview: "both ways", replyVia: "agent" })]);
-      const row = '.ibrow[data-id="' + NEW + '"], .ibcard[data-id="' + NEW + '"]';
+      const row = ROW(NEW);
       await page.$eval(BOX, (t) => {
         t.kept = true;
         t.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
         t.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true, data: "ㄏ" }));
       });
-      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1 }), more);
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1, needsOnly: true }), more);
       await sleep(80);
       check(W("a push during a composition is not drawn: the box is the same one"),
         (await page.$eval(BOX, (t) => t.kept === true)) && !(await page.$(row)));
@@ -141,7 +140,7 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
       check(W("no other route is taken for it"), !sent(intents, "agent-prompt").length && !sent(intents, "primary-say").length);
       check(W("the report is read once sent to"),
         sent(intents, "inbox-set").some((i) => i.id === R && i.done === true));
-      check(W("it leaves the list"), !(await page.$('.ibrow[data-id="' + R + '"], .ibcard[data-id="' + R + '"]')));
+      check(W("it leaves the list"), !(await page.$(ROW(R))));
 
       // ---- A question's box takes a pasted image too ----
       const Q = "question:claude-godzilla:8";
@@ -246,13 +245,16 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
       let box = await composing("sent mid-word");
       await page.$eval('[data-act="ib:reply"][data-id="' + R + '"]', (b) => b.click());
       await sleep(80);
-      check(W("Send during a composition: sent, and the Inbox drawn at once"),
+      check(W("Send during a composition: sent, and the Board drawn at once"),
         (sent(intents, "lead-say").pop() || {}).text === "sent mid-word" &&
-        !(await page.$('.ibrow[data-id="' + R + '"], .ibcard[data-id="' + R + '"]')) && !(await page.$(BOX)));
+        !(await page.$(ROW(R))) && !(await page.$(BOX)));
       await ended(box);
       await sleep(80);
       await push();
       await sleep(80);
+      // The Board does not open the next one by itself (the Inbox did): the
+      // question's box opened to look in.
+      await open("question:claude-godzilla:8");
       check(W("its composition ending after puts no old text back, in any box"),
         (await left()).length === 0 && !!(await page.$(".ibreplybox")), await left());
       box = await composing("cancelled mid-word");

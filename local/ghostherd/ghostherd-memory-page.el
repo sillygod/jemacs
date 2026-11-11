@@ -95,8 +95,16 @@ last ready said: it is sent their count alone until then.  See
                            (setq ghostherd-memory-page--pending nil
                                  ghostherd-memory-page--importing nil)
                            (ghostherd-memory-page--let-go ghostherd-memory-page--app))
-                :reopen #'ghostherd-memory-page-reopen)
+                :reopen #'ghostherd-memory-page-reopen
+                ;; Its app.js, 495 KB, is a fifth comments: sent to a
+                ;; phone without them, 38 KB less on its slow link
+                ;; (gzip'd), every load.  app.js has no string that runs
+                ;; over a line, which that needs.
+                :lean t)
   "The page, buffer and intent channel; see `xwapp'.")
+
+;; Made once, so a reload of this file sets it on the app it made then.
+(when (fboundp 'xwapp-set-lean) (xwapp-set-lean ghostherd-memory-page--app t))
 
 (defconst ghostherd-memory-page--image-name
   "[0-9a-f]\\{32\\}\\(?:\\.t\\.jpg\\|\\.png\\|\\.jpg\\|\\.gif\\|\\.webp\\)"
@@ -667,6 +675,10 @@ sidecar here, or ps does not say.  ps runs on its own: Emacs waits not."
           ;; loaded) is left out, so old backlog does not surface.  Leads and
           ;; primary are surfaced by role regardless.
           :saidFromUser (if (eq (ghostherd--turn-origin-of s) 'user) t :json-false)
+          ;; Its last turn came of an ask (or the herd's mail on one): its
+          ;; report is of that work, a work item's on the Board; one the
+          ;; user started is of none -- the Board's 最近回報.
+          :saidFromAsk (if (memq (ghostherd--turn-origin-of s) '(ask mail)) t :json-false)
           ;; A lead the herd started to take a cross-project handoff: an
           ;; Update, kept until read, says so.  `handoffFrom' is who for.
           :handoffStarted (if (ghostherd--handoff-lead-for s) t :json-false)
@@ -2194,13 +2206,14 @@ look found them -- starting another when that one is old."
 
 (defun ghostherd-memory-page--room-url (project)
   "The address of PROJECT's room, as its chat, from your other devices --
-without the page's secret -- or of the page's Agents tab, for nil; nil
-when the page is served to this machine alone."
+without the page's secret -- or of the page's home, the Board, for nil;
+nil when the page is served to this machine alone.  A push links to
+what it is about on the Board under it (`ghostherd--board-url')."
   (when xwapp-remote-hosts
     (xwapp-remote-open-url ghostherd-memory-page--app
                            (if project
                                (concat "room/chat/" (url-hexify-string project))
-                             "agents"))))
+                             "board"))))
 
 (setq ghostherd-room-url-function #'ghostherd-memory-page--room-url)
 
@@ -4396,6 +4409,7 @@ item says how many, or git could not say."
                :state state
                :whyLabel (if asks "It ended its turn with a question" "It reported")
                :body said :preview (ghostherd-inbox--clip (ghostherd-inbox--first-line said) 90)
+               :fromAsk (if (eq (plist-get a :saidFromAsk) t) t :json-false)
                ;; A lead/primary question is answered through it; any other
                ;; agent's is answered to the agent itself.
                :replyVia (cond ((equal role "primary") "primary")
@@ -4591,98 +4605,126 @@ NEEDS and asks."
 
 (defvar ghostherd-inbox--watching nil)
 (defvar ghostherd-inbox--needs-only nil
-  "Non-nil while the page shows only what needs the user -- the Board's
-要你處理 -- so only those items are pushed, the count still of them all:
-on a phone's link the updates are bytes it does not show, and churn.")
+  "Non-nil while the page is the Board: what needs the user -- its
+要你處理 -- is pushed whole, the updates by their heads alone, a report
+without its words (the page asks for them, `inbox-detail', as it shows
+one): on a phone's link a report's words are bytes it may never show.
+The count is of what needs the user.")
+(defvar ghostherd-inbox--first nil
+  "Non-nil until the Board's first push since its watch began: that one
+is what needs the user alone, drawn at once -- the updates, for a herd
+with many, a few KB more on a phone's link -- and they follow at once.")
 (defvar ghostherd-inbox--timer nil)
 (defvar ghostherd-inbox--sig nil "Signature of the last Inbox push, to skip an unchanged one.")
 (defconst ghostherd-inbox--every 3 "Seconds between Inbox refreshes.")
 
-(defun ghostherd-inbox--push (items state-list)
-  "Merge STATE-LIST ({:id :read :done :override}...) into ITEMS, drop the
-done ones, and push the rest with the Needs-you count (the tab badge)."
+(defun ghostherd-inbox--live (items state-list)
+  "ITEMS with the user's STATE-LIST ({:id :read :done :override}...)
+merged on, the done ones dropped."
   (let ((by-id (make-hash-table :test #'equal)))
     (dolist (e (append state-list nil)) (puthash (plist-get e :id) e by-id))
-    (let* ((merged
-            (mapcar (lambda (it)
-                      (let* ((st (gethash (plist-get it :id) by-id))
-                             (over (and st (plist-get st :override))))
-                        (append it (list :read (if (and st (eq (plist-get st :read) t)) t :json-false)
-                                         :done (and st (eq (plist-get st :done) t))
-                                         :override (and (stringp over) over)))))
-                    items))
-           (live (seq-remove (lambda (it) (plist-get it :done)) merged))
-           (count (length (seq-filter #'ghostherd-inbox--need-p live)))
-           (live (if ghostherd-inbox--needs-only (seq-filter #'ghostherd-inbox--need-p live) live))
-           (sig (ghostherd-memory-page--sig (list count ghostherd-inbox--needs-only
-                                                  (mapcar (lambda (it)
-                                                            (list (plist-get it :id) (plist-get it :read)
-                                                                  (plist-get it :override) (plist-get it :preview)))
-                                                          live)))))
-      (unless (equal sig ghostherd-inbox--sig)
-        (setq ghostherd-inbox--sig sig)
-        (ghostherd-memory-page--js
-         "renderInbox"
-         (append (list :items (ghostherd-memory-page--vec
-                               (mapcar (lambda (it) (ghostherd-memory-page--plist-no-done it)) live))
-                       :count count)
-                 (and ghostherd-inbox--needs-only (list :needsOnly t))))))))
+    (seq-remove (lambda (it) (plist-get it :done))
+                (mapcar (lambda (it)
+                          (let* ((st (gethash (plist-get it :id) by-id))
+                                 (over (and st (plist-get st :override))))
+                            (append it (list :read (if (and st (eq (plist-get st :read) t)) t :json-false)
+                                             :done (and st (eq (plist-get st :done) t))
+                                             :override (and (stringp over) over)))))
+                        items))))
+
+(defun ghostherd-inbox--push (items state-list)
+  "Merge STATE-LIST into ITEMS, drop the done ones, and push the rest with
+how many need the user (要你處理's, the Board's count)."
+  (let* ((live (ghostherd-inbox--live items state-list))
+         (count (length (seq-filter #'ghostherd-inbox--need-p live)))
+         (first (and ghostherd-inbox--needs-only ghostherd-inbox--first))
+         (live (cond (first (seq-filter #'ghostherd-inbox--need-p live))
+                     (ghostherd-inbox--needs-only (mapcar #'ghostherd-inbox--head live))
+                     (t live)))
+         (sig (ghostherd-memory-page--sig (list count ghostherd-inbox--needs-only
+                                                (mapcar (lambda (it)
+                                                          (list (plist-get it :id) (plist-get it :read)
+                                                                (plist-get it :override) (plist-get it :preview)))
+                                                        live)))))
+    (unless (equal sig ghostherd-inbox--sig)
+      (setq ghostherd-inbox--sig sig)
+      (ghostherd-memory-page--js
+       "renderInbox"
+       (append (list :items (ghostherd-memory-page--vec
+                             (mapcar (lambda (it) (ghostherd-memory-page--plist-no-done it)) live))
+                     :count count)
+               (and ghostherd-inbox--needs-only (list :needsOnly t))
+               ;; The updates not in it: the page keeps those it has.
+               (and first (list :updates :json-false)))))
+    (when first
+      (setq ghostherd-inbox--first nil ghostherd-inbox--sig nil)
+      (run-at-time 0.05 nil #'ghostherd-inbox--tick))))
+
+(defun ghostherd-inbox--head (it)
+  "IT as the Board takes an update: a report without its words -- its
+first line is its title and preview."
+  (if (or (ghostherd-inbox--need-p it) (not (equal (plist-get it :kind) "report")))
+      it
+    (plist-put (copy-sequence it) :body "")))
 
 (defun ghostherd-memory-page--plist-no-done (it)
   "IT without the internal :done flag (the page only sees live items)."
   (cl-loop for (k v) on it by #'cddr unless (eq k :done) append (list k v)))
 
+(defun ghostherd-inbox--look (then)
+  "Gather every item -- the pending proposals, what the leads' need lines
+say waits on the user, the sessions', the guard's, the asks' -- and the
+user's state on them, and call THEN with the items and that state.  Each
+sidecar call degrades to none on failure (a sidecar without the Inbox's
+or the Board's RPCs yet), so the session- and guard-derived items still
+come.  The Inbox's push, and the Board's badge with its tab closed."
+  (ghostherd-memory-request-async
+   "herd_pending_proposals"
+   (lambda (result) (ghostherd-inbox--look-needs (plist-get result :proposals) then))
+   nil
+   (lambda (_e) (ghostherd-inbox--look-needs nil then))))
+
+(defun ghostherd-inbox--look-needs (proposals then)
+  (ghostherd-memory-request-async
+   "herd_needs"
+   (lambda (result) (ghostherd-inbox--look-state proposals (plist-get result :needs) then))
+   nil
+   (lambda (_e) (ghostherd-inbox--look-state proposals nil then))))
+
+(defun ghostherd-inbox--look-state (proposals needs then)
+  (let* ((items (ghostherd-inbox--all (append proposals nil) needs))
+         (ids (mapcar (lambda (it) (plist-get it :id)) items)))
+    (ghostherd-memory-request-async
+     "herd_inbox_state"
+     (lambda (st) (funcall then items (append (plist-get st :state) nil)))
+     (list :ids (ghostherd-memory-page--vec ids))
+     (lambda (_e) (funcall then items nil)))))
+
 (defun ghostherd-inbox--tick ()
-  "Fetch the pending proposals, build every item, merge the user's state
-on them (and prune the gone ones), and push to the page.  Each sidecar
-call degrades to none on failure (a sidecar without the Inbox RPCs yet),
-so the session- and guard-derived items still show."
+  "Look at every item and the user's state on them (pruning the gone
+ones), and push them to the page while it watches."
   (if (not (and ghostherd-inbox--watching (xwapp-live-p ghostherd-memory-page--app)))
       (ghostherd-inbox--unwatch)
-    (ghostherd-memory-request-async
-     "herd_pending_proposals"
-     (lambda (result) (ghostherd-inbox--tick-needs (plist-get result :proposals)))
-     nil
-     (lambda (_e) (ghostherd-inbox--tick-needs nil)))))
-
-(defun ghostherd-inbox--tick-needs (proposals)
-  "Then what the leads' need lines say waits on the user -- none from a
-sidecar without the Board's -- then the items."
-  (when ghostherd-inbox--watching
-    (ghostherd-memory-request-async
-     "herd_needs"
-     (lambda (result) (ghostherd-inbox--tick-items proposals (plist-get result :needs)))
-     nil
-     (lambda (_e) (ghostherd-inbox--tick-items proposals nil)))))
-
-(defun ghostherd-inbox--tick-items (proposals &optional needs)
-  "Build every item from PROPOSALS, NEEDS and the live state, then fetch
-the user's state (or none) and push."
-  (when ghostherd-inbox--watching
-    (let* ((items (ghostherd-inbox--all (append proposals nil) needs))
-           (ids (mapcar (lambda (it) (plist-get it :id)) items)))
-      (ghostherd-memory-request-async
-       "herd_inbox_state"
-       (lambda (st)
-         (when ghostherd-inbox--watching
-           (ghostherd-inbox--push items (append (plist-get st :state) nil))))
-       (list :ids (ghostherd-memory-page--vec ids))
-       (lambda (_e)
-         (when ghostherd-inbox--watching (ghostherd-inbox--push items nil)))))))
+    (ghostherd-inbox--look
+     (lambda (items state)
+       (when ghostherd-inbox--watching (ghostherd-inbox--push items state))))))
 
 (defun ghostherd-inbox--watch (&optional needs-only)
   "Push the Inbox while the page shows it: every item, or with NEEDS-ONLY
 only those that need the user (`ghostherd-inbox--needs-only')."
-  (setq ghostherd-inbox--watching t ghostherd-inbox--sig nil ghostherd-inbox--needs-only needs-only)
+  (setq ghostherd-inbox--watching t ghostherd-inbox--sig nil ghostherd-inbox--needs-only needs-only
+        ghostherd-inbox--first needs-only)
+  ;; Its first look now, the timer's after: two at once, the Board's
+  ;; first push would have its updates right behind it.
   (unless (timerp ghostherd-inbox--timer)
     (setq ghostherd-inbox--timer
-          (run-at-time 0 ghostherd-inbox--every #'ghostherd-inbox--tick)))
+          (run-at-time ghostherd-inbox--every ghostherd-inbox--every #'ghostherd-inbox--tick)))
   (ghostherd-inbox--tick))
 
 (defun ghostherd-inbox--unwatch ()
   (when (timerp ghostherd-inbox--timer) (cancel-timer ghostherd-inbox--timer))
   (setq ghostherd-inbox--timer nil ghostherd-inbox--watching nil ghostherd-inbox--sig nil
-        ghostherd-inbox--needs-only nil))
+        ghostherd-inbox--needs-only nil ghostherd-inbox--first nil))
 
 (defun ghostherd-memory-page--inbox-set (intent)
   "Mark an Inbox item read / done, or override its group; then refresh.
@@ -4702,7 +4744,7 @@ A lead's need (`need:N') done is handled: closed on the Board too."
      "herd_inbox_set"
      (lambda (_r) (setq ghostherd-inbox--sig nil) (ghostherd-inbox--tick))
      params
-     (ghostherd-memory-page--fail "Inbox"))))
+     (ghostherd-memory-page--fail "Board"))))
 
 
 (defun ghostherd-memory-page--handle (intent)
@@ -5536,12 +5578,14 @@ Inbox -- are looked at again, once."
 (defvar ghostherd-board--peek-timer nil "The look with no news, every `--peek-fallback'.")
 
 (defun ghostherd-board--peek (&optional intent)
-  "The Board tab's badge for a page that has not the tab open: how many
-items wait on the user, and how many nobody has (`herd_board_counts', the
-events and the asks' few columns -- never the board) -- of those the Board
-would show: its window, `ghostherd-board--days', the page's own choice,
-which INTENT's `days' brings from a page just opened.  The tab open, its
-patches carry it."
+  "The Board tab's badge for a page that has not the tab open: as many as
+要你處理 lists -- what needs the user of the Inbox's items (their look,
+`ghostherd-inbox--look', the leads' need lines among them), and the items
+nobody has with no need line (`herd_board_counts' `bare', the events and
+the asks' few columns -- never the board) of those the Board would show:
+its window, `ghostherd-board--days', the page's own choice, which
+INTENT's `days' brings from a page just opened.  The tab open, the page
+counts its own list."
   (let ((days (alist-get 'days intent)))
     (when (numberp days) (setq ghostherd-board--days (max 0.04 (min 7 days)))))
   (if (not (xwapp-live-p ghostherd-memory-page--app))
@@ -5552,12 +5596,16 @@ patches carry it."
             (run-at-time ghostherd-board--peek-fallback ghostherd-board--peek-fallback #'ghostherd-board--peek)))
     (unless ghostherd-board--watching
       (setq ghostherd-board--peek-at (float-time))
-      (ghostherd-memory-request-async
-       "herd_board_counts"
-       (lambda (r) (ghostherd-memory-page--js "boardBadge" (list :jing (or (plist-get r :jing) 0)
-                                                                 :orphan (or (plist-get r :orphan) 0))))
-       (list :days ghostherd-board--days :orphan_hours ghostherd-board-orphan-hours)
-       #'ignore))))
+      (ghostherd-inbox--look
+       (lambda (items state)
+         (let ((needs (length (seq-filter #'ghostherd-inbox--need-p (ghostherd-inbox--live items state))))
+               (send (lambda (needs bare)
+                       (ghostherd-memory-page--js "boardBadge" (list :count (+ needs bare) :needs needs :bare bare)))))
+           (ghostherd-memory-request-async
+            "herd_board_counts"
+            (lambda (r) (funcall send needs (or (plist-get r :bare) 0)))
+            (list :days ghostherd-board--days :orphan_hours ghostherd-board-orphan-hours)
+            (lambda (_e) (funcall send needs 0)))))))))
 
 (defun ghostherd-board--peek-stop ()
   "No more looks at the badge's counts: the page that asked is gone.  The
@@ -5668,19 +5716,23 @@ nothing when there is none."
 (defun ghostherd-inbox--detail (intent)
   "Fetch the thread the selected Inbox item belongs to -- and, for a report
 or a question, its full last message -- and push them for the detail pane.
-Only for the selected item, never on the steady tick.  Each call degrades to
+Only for the selected item, never on the steady tick.  With `text', a
+report's words alone, for a work item's card on the Board, which shows
+the reports of its work as it is opened: several at once, none of them
+the selected one, so none is dropped for another.  Each call degrades to
 nothing on failure, so an item simply shows without its thread."
   (let* ((str (lambda (k) (let ((v (alist-get k intent)))
                             (and (stringp v) (not (string-empty-p v)) v))))
          (id (funcall str 'id))
          (kind (funcall str 'kind))
          (name (funcall str 'agent))
-         (ask (funcall str 'ask)))
-    (setq ghostherd-inbox--detail-req id)
+         (ask (funcall str 'ask))
+         (text (ghostherd-memory-page--truthy (alist-get 'text intent))))
+    (unless text (setq ghostherd-inbox--detail-req id))
     (when id
       (let ((req (cond (ask (list :ask ask))
                        (name (list :agent name)))))
-        (when req
+        (when (and req (not text))
           (ghostherd-memory-request-async
            "herd_thread"
            (lambda (r) (ghostherd-inbox--detail-thread id kind name r))
@@ -5692,11 +5744,12 @@ nothing on failure, so an item simply shows without its thread."
            (let* ((link (plist-get r :link))
                   (report (ghostherd-memory-page--str (plist-get link :last))))
              ;; With the images its words name, in the same push.
-             (when (and report (equal id ghostherd-inbox--detail-req))
+             (when (and report (or text (equal id ghostherd-inbox--detail-req)))
                (ghostherd-memory-page--js
                 "inboxDetailData"
-                (list :for id :report report
-                      :images (or (ghostherd-memory-page--images (plist-get link :last_images)) []))))))
+                (append (list :for id :report report
+                              :images (or (ghostherd-memory-page--images (plist-get link :last_images)) []))
+                        (and text (list :text t)))))))
          (list :session name) #'ignore)))))
 
 (provide 'ghostherd-memory-page)

@@ -112,9 +112,9 @@ const busyAt = (s, pred) => s.holdAt(pred, () => s.askEmacs("POST", "/e2e-stall?
       show("wifi open", open);
       check("a quick open: one record of it", !!open, records(s.dir).map((r) => r.kind));
       check("not slow: under 1.5 s", open && !open.slow && open.d < 1.5, open && open.d);
-      check("ended by the Inbox drawn (XW.ready)", open && open.end === "ready" && "inbox" in open.marks, open && open.marks);
-      check("its marks in order: boot, hello, inbox", open && open.marks.boot < open.marks.hello &&
-        open.marks.hello <= open.marks.inbox && open.marks.dcl > 0, open && open.marks);
+      check("ended by the Board's 要你處理 drawn (XW.ready)", open && open.end === "ready" && "board" in open.marks, open && open.marks);
+      check("its marks in order: boot, hello, board", open && open.marks.boot < open.marks.hello &&
+        open.marks.hello <= open.marks.board && open.marks.dcl > 0, open && open.marks);
       const reqs = (open && open.reqs) || [];
       check("its page, files and hello listed, each joined with Emacs's own",
         ["ghostherd/ui/index.html", "ghostherd/ui/app.js", "xwapp/ui/xwapp.js", "hello"].every((p) =>

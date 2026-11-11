@@ -94,6 +94,22 @@ nil -- as `ghostherd-room-url-function' gives it; nil when it gives none."
           (puthash key (ignore-errors (funcall ghostherd-room-url-function project))
                    ghostherd--room-urls)))))
 
+(defun ghostherd--board-url (kind name fields)
+  "The address, from your phone, of what a push of KIND about agent NAME
+\(FIELDS its plist) is about on the herd page's Board -- the page's home,
+`ghostherd--room-url' of nil -- or nil: what waits on you, by its item
+\(`#board/at/ID', the Inbox's id: a menu, a guarded call, a failed ask,
+a relay); else the agent's (`#board/agent/NAME': its report, a lead the
+herd started)."
+  (when-let* ((home (ghostherd--room-url))
+              ((string-suffix-p "#board" home)))
+    (let ((id (pcase kind
+                ('blocked (concat "blocked:" name))
+                ('guard (and (plist-get fields :request) (format "guard:%s" (plist-get fields :request))))
+                ('ask-failed (and (plist-get fields :ask) (format "ask-failed:%s" (plist-get fields :ask))))
+                ('used-up (concat "relay:" name)))))
+      (concat home (if id (concat "/at/" (url-hexify-string id)) (concat "/agent/" (url-hexify-string name)))))))
+
 (defvar ghostherd--herd-pushes nil
   "Pushes not yet handed to the sidecar, newest first.")
 
@@ -131,6 +147,7 @@ when it is worth one: see `ghostherd-push'."
                           :session (ghostherd-session-name session)
                           :project (or project "")
                           :url (or (and project (ghostherd--room-url project)) "")
+                          :board (or (ghostherd--board-url kind (ghostherd-session-name session) fields) "")
                           :images (if ghostherd-push-images t :json-false)
                           :reports (if ghostherd-push-reports t :json-false))
                     fields)

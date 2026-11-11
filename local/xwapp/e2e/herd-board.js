@@ -45,11 +45,12 @@ async function shoot(page, width, file) {
       const intents = [];
       const { ctx, page, errors } = await phonePage(browser, { intents, context: DESK });
       await sleep(100);
-      check("desk: nothing of the board is asked for before the tab is opened", !ops(intents, "board-watch").length);
+      check("desk: the page opens on the Board, its home, watching it for the days kept",
+        (await page.getAttribute("#app", "data-view")) === "board" && ops(intents, "board-watch").length === 1 &&
+        ops(intents, "board-watch")[0].days === 1, ops(intents, "board-watch"));
       await page.click('.tab[data-tab="board"]');
       await sleep(100);
-      check("desk: opening the tab watches the board, for the days kept", ops(intents, "board-watch").length === 1 &&
-        ops(intents, "board-watch")[0].days === 1, ops(intents, "board-watch"));
+      check("desk: its tab tapped again asks nothing more", ops(intents, "board-watch").length === 1, ops(intents, "board-watch"));
       check("desk: until Emacs answers, it says it is reading", (await page.textContent(".bdbody")).includes("讀取"));
       await page.evaluate((p) => GM.boardPatch(p), FULL);
       // The Inbox's push, as Emacs sends it to the Board too: its two of the fixture's.
@@ -62,7 +63,8 @@ async function shoot(page, width, file) {
       check("desk: the items tile says what the asks were", /34 則 ask：跨專案 9、FYI 4、轉述 1、撤回／失敗 2/.test(tiles[0].sub), tiles[0].sub);
       check("desk: the waits tile names the cross-project pairs and the oldest", /跨專案 2：shop → billing、infra → ops-helm/.test(tiles[1].sub) &&
         /專案內 2/.test(tiles[1].sub) && /最久的開了 20 分/.test(tiles[1].sub), tiles[1].sub);
-      check("desk: the board tab's red count: items nobody has, and those waiting on Jing by a lead's line", (await page.textContent("#board-n")) === "2");
+      check("desk: the board tab's red count, the page's one: as many as 要你處理 lists",
+        (await page.textContent("#board-n")) === "4" && tiles[2].big === "4", { badge: await page.textContent("#board-n"), tile: tiles[2].big });
       check("desk: the 要你處理 tile counts what stops an agent and what else needs Jing (the item nobody has rides on its line)",
         /會卡住 agent 2/.test(tiles[2].sub) && /需要 Jing 2/.test(tiles[2].sub), tiles[2].sub);
 

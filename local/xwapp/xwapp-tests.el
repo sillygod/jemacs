@@ -1575,6 +1575,38 @@ kit's too.  A file under 1 KB, or one not text, goes plain, with no Vary."
       (should-not (xwapp-test--header (xwapp-test--raw (xwapp-test--at app "next?page=p1") '(("Accept-Encoding" . "gzip")))
                                       "Content-Encoding")))))
 
+(ert-deftest xwapp-test-browser-lean-scripts ()
+  "An app that asks for it (`xwapp-create' :lean) has its own scripts go
+gzip'd with each line of nothing but a `//' comment blank -- its newline
+kept, so a line is the file's -- under an ETag of their own, a 304 for
+it; the plain file as it is; the kit's script, and an app that did not
+ask, as they are."
+  (skip-unless (and (executable-find "gzip") (zlib-available-p)))
+  (xwapp-test--gzipping
+    (let* ((one "// A comment alone.\nvar a = 1; // after code\n  \t// indented\nvar b = \"// in a string\";\n")
+           (one-lean "\nvar a = 1; // after code\n\nvar b = \"// in a string\";\n")
+           (js (apply #'concat (make-list 40 one)))
+           (lean (apply #'concat (make-list 40 one-lean)))
+           (path (xwapp-test--at app "app/ui/app.js"))
+           (gz '(("Accept-Encoding" . "gzip"))))
+      (with-temp-file (expand-file-name "app/ui/app.js" root) (insert js))
+      (with-temp-file (expand-file-name "xwapp/ui/xwapp.js" root) (insert js))
+      ;; Not asked for: as it is.
+      (should (equal (xwapp-test--gunzip (xwapp-test--body (xwapp-test--raw path gz))) js))
+      (xwapp--put app :lean t)
+      (let* ((raw (xwapp-test--raw path gz))
+             (plain (xwapp-test--header (xwapp-test--raw path) "ETag"))
+             (tag (xwapp-test--header raw "ETag")))
+        (should (equal (xwapp-test--gunzip (xwapp-test--body raw)) lean))
+        (should (= (length (split-string lean "\n")) (length (split-string js "\n"))))
+        (should (equal tag (concat (substring plain 0 -1) "-lean-gz\"")))
+        (should (string-prefix-p "HTTP/1.1 304" (xwapp-test--raw path (cons (cons "If-None-Match" tag) gz))))
+        ;; Plain, to one that takes no gzip: the file, its own ETag.
+        (should (equal (xwapp-test--body (xwapp-test--raw path)) js)))
+      ;; The kit's: not the app's own.
+      (should (equal (xwapp-test--gunzip (xwapp-test--body (xwapp-test--raw (xwapp-test--at app "xwapp/ui/xwapp.js") gz))) js))
+      (xwapp--put app :lean nil))))
+
 (ert-deftest xwapp-test-browser-gzipd-files-have-their-own-etag ()
   "The gzip'd bytes and the plain ones are other bytes, so each has an
 ETag of its own, strong: a browser that has one is answered 304 for it,

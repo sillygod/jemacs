@@ -124,4 +124,39 @@ const USAGE = [
 ];
 const HERD = { agents: AGENTS, asks: [], hooks: { status: {}, list: [] }, usage: USAGE, kinds: ["claude", "agy", "grok"], work: WORK };
 
-module.exports = { phonePage, PHONE, HERD, sleep, agent };
+// ---- The Inbox's items, on the Board -------------------------------------
+// The page's home is the Board: what needs you (要你處理) by agent, and the
+// updates of no work item (最近回報), each a line opened in place.
+
+// A board with no items: what an update of work needs to be listed -- on
+// no card, it is under 最近回報.
+const EMPTY_BOARD = { v: 1, base: 0, full: true, cards: [], drop: [], waits: [], jing: [], tickets: [],
+  meta: { counts: {}, edges: [], days: 1, more: false, agents: [] } };
+
+// Every group of 要你處理 and 最近回報 opened, their earlier lines too, and
+// 最近回報 itself: a tap at a time, each drawing the list again.
+async function boardUnfold(page) {
+  for (let k = 0; k < 40; k++) {
+    const more = await page.evaluate(() => {
+      const b = document.querySelector('.bd-need .bdsech[data-sec="upd"][aria-expanded="false"], ' +
+        ".bd-need .bdng:not(.open) .bdngt, .bd-need .bdnold[aria-expanded=\"false\"]");
+      if (b) b.click();
+      return !!b;
+    });
+    if (!more) return;
+    await sleep(30);
+  }
+}
+// Item ID's line on the Board, opened (unless it is), by TAP (a click by default).
+async function boardPick(page, id, tap) {
+  await boardUnfold(page);
+  if (await page.$('.bdnrow.open[data-id="' + id + '"]')) return;
+  const sel = '.bdnrow[data-id="' + id + '"] .bdnr';
+  await (tap ? tap(sel) : page.click(sel));
+  await sleep(60);
+}
+// An item's line, and the detail of the one open.
+const ROW = (id) => '.bdnrow[data-id="' + id + '"]';
+const OPEN = ".bdnrow.open .bdnbody";
+
+module.exports = { phonePage, PHONE, HERD, sleep, agent, EMPTY_BOARD, boardUnfold, boardPick, ROW, OPEN };

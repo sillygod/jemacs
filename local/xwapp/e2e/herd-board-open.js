@@ -27,6 +27,7 @@ const median = (xs) => { const v = xs.filter((x) => x != null).sort((a, b) => a 
 // What the page shows: of the line, 要你處理's card of it, or -- before --
 // the 等 Jing section's line under the board; of the board, its tiles.
 const SEEN = () => [!!document.querySelector('.bdneeds .bdng[data-agent="lead-fox"]') ||
+  !!document.querySelector('.inboxpage [data-id="need:7"]') ||
   [...document.querySelectorAll(".bd-jing .ji")].some((l) => /amber or teal/.test(l.textContent)),
   !!document.querySelector(".bd-strip .bdtile")];
 const BOARD = () => !!document.querySelector(".bd-strip .bdtile");
@@ -44,9 +45,9 @@ const BOARD = () => !!document.querySelector(".bd-strip .bdtile");
       const url = BOX + "/" + s.secretOf("herd") + "/ghostherd/ui/index.html";
       const errors = [];
       // Until both are drawn: when each was, from T0.
-      const timed = async (page, t0) => {
+      const timed = async (page, t0, needOnly) => {
         let tNeed = null, tBoard = null;
-        while (Date.now() - t0 < 30000 && (tNeed == null || tBoard == null)) {
+        while (Date.now() - t0 < 30000 && (tNeed == null || (tBoard == null && !needOnly))) {
           const [n, b] = await page.evaluate(SEEN).catch(() => [false, false]);
           if (n && tNeed == null) tNeed = Date.now() - t0;
           if (b && tBoard == null) tBoard = Date.now() - t0;
@@ -58,7 +59,7 @@ const BOARD = () => !!document.querySelector(".bd-strip .bdtile");
       // ---- Each round a page of its own: nothing of the Inbox's or the
       // board's in it yet.  Opened from Agents (the page loaded there), and
       // loaded on #board (the phone's tab reopened on it).
-      const runs = { tab: [[], []], load: [[], []] };
+      const runs = { tab: [[], []], load: [[], []], home: [[], []] };
       for (let i = 0; i < ROUNDS; i++) {
         let p = await ctx.newPage();
         watch(p, errors);
@@ -84,14 +85,44 @@ const BOARD = () => !!document.querySelector(".bd-strip .bdtile");
         await p.goto(url + "#board");
         const [n2, b2] = await timed(p, t0);
         runs.load[0].push(n2); runs.load[1].push(b2);
-        console.log(`   round ${i + 1}: tab tap -> 要你處理 ${s1(n1)}, the board ${s1(b1)};  load on #board -> 要你處理 ${s1(n2)}, the board ${s1(b2)}`);
         await p.close();
+        // The page's home, loaded with no place asked for: the Board now --
+        // once the Inbox (02e94b8), its line there.
+        p = await ctx.newPage();
+        watch(p, errors);
+        t0 = Date.now();
+        await p.goto(url);
+        const [n3] = await timed(p, t0, true);
+        runs.home[0].push(n3);
+        console.log(`   round ${i + 1}: tab tap -> 要你處理 ${s1(n1)}, the board ${s1(b1)};  load on #board -> 要你處理 ${s1(n2)}, the board ${s1(b2)};` +
+                    `  load home -> what needs you ${s1(n3)}`);
         await sleep(link.rtt * 4 + 1500);
       }
       for (const k of ["tab", "load"])
         summary.push(`${name} ${k === "tab" ? "tab tap from Agents" : "load on #board   "}: 要你處理 ${s1(median(runs[k][0]))}, the board ${s1(median(runs[k][1]))} (median of ${ROUNDS})`);
+      summary.push(`${name} load home         : what needs you ${s1(median(runs.home[0]))} (median of ${ROUNDS})`);
       check(W("要你處理 is drawn before the board has come, from a tap and on a load"),
         median(runs.tab[0]) < median(runs.tab[1]) && median(runs.load[0]) < median(runs.load[1]), runs);
+
+      // ---- The one red count: the tab open, 要你處理's own; closed, as Emacs
+      // counts the same -- a page loaded on Agents, its first look.
+      let q = await ctx.newPage();
+      watch(q, errors);
+      await q.goto(url + "#board");
+      await until(() => q.evaluate(() => !!document.querySelector(".bd-need .bdng, .bd-need .bdneednone") &&
+        !!(document.querySelector("#board-n") || {}).textContent), 20000);
+      const openN = await q.textContent("#board-n");
+      await q.close();
+      q = await ctx.newPage();
+      watch(q, errors);
+      const peek0 = log(s.dir).length;
+      await q.goto(url + "#agents");
+      await until(() => q.evaluate(() => !!(document.querySelector("#board-n") || {}).textContent), 20000);
+      const closedN = await q.textContent("#board-n");
+      check(W("the Board's count with its tab closed is Emacs's look, and the same as with it open"),
+        openN === "1" && closedN === openN && log(s.dir).slice(peek0).some((w) => w.rpc === "herd_board_counts"), { openN, closedN });
+      await q.close();
+      await sleep(link.rtt * 4 + 1500);
 
       const page = await ctx.newPage();
       watch(page, errors);
@@ -114,6 +145,7 @@ const BOARD = () => !!document.querySelector(".bd-strip .bdtile");
       await sleep(100);
       const ids = await page.$$eval(".bdneeds .bdnrow", (cs) => cs.map((c) => c.getAttribute("data-id")));
       check(W("the lead's line once: the Inbox's item and the board's line are one"), ids.join() === "need:7", ids);
+
 
       // ---- Asleep past the gone, and woken: both asked for again ------------
       const nap = log(s.dir).length;
@@ -139,11 +171,14 @@ const BOARD = () => !!document.querySelector(".bd-strip .bdtile");
       const quiet = await page.evaluate(() => { const p = document.querySelector(".bd-need .bdneednone"); return p ? Math.round(p.getBoundingClientRect().height) : 0; });
       check(W("Handled on the Board: Emacs closes the line, and 要你處理 is a quiet line"), closed && left === 0 && quiet > 0 && quiet < 40,
         { closed, left, quiet });
-      await page.tap('.tab[data-tab="inbox"]');
-      await sleep(link.rtt * 4 + 4000);
-      const inInbox = await page.evaluate(() => [...document.querySelectorAll("[data-id]")].some((e) => e.getAttribute("data-id") === "need:7"));
-      check(W("and the Inbox has it no more"), !inInbox);
-      check(W("no page errors"), errors.filter((e) => !/Failed to load resource|network connection was lost|could not be found|status of 50[02]/.test(e)).length === 0,
+      // Loaded again, the Board has it no more: Emacs's own look.
+      await page.reload();
+      await until(() => page.evaluate(() => !!document.querySelector(".bd-need .bdneednone, .bd-need .bdng")), 30000);
+      await sleep(link.rtt * 4 + 2000);
+      const still7 = await page.evaluate(() => !!document.querySelector('.bdng[data-agent="lead-fox"]') ||
+        [...document.querySelectorAll("[data-id]")].some((e) => e.getAttribute("data-id") === "need:7"));
+      check(W("and loaded again, Emacs lists it no more"), !still7);
+      check(W("no page errors"), errors.filter((e) => !/Failed to load resource|network connection was lost|could not be found|status of 50[02]|access control checks/.test(e)).length === 0,
         errors.slice(0, 4));
       await ctx.close();
     } finally {
