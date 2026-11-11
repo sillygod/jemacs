@@ -672,35 +672,37 @@ def test_board_counts_for_the_tabs_badge(tmp_path):
     lead's need open, not live), one nobody has (quiet past the hours with
     a need open or its last ask gone nowhere) -- the same the page shows."""
     h = _store(tmp_path)
-    assert h.board_counts() == {"jing": 0, "orphan": 0}
+    assert h.board_counts() == {"jing": 0, "orphan": 0, "bare": 0}
     need = _lead_answer(h, "需要 Jing：pick a vendor")
     gone = h.ask("agy-a2", "Do the thing", from_name="lead-a")
     _deliver_all(h)
     h.cancel(gone["id"])
     live = _lead_answer(h, "需要 Jing：while it is still at work")
     h.ask("agy-a2", "and more", from_name="lead-a", item=live["id"])
-    assert h.board_counts() == {"jing": 1, "orphan": 0}
+    assert h.board_counts() == {"jing": 1, "orphan": 0, "bare": 0}
     # Five hours later: quiet past four, both are nobody's.
     for a in (need["id"], gone["id"]):
         _backdate(h, a, 5 * 60)
     with h._mu:
         h._conn.execute("UPDATE item_events SET at = ?", ((datetime.now(timezone.utc) - timedelta(hours=5)).isoformat(),))
         h._conn.commit()
-    assert h.board_counts(orphan_hours=4) == {"jing": 0, "orphan": 2}
-    assert h.board_counts(orphan_hours=24) == {"jing": 1, "orphan": 0}
+    # The one gone nowhere has no need open: 要你處理 lists it apart (bare).
+    assert h.board_counts(orphan_hours=4) == {"jing": 0, "orphan": 2, "bare": 1}
+    assert h.board_counts(orphan_hours=24) == {"jing": 1, "orphan": 0, "bare": 0}
     # Closed by a lead: neither.
     h.item_edit("close", need["id"], by="lead-a")
-    assert h.board_counts(orphan_hours=4) == {"jing": 0, "orphan": 1}
+    assert h.board_counts(orphan_hours=4) == {"jing": 0, "orphan": 1, "bare": 1}
 
 
 def _badge_of_board(h, days, hours=4):
     """The badge as the page counts it with the Board open: Emacs takes a
     card's `orphan' as 沒人接, a need open on one not live nor done as 等
     Jing (the page's bdUrgent)."""
-    out = {"jing": 0, "orphan": 0}
+    out = {"jing": 0, "orphan": 0, "bare": 0}
     for c in h.board(days, hours)["items"]:
         if c["orphan"]:
             out["orphan"] += 1
+            out["bare"] += not c["needs"]
         elif c["status"] not in ("live", "done") and c["needs"]:
             out["jing"] += 1
     return out
@@ -725,9 +727,9 @@ def test_the_badge_counts_what_the_board_shows(tmp_path):
     _ended(h, gone["id"], "cancelled", 3 * 24 * 60)
     it = _item_of(h, gone["id"])
     assert it not in _items(h, 1)
-    assert h.board_counts(1) == {"jing": 0, "orphan": 0} == _badge_of_board(h, 1)
+    assert h.board_counts(1) == {"jing": 0, "orphan": 0, "bare": 0} == _badge_of_board(h, 1)
     assert _items(h, 7)[it]["orphan"] is True
-    assert h.board_counts(7) == {"jing": 0, "orphan": 1} == _badge_of_board(h, 7)
+    assert h.board_counts(7) == {"jing": 0, "orphan": 1, "bare": 1} == _badge_of_board(h, 7)
 
 
 def test_the_badge_and_the_board_agree_on_every_kind(tmp_path):
@@ -765,8 +767,8 @@ def test_the_badge_and_the_board_agree_on_every_kind(tmp_path):
     # hours and three days, and the ask cancelled five hours ago, are
     # nobody's -- the one failed an hour ago not yet.  A week adds the two
     # gone two and three days ago.
-    assert h.board_counts(1, 4) == {"jing": 1, "orphan": 3}
-    assert h.board_counts(7, 4) == {"jing": 1, "orphan": 5}
+    assert h.board_counts(1, 4) == {"jing": 1, "orphan": 3, "bare": 1}
+    assert h.board_counts(7, 4) == {"jing": 1, "orphan": 5, "bare": 3}
     assert len(seen) > 3
 
 
@@ -779,9 +781,9 @@ def test_the_badge_and_the_board_take_the_window_over_rpc(client):
     h = get_herd()
     gone = h.ask("agy-a2", "Do the thing", from_name="claude-main")
     _ended(h, gone["id"], "failed", 3 * 24 * 60)
-    assert _rpc(client, "herd_board_counts", {"days": 1, "orphan_hours": 4})["result"] == {"jing": 0, "orphan": 0}
-    assert _rpc(client, "herd_board_counts", {"days": 7, "orphan_hours": 4})["result"] == {"jing": 0, "orphan": 1}
-    assert _rpc(client, "herd_board_counts", {})["result"] == {"jing": 0, "orphan": 0}
+    assert _rpc(client, "herd_board_counts", {"days": 1, "orphan_hours": 4})["result"] == {"jing": 0, "orphan": 0, "bare": 0}
+    assert _rpc(client, "herd_board_counts", {"days": 7, "orphan_hours": 4})["result"] == {"jing": 0, "orphan": 1, "bare": 1}
+    assert _rpc(client, "herd_board_counts", {})["result"] == {"jing": 0, "orphan": 0, "bare": 0}
     [c] = _rpc(client, "herd_board", {"days": 7, "orphan_hours": 100})["result"]["items"]
     assert c["orphan"] is False
     [c] = _rpc(client, "herd_board", {"days": 7})["result"]["items"]

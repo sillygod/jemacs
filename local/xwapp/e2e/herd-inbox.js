@@ -1,8 +1,10 @@
-// The Inbox tab: one list of what needs the user, then updates.  The page
-// lands here (home); each kind handles in place and leaves when done; the
-// tab badge counts what needs the user.  Desk and phone.
+// The Inbox's items, now on the Board -- the page's home -- since the
+// Inbox tab went: what needs the user in 要你處理, the updates of no work
+// item under 最近回報.  The page lands on the Board and asks for them;
+// each kind handles in place and leaves when done; the one badge, the
+// Board's, counts what needs the user.  Desk and phone.
 const { webkit } = require("playwright");
-const { phonePage, sleep } = require("./herdlib");
+const { phonePage, sleep, EMPTY_BOARD, boardUnfold, boardPick, ROW } = require("./herdlib");
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
 const DESK = { viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2, isMobile: false, hasTouch: false };
@@ -47,40 +49,33 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
       const { ctx, page, errors, intents } = await load(browser, where);
       const W = (n) => where + ": " + n;
       const tap = (sel) => (where === "phone" ? page.tap(sel) : page.click(sel));
-      // Pick an item to act on: desk clicks its list row; phone taps the card
-      // to expand it (only if collapsed -- a resolve may have auto-opened it).
-      const open = async (id) => {
-        if (where === "desk") return page.click('.ibrow[data-id="' + id + '"]');
-        if (await page.$('.ibcard[data-id="' + id + '"]')) await page.tap('.ibcard[data-id="' + id + '"]');
-      };
+      // Pick an item to act on: its line opened (its group unfolded), unless
+      // it is -- a resolve closes it.
+      const open = (id) => boardPick(page, id, tap);
 
-      // ---- Home: the page lands on Inbox, and asks Emacs to watch it ----
+      // ---- Home: the page lands on the Board, and asks Emacs for the items ----
       await sleep(150);
-      check(W("the page opens on the Inbox (home)"),
-        !!(await page.$(".inboxpage")) && (await page.$eval('.tab[data-tab="inbox"]', (b) => b.classList.contains("on"))));
-      check(W("it asks Emacs to watch the Inbox"), sent(intents, "inbox-watch").length >= 1);
+      check(W("the page opens on the Board (home); no Inbox tab"),
+        !!(await page.$(".boardpage")) && (await page.$eval('.tab[data-tab="board"]', (b) => b.classList.contains("on"))) &&
+        !(await page.$('.tab[data-tab="inbox"]')) && !(await page.$("#inbox-n")));
+      check(W("it asks Emacs to watch the items, with the board"), sent(intents, "board-watch").some((i) => i.inbox === true));
 
-      // ---- The list: Needs-you + Updates, badge ----
-      await page.evaluate((it) => GM.renderInbox({ items: it, count: it.filter((x) => x.group === "need").length }), ITEMS);
+      // ---- The list: 要你處理 + 最近回報, badge ----
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: it.filter((x) => x.group === "need").length, needsOnly: true }), ITEMS);
+      await page.evaluate((b) => GM.boardPatch(b), EMPTY_BOARD);
       await sleep(120);
-      check(W("the tab badge counts what needs you"), (await page.$eval("#inbox-n", (e) => e.textContent)) === "5");
-      if (where === "desk") {
-        check(W("Needs-you lists the 5 need items"), (await page.$$eval(".iblistcol .ibrow", (es) => es.length)) >= 5);
-      } else {
-        // Collapsed cards are scannable: a title and who-line, no actions until
-        // tapped open.
-        check(W("phone shows collapsed cards (no actions until opened)"),
-          !!(await page.$(".ibcard.need")) && !(await page.$(".ibcard .ibbtn, .ibcard .iboptbtn")));
-      }
+      check(W("the tab badge counts what needs you"), (await page.$eval("#board-n", (e) => e.textContent)) === "5");
+      await boardUnfold(page);
+      check(W("要你處理 lists the 5 need items"), (await page.$$eval(".bdneeds:not(.bdupdg) .bdnrow", (es) => es.length)) === 5);
+      // A line each, scannable: its tag and title; no actions but its own until opened.
+      check(W("each a line: no answer or approve until opened"),
+        !(await page.$(".bdnrow:not(.open) .ibbtn, .bdnrow:not(.open) .iboptbtn")));
 
-      // ---- Filters: Approvals shows only guard + proposal ----
-      await tap('[data-act="ib:filter"][data-f="approve"]');
-      await sleep(80);
-      const approveKinds = await page.$$eval(".ibtag", (es) => es.map((e) => e.textContent));
-      check(W("the Approvals filter shows only Guard and Proposal"),
-        approveKinds.every((t) => t === "Guard" || t === "Proposal") && approveKinds.includes("Guard") && approveKinds.includes("Proposal"));
-      await tap('[data-act="ib:filter"][data-f="all"]');
-      await sleep(80);
+      // ---- What stops an agent, apart (once the Inbox's filters): the guard, the proposal ----
+      const stops = await page.$$eval(".bdng.stop .bdnrow .ibtag", (es) => es.map((e) => e.textContent));
+      check(W("what stops an agent -- the guard, the proposal, the menu, the sign-in -- in the groups on top, said so"),
+        ["Guard", "Proposal", "Permission", "Login"].every((t) => stops.includes(t)) &&
+        (await page.$$eval(".bdng.stop .ngn.r0", (es) => es.length)) >= 3, stops);
 
       // ---- Each kind's action routes to the right intent ----
       await open("blocked:qa");
@@ -122,17 +117,22 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
       await tap('[data-act="ib:done"][data-id="report:lead:9"]');
       await sleep(80);
       check(W("marking read sends inbox-set {done:true}"), (sent(intents, "inbox-set").filter((i) => i.id === "report:lead:9" && i.done === true).length) === 1);
-      check(W("the done item leaves at once, with an Undo"), !(await page.$('[data-id="report:lead:9"].ibrow, .ibcard [data-id]')) || !!(await page.$('[data-act="ib:undo"]')));
+      check(W("the done item leaves at once, with an Undo"), !(await page.$(ROW("report:lead:9"))) && !!(await page.$('[data-act="ib:undo"]')));
       check(W("Undo is offered"), !!(await page.$('[data-act="ib:undo"]')));
       await tap('[data-act="ib:undo"]');
       await sleep(80);
       check(W("Undo sends inbox-set {done:false}"), sent(intents, "inbox-set").some((i) => i.id === "report:lead:9" && i.done === false));
 
       // ---- Auto-resolve: an item whose cause is gone leaves on the next push ----
-      await page.evaluate((it) => GM.renderInbox({ items: it.filter((x) => x.id !== "guard:g1"), count: 4 }), ITEMS);
+      await page.evaluate((it) => GM.renderInbox({ items: it.filter((x) => x.id !== "guard:g1"), count: 4, needsOnly: true }), ITEMS);
       await sleep(80);
       check(W("an item gone from the push leaves the list (auto-resolve)"), !(await page.$('[data-id="guard:g1"]')));
-      check(W("the badge drops to 4"), (await page.$eval("#inbox-n", (e) => e.textContent)) === "4");
+      // The badge is 要你處理's own count: what was handled here a moment ago
+      // is not counted while Emacs's push still has it -- the sign-in alone.
+      await boardUnfold(page);
+      const listed = await page.$$eval(".bdneeds:not(.bdupdg) .bdnrow", (es) => es.map((e) => e.getAttribute("data-id")));
+      check(W("the badge drops to what is listed: the sign-in alone"),
+        (await page.$eval("#board-n", (e) => e.textContent)) === "1" && listed.join() === "login:jn", listed);
 
       // ---- A worker's turn end, by how it began, and a lead started for a handoff ----
       const WORKER = [
@@ -150,8 +150,9 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
           whyLabel: "The herd started a lead for a handoff",
           body: "The herd started lead-jnotes to take a cross-project handoff from lead-deploy-platform." }),
       ];
-      await page.evaluate((it) => GM.renderInbox({ items: it, count: it.filter((x) => x.group === "need").length }), WORKER);
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: it.filter((x) => x.group === "need").length, needsOnly: true }), WORKER);
       await sleep(100);
+      await boardUnfold(page);
       // a worker's user-started turn end shows (an ask-started one is simply not pushed)
       check(W("a worker's user-started turn end shows as a Report"), !!(await page.$('[data-id="report:claude-godzilla:7"]')));
       // a lead the herd started for a handoff shows as an Update, kept until read

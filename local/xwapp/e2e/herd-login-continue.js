@@ -8,7 +8,7 @@
 // Continue -- no /login -- and the Inbox has it in place of "Login
 // expired", with the same.  Desk and phone.
 const { webkit } = require("playwright");
-const { phonePage, HERD, sleep } = require("./herdlib");
+const { phonePage, HERD, sleep, boardUnfold } = require("./herdlib");
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
 const DESK = { viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2, isMobile: false, hasTouch: false };
@@ -88,24 +88,23 @@ const AGAIN_ITEMS = [{
       check(W("the room's Press Return tells Emacs, for that agent"),
         sent().length === 2 && sent()[1].name === NAME, sent());
 
-      // ---- The Inbox ----
-      await tap('.tab[data-tab="inbox"]');
+      // ---- The Board's 要你處理 (once the Inbox's) ----
+      await tap('.tab[data-tab="board"]');
       await sleep(80);
-      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1 }), ITEMS);
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1, needsOnly: true }), ITEMS);
       await sleep(120);
-      const card = (where === "phone" ? ".ibcard" : ".ibrow") + '[data-id="login-continue:' + NAME + '"]';
-      check(W("the Inbox lists it under Needs you"), !!(await page.$(card)));
-      await tap('[data-act="ib:filter"][data-f="stuck"]');
-      await sleep(80);
-      check(W("and under Stuck"), !!(await page.$(card)));
-      await tap(card);
+      const card = '.bdnrow[data-id="login-continue:' + NAME + '"]';
+      check(W("要你處理 lists it"), !!(await page.$(card)));
+      // Once under the Inbox's Stuck: what stops an agent, its group on top and open.
+      check(W("as what stops an agent, its group open on top"), !!(await page.$(".bd-need .bdneeds > .bdng.stop.open:first-child " + card)));
+      await tap(card + " .bdnr");
       await sleep(120);
       check(W("it says why"), /waits on one key/.test(await page.textContent(".app")));
       const btn = '[data-act="ib:login-continue"][data-id="login-continue:' + NAME + '"]';
       check(W("it offers Press Return"), !!(await page.$(btn)) && /Press Return/.test(await page.textContent(btn)));
       await tap(btn);
       await sleep(80);
-      check(W("Press Return in the Inbox tells Emacs, for that agent"),
+      check(W("Press Return on the Board tells Emacs, for that agent"),
         sent().length === 3 && sent()[2].name === NAME, sent());
 
       // ---- Signed in again: its turn waits to go on ----
@@ -134,15 +133,13 @@ const AGAIN_ITEMS = [{
       await tap(col + ' [data-act="a:agent-carry-on"]');
       await sleep(80);
       check(W("the room's Continue tells Emacs, for that agent"), goes().length === 2 && goes()[1].name === NAME, goes());
-      await tap('.tab[data-tab="inbox"]');
+      await tap('.tab[data-tab="board"]');
       await sleep(80);
-      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1 }), AGAIN_ITEMS);
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1, needsOnly: true }), AGAIN_ITEMS);
       await sleep(120);
-      await tap('[data-act="ib:filter"][data-f="stuck"]');
-      await sleep(80);
-      const card2 = (where === "phone" ? ".ibcard" : ".ibrow") + '[data-id="carry-on:' + NAME + '"]';
-      check(W("the Inbox lists it under Needs you, and Stuck"), !!(await page.$(card2)));
-      await tap(card2);
+      const card2 = '.bdnrow[data-id="carry-on:' + NAME + '"]';
+      check(W("要你處理 lists it, as what stops an agent"), !!(await page.$(".bd-need .bdng.stop.open " + card2)));
+      await tap(card2 + " .bdnr");
       await sleep(120);
       check(W("it says its turn waits to go on"), /Its turn waits to go on/.test(await page.textContent(".app")));
       const go = '[data-act="ib:carry-on"][data-id="carry-on:' + NAME + '"]';

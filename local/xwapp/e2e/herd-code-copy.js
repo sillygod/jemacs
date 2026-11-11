@@ -7,7 +7,7 @@
 // The phone copies through the browser (XW.copy); the desk, as Emacs's
 // own WebKit has it (host 127.0.0.1), asks Emacs to.
 const { webkit } = require("playwright");
-const { phonePage, HERD, sleep } = require("./herdlib");
+const { phonePage, HERD, sleep, boardPick } = require("./herdlib");
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
 const DESK = { viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2, isMobile: false, hasTouch: false };
@@ -126,17 +126,16 @@ const ITEM = { id: "question:" + RD + ":3", cli: "claude", project: DP, at: Date
         check(L("and copies the whole long line"), scrolled.length === 1 && scrolled[0] === LONG, scrolled);
       }
 
-      // ---- The Inbox's detail ----
+      // ---- An item's detail on the Board (once the Inbox's) ----
       await sleep(150);
-      await page.evaluate((it) => GM.renderInbox({ items: [it], count: 1 }), ITEM);
+      await page.evaluate((it) => { GM.showView("board"); GM.renderInbox({ items: [it], count: 1, needsOnly: true }); }, ITEM);
       await sleep(100);
-      if (where === "desk") await page.click('.ibrow[data-id="' + ITEM.id + '"]');
-      else if (await page.$('button.ibcard[data-id="' + ITEM.id + '"]')) await page.tap('button.ibcard[data-id="' + ITEM.id + '"]');
+      await boardPick(page, ITEM.id, where === "desk" ? null : (sel) => page.tap(sel));
       await sleep(150);
       intents.splice(0);
-      await suite("the Inbox", ".ibbody.msg-body");
-      const others = intents.filter((i) => i.op !== "copy");
-      check(W("a Copy in the Inbox only copies"), others.length === 0, others);
+      await suite("the Board", ".ibbody.msg-body");
+      const others = intents.filter((i) => i.op !== "copy" && i.op !== "inbox-detail" && i.op !== "inbox-set");
+      check(W("a Copy on the Board only copies"), others.length === 0, others);
 
       // The keyboard: the desk's button shows while it has the focus.
       if (where === "desk") {

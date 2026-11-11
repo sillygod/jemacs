@@ -3,7 +3,7 @@
 // picked far down the list shows from its top; Emacs's pushes every few
 // seconds keep where each column was scrolled.  The phone keeps one flow.
 const { webkit } = require("playwright");
-const { phonePage, sleep } = require("./herdlib");
+const { phonePage, sleep, boardUnfold } = require("./herdlib");
 const { LIST, DETAILS, serve } = require("./threads-fixture");
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
@@ -69,34 +69,32 @@ const tall = (id) => Object.assign({}, DETAILS.t2, { id, title: "Thread " + id,
     g = await geo();
     check("desk: another thread pushed in its place shows from its top", g.main === 0 && g.list === before.list, g);
 
-    // The Inbox, the same way.
+    // The Board's 要你處理 and 最近回報 (once the Inbox, two columns): one flow
+    // now -- a line opened far down stays where it was tapped, and a push
+    // keeps the page where it was.
     const items = Array.from({ length: 30 }, (_, i) => ({ id: "report:" + i, group: i < 15 ? "need" : "fyi", kind: i < 15 ? "question" : "report",
       tag: "Report", tone: "green", agent: "lead-x", cli: "claude", project: "~/src/x/", title: "Item " + i, at: now - i * 60e3,
       whyLabel: "It reported", body: Array.from({ length: 60 }, (_, j) => "line " + j).join("\n"), preview: "p", state: "", read: false, override: null, replyVia: "lead" }));
-    await page.click('.tab[data-tab="inbox"]');
-    await page.evaluate((it) => GM.renderInbox({ items: it, count: 15 }), items);
+    await page.click('.tab[data-tab="board"]');
+    await page.evaluate((it) => GM.renderInbox({ items: it, count: 15, needsOnly: true }), items);
     await sleep(150);
-    const ig = () => page.evaluate(() => {
-      const sc = (s) => document.querySelector(s).scrollTop;
-      const l = document.querySelector(".iblistcol"), d = document.querySelector(".ibdetail");
-      return { app: document.querySelector("#app").scrollTop, list: sc(".iblistcol"), detail: sc(".ibdetail"),
-               listScrolls: l.scrollHeight > l.clientHeight, h1: (document.querySelector(".ibh1") || { getBoundingClientRect: () => ({ top: -1 }) }).getBoundingClientRect().top,
-               dTop: d.getBoundingClientRect().top, vh: innerHeight };
-    });
-    let h = await ig();
-    check("desk: the Inbox's list scrolls by itself too", h.listScrolls && h.app === 0, h);
-    await page.click('.ibrow[data-id="report:1"]');
-    await page.evaluate(() => { document.querySelector(".ibdetail").scrollTop = 500; document.querySelector(".iblistcol").scrollTop = 99999; });
+    await boardUnfold(page);
+    const ig = (id) => page.evaluate((id) => {
+      const r = document.querySelector('.bdnrow[data-id="' + id + '"]');
+      return { app: document.querySelector("#app").scrollTop, top: r ? Math.round(r.getBoundingClientRect().top) : -1, vh: innerHeight };
+    }, id);
+    await page.$eval('.bdnrow[data-id="report:14"]', (r) => r.scrollIntoView({ block: "center" }));
     await sleep(80);
-    await page.click('.ibrow[data-id="report:29"]');
+    const b0 = await ig("report:14");
+    check("desk: the Board scrolls as one page, a line far down in view", b0.app > 0 && b0.top > 0 && b0.top < b0.vh, b0);
+    await page.click('.bdnrow[data-id="report:14"] .bdnr');
     await sleep(150);
-    h = await ig();
-    check("desk: an Inbox item picked far down shows from its top", h.detail === 0 && h.h1 >= h.dTop && h.h1 < h.vh && h.app === 0 && h.list > 200, h);
-    const ib = await ig();
-    await page.evaluate((it) => GM.renderInbox({ items: it, count: 15 }), items.map((x) => Object.assign({}, x, { preview: "p2" })));
+    let h = await ig("report:14");
+    check("desk: a line opened far down stays where it was tapped", h.app === b0.app && h.top === b0.top, { b0, h });
+    await page.evaluate((it) => GM.renderInbox({ items: it, count: 15, needsOnly: true }), items.map((x) => Object.assign({}, x, { preview: "p2" })));
     await sleep(100);
-    h = await ig();
-    check("desk: an Inbox push keeps its columns where they were", h.list === ib.list && h.detail === ib.detail, { ib, h });
+    const h2 = await ig("report:14");
+    check("desk: a push keeps the page where it was", h2.app === h.app && h2.top === h.top, { h, h2 });
     check("desk: no page errors", errors.length === 0, errors);
     clearInterval(answer);
     stop();

@@ -33,7 +33,7 @@ the last out, and an idle time that cannot be read counts as away."
                     (ghostherd--set-state rd 'blocked "Allow npm test?")
                     ghostherd--herd-pushes)))
       (should (equal (funcall block)
-                     `((:kind "blocked" :session "rd" :project ,project :url ,(concat "room:" project)
+                     `((:kind "blocked" :session "rd" :project ,project :url ,(concat "room:" project) :board ""
                               :images t :reports t :reason "Allow npm test?"))))
       ;; Images off: the bot sends a report's text alone.
       (let ((ghostherd-push-images nil))
@@ -60,6 +60,27 @@ the last out, and an idle time that cannot be read counts as away."
       (setq idle 600)
       (let ((ghostherd-room-url-function (lambda (_) (error "no address"))))
         (should (equal (plist-get (car (funcall block)) :url) ""))))))
+
+(ert-deftest ghostherd-test-push-links-to-the-board ()
+  "A push links to what it is about on the herd page's Board, its home:
+what waits on you by its item -- a menu, a guarded call, a failed ask, a
+relay -- and else the agent (a lead's report, a lead started).  None when
+the page has no address from the phone."
+  (ghostherd-test--pushing
+    (let* ((home "https://box/open/ghostherd#board")
+           (ghostherd-room-url-function (lambda (p) (if p (concat "room:" p) home)))
+           (ghostherd--room-urls (make-hash-table :test 'equal))
+           (rd (ghostherd-tests--session :name "rd" :kind 'claude :state 'idle :project "/p/shop/")))
+      (should (equal (ghostherd--board-url 'blocked "rd" nil) (concat home "/at/blocked%3Ard")))
+      (should (equal (ghostherd--board-url 'guard "rd" '(:request "g1")) (concat home "/at/guard%3Ag1")))
+      (should (equal (ghostherd--board-url 'ask-failed "rd" '(:ask "d725ee06")) (concat home "/at/ask-failed%3Ad725ee06")))
+      (should (equal (ghostherd--board-url 'used-up "rd" '(:to "grok")) (concat home "/at/relay%3Ard")))
+      (should (equal (ghostherd--board-url 'report "lead-a" nil) (concat home "/agent/lead-a")))
+      (should (equal (ghostherd--board-url 'lead-started "lead-a" '(:by "user")) (concat home "/agent/lead-a")))
+      (ghostherd--set-state rd 'blocked "Allow npm test?")
+      (should (equal (plist-get (car ghostherd--herd-pushes) :board) (concat home "/at/blocked%3Ard")))
+      (let ((ghostherd-room-url-function (lambda (_) nil)) (ghostherd--room-urls (make-hash-table :test 'equal)))
+        (should-not (ghostherd--board-url 'blocked "rd" nil))))))
 
 (ert-deftest ghostherd-test-push-a-leads-report ()
   "A lead done with its turn is pushed as a report, with when that turn
@@ -166,7 +187,7 @@ waits) does not, nor one never approvable, kept denied or expired."
                             "run_command: npm publish -- approve it or keep it denied on the herd page"))))
     (let ((project (ghostherd--project-name "/p/shop/")))
       (should (equal ghostherd--herd-pushes
-                     `((:kind "guard" :session "agy-shop" :project ,project :url ,(concat "room:" project)
+                     `((:kind "guard" :session "agy-shop" :project ,project :url ,(concat "room:" project) :board ""
                               :images t :reports t
                               :request "g1" :tool "run_command" :summary "run_command: npm publish")))))
     (should (equal ghostherd--guard-told-ids '("g1")))
@@ -318,9 +339,9 @@ none when the page is this machine's alone."
       (let ((xwapp-remote-hosts '("box")))
         (should (equal (ghostherd-memory-page--room-url "~/w/shop/") "http://box/open/ghostherd#…"))
         (should (equal asked (list ghostherd-memory-page--app "room/chat/~%2Fw%2Fshop%2F")))
-        ;; No project: the page itself, on its Agents tab.
+        ;; No project: the page itself, on its home, the Board.
         (ghostherd-memory-page--room-url nil)
-        (should (equal asked (list ghostherd-memory-page--app "agents")))))))
+        (should (equal asked (list ghostherd-memory-page--app "board")))))))
 
 (ert-deftest ghostherd-test-the-bot-is-told-the-pages-addresses ()
   "Each tick tells the sidecar the herd page's address from your phone,

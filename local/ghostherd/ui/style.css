@@ -1671,33 +1671,8 @@ body.typing .cfoot [data-act="a:send"], body.typing .rfoot [data-act="a:send"] {
 body.typing .cfoot textarea:not(:placeholder-shown) ~ .use,
 body.typing .rfoot textarea:not(:placeholder-shown) ~ .use { display: none; }
 
-/* ---- Inbox --------------------------------------------------------------- */
-.inboxpage { display: flex; flex: 1; min-height: 0; gap: 0; }
-.inboxpage.narrow { flex-direction: column; overflow-y: auto; padding: 10px 12px 24px; gap: 8px; }
-.iblistcol { flex: 1 1 380px; max-width: 460px; border-right: 1px solid var(--line); display: flex;
-  flex-direction: column; overflow-y: auto; min-height: 0; }
-.ibdetail { flex: 999 1 540px; min-width: 0; padding: 20px 26px; display: flex; flex-direction: column;
-  gap: 14px; overflow-y: auto; }
-.ibfilters { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
-.inboxpage.narrow .ibfilters { border: none; padding: 2px 2px 4px; }
-.ibfilter { border-radius: 16px; padding: 5px 12px; font-size: 13px; min-height: 32px; cursor: pointer;
-  background: transparent; border: 1px solid var(--line); color: var(--muted); }
-.ibfilter.on { background: rgba(88,166,255,.15); border-color: var(--accent); color: var(--accent); }
-.ibsec { padding: 14px 16px 4px; display: flex; align-items: baseline; gap: 8px; }
-.ibsec.fyi { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 14px; }
-.ibsec h2 { margin: 0; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
-.ibsec h2.ibneed { color: var(--warn); }
-.ibsub { color: var(--muted); font-size: 12px; }
-.ibempty { margin: 6px 16px 12px; color: var(--muted); }
-.ibhint { margin: auto 16px 14px; padding-top: 16px; color: var(--muted); font-size: 12px; }
-.ibrow { display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left; background: transparent;
-  border: none; border-left: 3px solid transparent; padding: 10px 16px 10px 13px; cursor: pointer; color: inherit; }
-.ibrow:hover { background: rgba(255,255,255,.03); }
-.ibrow.on { background: #1c2330; border-left-color: var(--accent); }
-.ibr1 { display: flex; align-items: center; gap: 8px; width: 100%; }
-.ibr2 { display: flex; align-items: center; gap: 6px; width: 100%; padding-left: 16px; }
-.ibdot { width: 8px; height: 8px; border-radius: 50%; flex: none; border: 1px solid currentColor; background: currentColor; }
-.ibdot.read { background: transparent; }
+/* ---- The Inbox's items, on the Board: tags, details, actions ----------- */
+
 .ibtag { flex: none; font-size: 11px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase;
   border: 1px solid currentColor; border-radius: 4px; padding: 1px 6px; }
 .t-warn { color: var(--warn); } .t-red { color: var(--minus); } .t-accent { color: var(--accent); }
@@ -1708,11 +1683,6 @@ body.typing .rfoot textarea:not(:placeholder-shown) ~ .use { display: none; }
 .ibcli { font-size: 11px; border: 1px solid currentColor; border-radius: 4px; padding: 0 5px; }
 .c-claude { color: #f0883e; } .c-agy { color: #79c0ff; } .c-grok { color: #c9d1d9; }
 .ibagent { color: #c9d1d9; font-size: 13px; }
-.ibproj { color: var(--muted); font-size: 12px; }
-.ibprev { display: block; width: 100%; padding-left: 16px; box-sizing: border-box; color: var(--muted);
-  font-size: 13px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ibhead { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.ibh1 { margin: 0; font-size: 21px; font-weight: 650; color: var(--text); }
 .ibmeta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
 .ibmeta .ibagent { color: var(--text); font-weight: 600; }
 .ibwhy { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
@@ -1736,7 +1706,7 @@ body.typing .rfoot textarea:not(:placeholder-shown) ~ .use { display: none; }
 .ibbtn.ok { background: #238636; border-color: #2ea043; color: #fff; font-weight: 600; }
 .ibbtn.send { background: #1f6feb; border-color: #388bfd; color: #fff; font-weight: 600; }
 .ibreply { display: flex; flex-direction: column; gap: 10px; }
-/* The room's Image button beside Send, as big as the Inbox's own. */
+/* The room's Image button beside Send, as big as the reply box's own. */
 .ibreply .ibacts button.ghost.small { padding: 10px 16px; min-height: 44px; border-radius: 8px; font-size: inherit; }
 .ibreplybox { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; color: var(--text);
   padding: 10px 12px; font: inherit; resize: vertical; }
@@ -1744,38 +1714,11 @@ body.typing .rfoot textarea:not(:placeholder-shown) ~ .use { display: none; }
 .ibfacts { display: flex; flex-wrap: wrap; gap: 6px; }
 .ibfact { border: 1px solid #6e40c9; color: #d2a8ff; border-radius: 12px; padding: 2px 10px; font-size: 12px; }
 .ibdiff { max-height: 320px; overflow: auto; }
-.ibzero { margin: 70px auto; text-align: center; color: var(--muted); }
-.ibzh { font-size: 20px; color: var(--text); margin: 0 0 6px; }
 .ibtoast { align-self: flex-start; background: #12261a; border: 1px solid #2ea043; color: #7ee787;
   padding: 8px 12px; border-radius: 8px; font-size: 13px; }
 .iblink { background: none; border: none; color: #79c0ff; cursor: pointer; text-decoration: underline; padding: 0; }
 .count.badge { background: var(--warn); color: var(--bg); border-radius: 10px; padding: 0 7px; font-weight: 700; }
 .count.badge.hidden { display: none; }
-/* Phone cards */
-.ibcard { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
-  display: flex; flex-direction: column; gap: 8px; }
-.ibcard.need { border-color: currentColor; }
-.ibcard.t-warn.need { border-color: var(--warn); } .ibcard.t-red.need { border-color: var(--minus); }
-.ibcard.t-accent.need { border-color: var(--accent); } .ibcard.t-purple.need { border-color: #d2a8ff; }
-.ibcardhead { display: flex; align-items: center; gap: 8px; }
-.ibcardhead .ibtitle { font-weight: 600; }
-.ibcardwho { color: var(--muted); font-size: 12.5px; }
-/* A phone card is a tap target that expands in place.  Collapsed it is a
-   button; open it is a container (it holds buttons) whose head taps to close. */
-button.ibcard { width: 100%; text-align: left; font: inherit; cursor: pointer; }
-button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
-  color: inherit; cursor: pointer; padding: 0; min-height: 44px; }
-.ibcard .ibtitle { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
-.ibcardprev { color: var(--muted); font-size: 13px; white-space: normal; display: -webkit-box;
-  -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
-.ibcard.open { cursor: default; gap: 10px; }
-.ibcard.open .ibcardbody { display: flex; flex-direction: column; gap: 10px; }
-.ibcard.open .ibh1 { font-size: 17px; }
-.ibcard.open .ibhead { align-items: flex-start; }
-.inboxpage.narrow .ibopts { gap: 8px; }
-.inboxpage.narrow .ibbtn, .inboxpage.narrow .iboptbtn,
-.inboxpage.narrow .ibreply .ibacts button.ghost.small { flex: 1 1 44%; }
 
 /* ---- Threads: who is talking to whom, across the herd -------------------- */
 
@@ -1964,14 +1907,14 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 .ibthlink { margin-left: auto; background: transparent; color: var(--accent); border: 0; cursor: pointer;
   font-size: 13px; padding: 4px 2px; }
 .ibthlink:hover { text-decoration: underline; }
-.ibcard .ibthlink { min-height: 44px; display: inline-flex; align-items: center; }
+.bdnbody .ibthlink { min-height: 44px; display: inline-flex; align-items: center; }
 
-/* The desk's Threads and Inbox: the page is exactly the viewport under the
-   tabs, and each column scrolls by itself -- picking a thread far down the
-   list does not scroll its reading away.  The phone keeps one flow. */
+/* The desk's Threads: the page is exactly the viewport under the tabs,
+   and each column scrolls by itself -- picking a thread far down the list
+   does not scroll its reading away.  The phone keeps one flow. */
 @media (min-width: 720px) {
-  .app[data-view="threads"], .app[data-view="inbox"] { overflow: hidden; display: flex; flex-direction: column; }
-  .app[data-view="threads"] > .threadspage, .app[data-view="inbox"] > .inboxpage {
+  .app[data-view="threads"] { overflow: hidden; display: flex; flex-direction: column; }
+  .app[data-view="threads"] > .threadspage {
     flex: 1 1 auto; min-height: 0; height: 100%; box-sizing: border-box; padding-bottom: 0;
     /* Full-bleed and stable: `.page' centres with `margin: 0 auto' and caps at
        `.page.wide''s max-width, but in this flex column auto cross-axis margins
@@ -2262,7 +2205,6 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 .boardpage .bd-need .ibtoast { margin-bottom: 8px; }
 .boardpage .bdneedorph { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .boardpage .bdneedorph .bdacts { margin-top: 0; }
-.boardpage .bdneeds .ibcard.open .blk { font-size: 13px; }
 .boardpage .bdneeds .ibopts { gap: 8px; }
 @media (pointer: coarse) {
   .boardpage .bdday { min-height: 40px; padding: 0 18px; font-size: 14px; }
@@ -2412,3 +2354,21 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
   .boardpage .bdnb { padding: 3px 7px; }
   .boardpage .bdnbody .ibbtn, .boardpage .bdnbody .iboptbtn { flex: 1 1 44%; }
 }
+
+/* The updates on the Board (ask 8d6e1947): a card's 新回報 dot, its
+   reports opened; 最近回報 under 要你處理; a thing a link opened, marked. */
+.boardpage .tag.t-new { color: var(--accent); border-color: rgba(121,192,255,.55); font-weight: 600; }
+.boardpage .wi.folded .wm .t-new { flex: none; }
+.boardpage .bdupds { display: flex; gap: 8px; margin-top: 8px; font-size: 12.5px; }
+.boardpage .bdupds > .bl { --c: var(--accent); }
+.boardpage .bdupdl { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1; }
+.boardpage .bdupd { border-left: 2px solid var(--line); padding-left: 8px; min-width: 0; }
+.boardpage .bdupd.new { border-left-color: var(--accent); }
+.boardpage .bdupdh { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.boardpage .bdupdh .bddone { margin-left: 0; }
+.boardpage .bdupdb { margin-top: 4px; line-height: 1.55; overflow-wrap: anywhere; max-height: 420px; overflow-y: auto; }
+.boardpage .bdupdb > :first-child { margin-top: 0; }
+.boardpage .bdupdb > :last-child { margin-bottom: 0; }
+.boardpage .bdupdsec { margin-top: 14px; }
+.boardpage .bdupdsec > .section { margin: 0 0 8px; }
+.boardpage .bdnrow.hl, .boardpage .bdng.hl { box-shadow: 0 0 0 2px var(--accent); border-radius: 8px; transition: box-shadow .3s; }

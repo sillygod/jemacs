@@ -100,6 +100,15 @@ another site's page, gets nothing.
   1.4 ms of them --- the request waits, Emacs does not.  A gzip that
   fails or takes past 3 s (=xwapp--gzip-wait=): the file goes plain.
   =(setq xwapp--gzip-program nil)= turns it off.
+- *Lean,* for an app that asks (=xwapp-create= =:lean=, or
+  =xwapp-set-lean= for one made before): its own scripts --- not the
+  kit's --- go gzip'd with each line of nothing but a =//= comment sent
+  blank, its newline kept, so an error's line is the file's; under an
+  ETag of their own (=-lean-gz=).  Only for scripts with no string or
+  template running over a line, where a line starting =//= would be
+  data.  The herd's app.js: 143 KB gzip'd → 105 KB, a phone's slow link
+  some 2.5 s less on every load.  Plain (the xwidget, a browser that
+  takes no gzip), the file as it is.
 - *What changes, too, through the proxy.*  A =next= carries what the
   page shows --- the herd's Inbox 44 KB, its sessions 389 KB --- over
   the socket that holds Emacs to some 340 KB a second (see "A big

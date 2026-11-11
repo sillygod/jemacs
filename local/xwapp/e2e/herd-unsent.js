@@ -3,7 +3,7 @@
 // not submitted" with a Press Return that tells Emacs to press it, and the
 // Inbox has it under Needs you (and Stuck) with the same.  Desk and phone.
 const { webkit } = require("playwright");
-const { phonePage, HERD, sleep } = require("./herdlib");
+const { phonePage, HERD, sleep, boardUnfold } = require("./herdlib");
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
 const DESK = { viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2, isMobile: false, hasTouch: false };
@@ -47,20 +47,20 @@ const ITEMS = [{
       const others = await page.$$('.arow:not([data-name="' + NAME + '"]) [data-act="a:agent-submit"]');
       check(W("an agent with nothing unsent has no Press Return"), others.length === 0);
 
-      // ---- The Inbox ----
-      await tap('.tab[data-tab="inbox"]');
+      // ---- The Board's 要你處理 (once the Inbox's) ----
+      await tap('.tab[data-tab="board"]');
       await sleep(80);
-      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1 }), ITEMS);
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1, needsOnly: true }), ITEMS);
       await sleep(120);
-      const card = (where === "phone" ? ".ibcard" : ".ibrow") + '[data-id="unsent:' + NAME + '"]';
-      check(W("the Inbox lists it under Needs you"), !!(await page.$(card)));
-      await tap(card);
+      const card = '.bdnrow[data-id="unsent:' + NAME + '"]';
+      check(W("要你處理 lists it"), !!(await page.$(card)));
+      await tap(card + " .bdnr");
       await sleep(120);
       check(W("it says why"), /still in its input box/.test(await page.textContent(".app")));
       check(W("it offers Press Return"), !!(await page.$('[data-act="ib:submit"][data-id="unsent:' + NAME + '"]')));
       await tap('[data-act="ib:submit"][data-id="unsent:' + NAME + '"]');
       await sleep(80);
-      check(W("Press Return in the Inbox tells Emacs, for that agent"),
+      check(W("Press Return on the Board tells Emacs, for that agent"),
         intents.filter((i) => i.op === "agent-submit").length === 2 && lastOf("agent-submit").name === NAME,
         intents.filter((i) => i.op === "agent-submit"));
 

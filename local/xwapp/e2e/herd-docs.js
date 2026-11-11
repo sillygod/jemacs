@@ -23,7 +23,7 @@
 const fs = require("fs");
 const path = require("path");
 const { webkit } = require("playwright");
-const { phonePage, HERD, sleep } = require("./herdlib");
+const { phonePage, HERD, sleep, boardPick } = require("./herdlib");
 const SHOTS = path.join(__dirname, "shots");
 fs.mkdirSync(SHOTS, { recursive: true });
 const results = [];
@@ -172,12 +172,12 @@ const isLink = (l) => l.tag === "A" && l.href === "/" + SECRET + "/.reports/" + 
       const chat = await links(page, ".chat .cbody .ereport");
       check(W("the chat: under the turn and under the answer"), chat.length === 2 && chat.every(isLink), chat);
 
-      // ---- The Inbox: the report's, and its thread's answer's ----
-      await page.click('.tab[data-tab="inbox"]');
+      // ---- The Board (once the Inbox): the report's, and its thread's answer's ----
+      await page.click('.tab[data-tab="board"]');
       await sleep(150);
-      await page.evaluate((it) => GM.renderInbox({ items: it, count: 0 }), ITEMS);
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: 0, needsOnly: true }), ITEMS);
       await sleep(100);
-      await tap('[data-id="' + RID + '"]');
+      await boardPick(page, RID, tap);
       await sleep(100);
       await page.evaluate((p) => {
         GM.inboxDetailData({ for: p.id, report: "Shipped the viewer.  /tmp/r.html", images: [p.rep] });
@@ -431,10 +431,10 @@ const isLink = (l) => l.tag === "A" && l.href === "/" + SECRET + "/.reports/" + 
       await drain();
       check("xwidget: a document set has no file: URL", await page.evaluate((id) =>
         XW.file(id + ".html", "reports") === "" && XW.file("x.html", "docs") === "", ID));
-      await page.click('.tab[data-tab="inbox"]');
-      await page.evaluate((it) => GM.renderInbox({ items: it, count: 0 }), ITEMS);
+      await page.click('.tab[data-tab="board"]');
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: 0, needsOnly: true }), ITEMS);
       await sleep(100);
-      await page.click('[data-id="' + RID + '"]');
+      await boardPick(page, RID);
       await page.evaluate((p) => GM.inboxDetailData({ for: p.id, report: "Shipped.  /tmp/r.html", images: [p.rep] }), { id: RID, rep: REP });
       await sleep(150);
       const b = await links(page, ".ibwhy .ereport");

@@ -67,7 +67,7 @@ function look() {
     onTab: on && on.getAttribute("data-tab"),
     onInView: !!onBox && onBox.l >= tb.l - 1 && onBox.r <= tb.r + 1,
     unreachable,
-    counts: ["inbox-n", "threads-n", "sessions-n"].map((id) => {
+    counts: ["board-n", "threads-n", "sessions-n"].map((id) => {
       const c = document.getElementById(id);
       return shown(c) && c.textContent.trim() && c.getClientRects().length === 1 ? "" : id;
     }).filter(Boolean),
@@ -149,7 +149,7 @@ async function reachable(page, sel) {
         // At the desk Emacs says the page can be had on a phone.
         if (!XW.elsewhere) XW.kit({ xwapp: "phone" });
         GM.setContext({ sources: s });
-        GM.renderInbox({ items: [], count: 3 });
+        GM.boardBadge({ count: 3 });
         GM.threadsBadge({ live: 1 });
         GM.showView("agents");
         GM.renderHerd(h);
@@ -182,7 +182,7 @@ async function reachable(page, sel) {
       // ---- Counts as large as they come: still no overlap, no wrap ----
       await page.evaluate((s) => {
         GM.setContext({ sources: s });
-        GM.renderInbox({ items: [], count: 128 });
+        GM.boardBadge({ count: 128 });
         GM.threadsBadge({ live: 12 });
         GM.showView("log");
       }, sources(12345));

@@ -1,6 +1,6 @@
 // Images an agent's reply names (ask 02aba3db): a thumbnail under the
 // message wherever it is read -- a room's column and its chat, an ask's
-// answer, the Inbox's report and its thread -- and pressed, the image
+// answer, a report on the Board and its thread -- and pressed, the image
 // whole over the page; Esc puts it away.  Only a copy's name is ever
 // asked for: an image whose id or extension is not one is not drawn,
 // and an agent's own <img> or ![](…) stays text.  Under the page's CSP,
@@ -10,7 +10,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { webkit } = require("playwright");
-const { phonePage, HERD, sleep } = require("./herdlib");
+const { phonePage, HERD, sleep, boardPick } = require("./herdlib");
 const SHOTS = path.join(__dirname, "shots");
 fs.mkdirSync(SHOTS, { recursive: true });
 const results = [];
@@ -236,12 +236,12 @@ async function loaded(page, sel) {
       await sleep(60);
       check(W("and ✕"), !(await page.$(".imgview")));
 
-      // ---- The Inbox: the report's images, and its thread's answer's ----
-      await page.click('.tab[data-tab="inbox"]');
+      // ---- The Board (once the Inbox): the report's images, and its thread's answer's ----
+      await page.click('.tab[data-tab="board"]');
       await sleep(150);
-      await page.evaluate((it) => GM.renderInbox({ items: it, count: 0 }), ITEMS);
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: 0, needsOnly: true }), ITEMS);
       await sleep(100);
-      await tap('[data-id="' + RID + '"]');
+      await boardPick(page, RID, tap);
       await sleep(100);
       await page.evaluate((p) => {
         GM.inboxDetailData({ for: p.id, report: "Shipped the viewer.  /tmp/after.png", images: [p.img] });
@@ -249,7 +249,7 @@ async function loaded(page, sel) {
       }, { id: RID, img: IMG, thread: THREAD });
       await sleep(300);
       const report = await loaded(page, ".ibwhy .eimg img");
-      check(W("the Inbox: the report's image under its words"), report.length === 1 && report[0].ok, report);
+      check(W("the Board: the report's image under its words"), report.length === 1 && report[0].ok, report);
       await page.screenshot({ path: path.join(SHOTS, "images-inbox-" + where + ".png"), fullPage: true });
       const thread = await loaded(page, ".ibthwrap .eimg img");
       check(W("and its thread's answer's, " + (where === "desk" ? "under the card" : "under the message")),
@@ -258,14 +258,14 @@ async function loaded(page, sel) {
         await page.$$eval(".ibthwrap .eimg", (bs) => bs.every((b) => !b.parentElement.closest("button"))));
       await tap(".ibwhy .eimg");
       await sleep(200);
-      check(W("pressed in the Inbox, the image whole"), (await loaded(page, ".imgview img")).every((t) => t.ok));
-      // Over the page, its keys are not the page's: j does not move the Inbox.
-      const sel = await page.evaluate(() => document.querySelector(".ibrow.on, .ibcard.open") ? 1 : 0);
+      check(W("pressed on the Board, the image whole"), (await loaded(page, ".imgview img")).every((t) => t.ok));
+      // Over the page, its keys are not the page's: j moves nothing under it.
+      const sel = await page.evaluate(() => document.querySelector(".bdnrow.open") ? 1 : 0);
       await page.keyboard.press("j");
       await page.keyboard.press("Escape");
       await sleep(80);
       check(W("the page's keys wait while it is shown"),
-        !(await page.$(".imgview")) && (await page.evaluate(() => document.querySelector(".ibrow.on, .ibcard.open") ? 1 : 0)) === sel);
+        !(await page.$(".imgview")) && (await page.evaluate(() => document.querySelector(".bdnrow.open") ? 1 : 0)) === sel);
 
       check(W("nothing the page asked for broke its CSP"), csp.length === 0, csp);
       check(W("no page errors"), errors.length === 0, errors);
@@ -286,10 +286,10 @@ async function loaded(page, sel) {
       await page.goto("file://" + UI);
       await page.waitForFunction(() => window.GM && window.XW);
       check("xwidget: the page knows it is not in a browser", await page.evaluate(() => XW.browser === false));
-      await page.click('.tab[data-tab="inbox"]');
-      await page.evaluate((it) => GM.renderInbox({ items: it, count: 0 }), ITEMS);
+      await page.click('.tab[data-tab="board"]');
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: 0, needsOnly: true }), ITEMS);
       await sleep(100);
-      await page.click('[data-id="' + RID + '"]');
+      await boardPick(page, RID);
       await page.evaluate((p) => GM.inboxDetailData({ for: p.id, report: "Shipped.  /tmp/after.png", images: [p.img] }), { id: RID, img: IMG });
       await sleep(150);
       check("xwidget: before Emacs says where they are, a name and no image",

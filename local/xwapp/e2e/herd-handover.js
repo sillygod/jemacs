@@ -61,7 +61,8 @@ const DESKCALLS = ["boardPatch", "setConversation", "setChat", "setSubConversati
     const phone = await pctx.newPage();
     const perrors = [];
     watch(phone, perrors);
-    await phone.goto(BOX + "/" + s.secretOf("herd") + "/ghostherd/ui/index.html");
+    // On Agents: the page's home is the Board, its own watch, not the desk's.
+    await phone.goto(BOX + "/" + s.secretOf("herd") + "/ghostherd/ui/index.html#agents");
     await phone.waitForFunction(() => window.GM && window.XW);
     await until(() => notes().some((w) => w.watches === "hello" && w.page && w.page !== deskId), 15000);
     const at = notes().findIndex((w) => w.watches === "hello" && w.page && w.page !== deskId);

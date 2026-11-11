@@ -42,9 +42,10 @@ async function boardOpen(page, intents, patch) {
   const browser = await webkit.launch();
   try {
     // ---- The badge's window: the Board's own -------------------------
+    // (A page loaded on another tab: one on the Board counts its own.)
     {
       const intents = [];
-      const { ctx, page, errors } = await phonePage(browser, { intents, context: DESK });
+      const { ctx, page, errors } = await phonePage(browser, { intents, context: DESK, hash: "#agents" });
       await page.evaluate(() => localStorage.setItem("ghostherd.board.days", "7"));
       await page.reload();
       await page.waitForFunction(() => window.GM && window.XW);
@@ -57,9 +58,9 @@ async function boardOpen(page, intents, patch) {
     // ---- The desk ------------------------------------------------------
     {
       const intents = [];
-      const { ctx, page, errors } = await phonePage(browser, { intents, context: DESK });
+      const { ctx, page, errors } = await phonePage(browser, { intents, context: DESK, hash: "#agents" });
       await sleep(100);
-      check("desk: the page asks for the Board's badge as it starts", ops(intents, "board-peek").length === 1);
+      check("desk: a page loaded off the Board asks for its badge as it starts", ops(intents, "board-peek").length === 1);
       check("desk: of what the Board would show: the window it keeps, a day", ops(intents, "board-peek")[0].days === 1,
         ops(intents, "board-peek"));
       await page.evaluate(() => GM.boardBadge({ jing: 2, orphan: 1 }));

@@ -683,7 +683,7 @@
   // In the xwidget the images are files, and where they are comes with
   // Emacs's answer to the page's hello: drawn before it, drawn again.
   document.addEventListener("xw-files", () => {
-    if (view === "inbox") renderInbox();
+    if (view === "board") renderBoard();
     else if (view === "threads") renderThreads();
     else if (herdNow.data) GM.renderHerdAgain();
   });
@@ -886,8 +886,8 @@
       memWatching = false;
       emit("memory-unwatch");
     }
-    // The Board's 要你處理 is drawn from the Inbox's push too.
-    if (inboxWatching && view !== "inbox" && view !== "board") {
+    // The Board's 要你處理 and its updates are drawn from the Inbox's push.
+    if (inboxWatching && view !== "board") {
       inboxWatching = false;
       emit("inbox-unwatch");
     }
@@ -900,13 +900,14 @@
     if (boardWatching && view !== "board") {
       boardWatching = false;
       clearInterval(boardTimer);
-      const cs = Object.values(board.cards);
-      board.peek = { orphan: cs.filter((c) => c.status === "orphan").length,
-                     jing: cs.filter((c) => c.status === "jing" && (c.needs || []).length).length };
+      // Its count as it was, until Emacs looks again (board-peek, asked
+      // now: the looks on news and now and then begin with one) -- of what
+      // had come; else what Emacs said.
+      if (inbox.got || board.got) board.peek = { count: bdNeeds(true).length };
       emit("board-unwatch");
+      emit("board-peek", { days: board.days });
     }
     boardBadge();
-    inboxBadge();
     threadsBadge();
     document.querySelectorAll(".tab").forEach((b) => {
       b.classList.toggle("on", view !== "source" && b.getAttribute("data-tab") === view);
@@ -954,12 +955,19 @@
     else if (where === "memory") showMemory();
     else if (where === "sessions") showSessions();
     else if (where === "search") showSearch();
-    else if (where === "inbox") showInbox();
     else if (where === "threads") showThreads();
-    else if (where === "board") showBoard();
     else if (where === "docs") showDocs();
-    // Home: the page opens on the Inbox when nothing else is asked for.
-    else showInbox();
+    else {
+      // Home: the Board, when nothing else is asked for -- and for the
+      // Inbox's old links, the tab it was: #inbox, #inbox/ID.  A link to
+      // one of its items (a push's, #board/at/ID, or #inbox/ID) opens that
+      // item; to an agent (#board/agent/NAME), what is the agent's.
+      const at = /^(?:board\/at|inbox)\/(.+)$/.exec(where), who = /^board\/agent\/(.+)$/.exec(where);
+      let arg = "";
+      try { arg = decodeURIComponent((at || who || [])[1] || ""); } catch (e) { arg = ""; }
+      board.at = arg ? { id: at ? arg : "", agent: who ? arg : "", t: Date.now() } : null;
+      showBoard();
+    }
   }
 
   // Emacs let the page go while the phone slept, and has it again: the
@@ -979,8 +987,8 @@
       emit("sub-watch", { name: sv.name, path: (conv && conv.path) || "", sub: sv.sub });
     }
     if (memWatching) emit("memory-watch", mem.key ? { key: mem.key } : { key: "user" });
-    // The Board's, only what needs you (showBoard).
-    if (inboxWatching) emit("inbox-watch", view === "board" ? { needs: true } : {});
+    // The Board's: what needs you whole, the updates by their heads (showBoard).
+    if (inboxWatching) emit("inbox-watch", { needs: true });
     if (threadsWatching) emit("threads-watch", { project: threads.project, sort: threads.sort });
     // Emacs sends the board whole again: what it sent while the page was
     // away is not here.
@@ -989,7 +997,7 @@
     if (view === "docs") emit("docs");
     emit("ready", { lazy: true });
     emit("threads-peek");
-    emit("board-peek", { days: board.days });
+    if (!boardWatching) emit("board-peek", { days: board.days });
   }
 
   function filtersHtml() {
@@ -5063,12 +5071,7 @@
     else setStatus("To attach an image, click into a prompt box first");
   });
 
-  // Inbox desk keys: j/k move, 1-4 answer a menu, a approve, e done.
-  document.addEventListener("keydown", (ev) => {
-    if (view !== "inbox" || ev.metaKey || ev.ctrlKey || ev.altKey) return;
-    inboxKey(ev);
-  });
-  // Keep the reply text across the Inbox's periodic re-renders.
+  // Keep the reply text across 要你處理's periodic re-renders.
   const isReplyBox = (t) => !!(t && t.classList && t.classList.contains("ibreplybox"));
   // A reply given back keeps what is written in its box, for when its
   // item is picked again.
@@ -5403,7 +5406,7 @@
         '" data-act="range" data-range="' + ms + '">' + label + "</button>").join("") +
       '<button type="button" class="chip' + (herd.issues ? " on" : "") + '" data-act="issues-only" title="' +
         esc("What went wrong, looking back: blocks, input that did not go in, asks unanswered or failed, " +
-            "guard holds, denied checks, quotas and screens no rule knew.  What needs you now is the Inbox.") +
+            "guard holds, denied checks, quotas and screens no rule knew.  What needs you now is on the Board.") +
         '">' + issuesLabel(issues) + "</button>" +
       '<button type="button" class="chip' + (herd.screensOnly ? " on" : "") + '" data-act="screens-only">Screens</button>' +
       "</div>" +
@@ -6345,8 +6348,7 @@
       src = null;
       herdNow.fromBoard = false;
       const which = b.getAttribute("data-tab");
-      if (which === "inbox") showInbox();
-      else if (which === "board") showBoard();
+      if (which === "board") showBoard();
       else if (which === "threads") showThreads();
       else if (which === "sessions") showSessions();
       else if (which === "log") showLog();
@@ -6468,28 +6470,28 @@
 
   // ---- Calls from Emacs -------------------------------------------------
 
-  // ---- Inbox -----------------------------------------------------------
-  // One list of what needs the user, then updates.  Emacs pushes the items
-  // (inbox-watch / renderInbox), derived from the herd's own state; each
-  // action routes to the same intent the Agents / Memory tabs use, plus
-  // inbox-set for read / done / override.  Desk: a list and an in-place
-  // handler.  Phone: cards with their actions inline.
+  // ---- The Inbox's items, on the Board ------------------------------------
+  // What needs the user, then the updates: Emacs pushes the items while the
+  // Board is shown (its watch's `inbox', renderInbox), derived from the
+  // herd's own state -- what needs the user whole, the updates by their
+  // heads.  The Board lists them: what needs the user in 要你處理, an update
+  // on its work item's card or under 最近回報.  Each action routes to the
+  // same intent the Agents / Memory tabs use, plus inbox-set for read /
+  // done / override.  The tab of their own they had once is gone; its
+  // links open the Board (`restore').
 
   // REPLYING, the report whose reply box is open: a report stays compact
   // until Reply is pressed.  BACK, by item, a reply that did not reach
   // Emacs, given back to its box until sent or cancelled; HELD, by item,
   // one given back, kept in the list a while ({it, until}).
-  // GOT: Emacs has sent the Inbox once; until then it is on its way, not empty.
+  // GOT: Emacs has sent the items once; until then they are on their way.
   // GONE, by item, one handled here until a while after (INBOX_HOLD): the
   // Board's list is drawn from the Board's push too, which has it until
-  // its next look.
-  let inbox = { got: false, items: [], count: 0, sel: "", filter: "all", toast: "", reply: "", replying: "", undo: null, detail: null, thOpen: {},
-                back: new Map(), held: new Map(), gone: new Map() };
+  // its next look.  TEXT, by update, its words as Emacs sent them for it
+  // (inbox-detail): a report comes by its head alone.
+  let inbox = { got: false, items: [], sel: "", toast: "", reply: "", replying: "", undo: null, detail: null, thOpen: {},
+                back: new Map(), held: new Map(), gone: new Map(), text: new Map() };
   let inboxWatching = false;
-
-  const INBOX_FILTERS = [["all", "All"], ["stuck", "Stuck"], ["approve", "Approvals"], ["questions", "Questions"], ["updates", "Updates"]];
-
-  function inboxNarrow() { return window.innerWidth < 720; }
 
   // Redraw BOX by DRAW, each pane in SELS kept where it was scrolled --
   // Emacs pushes every few seconds -- but those in TOP, which start at
@@ -6519,30 +6521,8 @@
     const o = it.override;
     return o === "need" ? true : o === "update" ? false : it.group === "need";
   }
-  function inboxPass(it) {
-    const f = inbox.filter;
-    if (f === "all") return true;
-    if (f === "stuck") return it.kind === "blocked" || it.kind === "login" || it.kind === "login-continue" || it.kind === "carry-on" || it.kind === "ask-failed" || it.kind === "unsent";
-    if (f === "approve") return it.kind === "guard" || it.kind === "proposal";
-    if (f === "questions") return it.kind === "question";
-    if (f === "updates") return !inboxNeed(it);
-    return true;
-  }
-  function inboxCur() { return inbox.items.find((x) => x.id === inbox.sel) || null; }
 
-  function showInbox() {
-    if (herdNow.room) closeRoomState();
-    if (/^orphan:/.test(inbox.sel)) inbox.sel = "";
-    view = tab = "inbox";
-    src = null;
-    chrome();
-    app.innerHTML = '<div class="page wide inboxpage"></div>';
-    inboxWatching = true;
-    emit("inbox-watch");
-    renderInbox();
-  }
-
-  // Room state torn down without a view change (showInbox leaves agents).
+  // Room state torn down without a view change.
   function closeRoomState() {
     if (!herdNow.room) return;
     roomLeft();
@@ -6551,13 +6531,12 @@
     emit("room-close");
   }
 
-  let inboxShown = null; // the item the detail pane shows, to start a new one at its top
   // An IME composition open in a reply box (CJK input): a redraw would
   // end it, so one asked for meanwhile waits for it to end (HELD).
   let inboxComposing = false;
   let inboxHeld = false;
 
-  // A box sent or closed: its composition no longer holds the Inbox, and
+  // A box sent or closed: its composition no longer holds the list, and
   // the redraw that clears the box is drawn now -- held, it would be drawn
   // when the composition ends, after `composed' put the old text back.
   function inboxUnhold() {
@@ -6570,32 +6549,10 @@
     return a && a.classList && a.classList.contains("ibreplybox") ? a : null;
   }
 
-  // The whole pane is drawn anew -- every push, every few seconds while
-  // agents work -- so a reply box being written in is found again after,
-  // with its cursor, selection and scroll: else the next key falls to
-  // `inboxKey' (`e' marks the item read and drops the draft).
+  // The items are drawn where the Board has them (renderBoardNeed keeps a
+  // reply box being written in, its cursor and scroll).
   function renderInbox() {
-    if (view === "board") return renderBoard();
-    if (view !== "inbox") return;
-    const box = app.querySelector(".inboxpage");
-    if (!box) return;
-    const ta = inboxReplyFocused();
-    if (ta && inboxComposing) { inboxHeld = true; return; }
-    inboxHeld = false;
-    const kept = ta && box.contains(ta) && { id: ta.getAttribute("data-id"), start: ta.selectionStart, end: ta.selectionEnd,
-                                            dir: ta.selectionDirection, top: ta.scrollTop };
-    const narrow = inboxNarrow();
-    box.classList.toggle("narrow", narrow);
-    const fresh = inbox.sel !== inboxShown;
-    inboxShown = inbox.sel;
-    keepScroll(box, [".iblistcol", ".ibdetail"], () => {
-      box.innerHTML = narrow ? inboxPhoneHtml() : inboxDeskHtml();
-    }, fresh ? [".ibdetail"] : []);
-    const again = kept && box.querySelector('.ibreplybox[data-id="' + cssName(kept.id) + '"]');
-    if (!again) return;
-    again.focus({ preventScroll: true });
-    again.setSelectionRange(kept.start, kept.end, kept.dir);
-    again.scrollTop = kept.top;
+    if (view === "board") renderBoard();
   }
 
   function inboxTag(it) {
@@ -6603,43 +6560,6 @@
   }
   function inboxCli(it) {
     return it.cli ? '<span class="ibcli c-' + esc(it.cli) + '">' + esc(it.cli) + "</span>" : "";
-  }
-
-  function inboxRow(it) {
-    const on = it.id === inbox.sel;
-    const need = inboxNeed(it);
-    return '<button type="button" class="ibrow' + (on ? " on" : "") + '" data-act="ib:pick" data-id="' + esc(it.id) + '"' +
-      ' aria-current="' + (on ? "true" : "false") + '">' +
-      '<span class="ibr1"><span class="ibdot' + (it.read ? " read" : "") + ' t-' + esc(it.tone) + '"></span>' +
-      inboxTag(it) + '<span class="ibtitle">' + ibPlain(it.title) + "</span>" +
-      '<span class="ibage">' + esc(inboxAge(it.at)) + "</span></span>" +
-      (need
-        ? '<span class="ibr2">' + inboxCli(it) + '<span class="ibagent">' + esc(it.agent) + "</span>" +
-          (it.project ? '<span class="ibproj">· ' + esc(leaf(it.project)) + "</span>" : "") + "</span>" +
-          '<span class="ibprev">' + ibPlain(it.preview) + "</span>"
-        : '<span class="ibprev">' + esc(it.agent) + " · " + ibPlain(it.preview) + "</span>") +
-      "</button>";
-  }
-
-  // Said where the items go until Emacs has sent them: "Inbox zero" before
-  // then says what is not so, until it is taken back a second later.
-  const INBOX_COMING = '<p class="ibempty ibcoming">Asking Emacs…</p>';
-
-  function inboxList() {
-    const live = inbox.items.filter(inboxPass);
-    const need = live.filter(inboxNeed);
-    const fyi = live.filter((it) => !inboxNeed(it));
-    const count = inbox.items.filter(inboxNeed).length;
-    const filters = INBOX_FILTERS.map(([f, label]) =>
-      '<button type="button" class="ibfilter' + (inbox.filter === f ? " on" : "") + '" data-act="ib:filter" data-f="' + f + '">' + label + "</button>").join("");
-    return '<div class="ibfilters">' + filters + "</div>" +
-      '<div class="ibsec"><h2 class="ibneed">Needs you</h2><span class="ibsub">' +
-      count + " waiting · most urgent first</span></div>" +
-      (need.length ? need.map(inboxRow).join("")
-        : inbox.got ? '<p class="ibempty">Nothing needs you here. The herd is moving on its own.</p>' : INBOX_COMING) +
-      '<div class="ibsec fyi"><h2>Updates</h2><span class="ibsub">reports and handoffs, nothing to decide</span></div>' +
-      fyi.map(inboxRow).join("") +
-      '<p class="ibhint">j / k move · 1–4 answer · a approve · e done</p>';
   }
 
   // BODY defaults to the item's own (truncated) body; the detail pane passes
@@ -6746,73 +6666,6 @@
       IMAGE_BUTTON + later + "</div></div>";
   }
 
-  // The full detail of one item: the desk's right pane, and a phone card once
-  // it is opened.  One renderer, so the two never drift.  PHONE picks the
-  // compact action layout in `inboxActions'.
-  function inboxDetail(it, phone) {
-    const d = inbox.detail && inbox.detail.for === it.id ? inbox.detail : null;
-    const body = d && d.report ? d.report : it.body;
-    return '<div class="ibhead">' + inboxTag(it) + '<h1 class="ibh1">' + ibPlain(it.title) + "</h1></div>" +
-      '<div class="ibmeta">' + inboxCli(it) + '<span class="ibagent">' + esc(it.agent) + "</span>" +
-      (it.project ? "<span>· " + esc(leaf(it.project)) + "</span>" : "") +
-      (it.state ? "<span>· " + esc(it.state) + "</span>" : "") +
-      '<span>· ' + esc(inboxAge(it.at)) + "</span></div>" +
-      inboxWhy(it, body, d && d.report ? d.images : null) + inboxActions(it, phone) + inboxThreadInline(it, phone, d);
-  }
-
-  function inboxDeskHtml() {
-    const cur = inboxCur();
-    const detail = inbox.toast
-      ? '<div class="ibtoast" role="status">' + esc(inbox.toast) +
-        (inbox.undo ? ' <button type="button" class=" iblink" data-act="ib:undo">Undo</button>' : "") + "</div>"
-      : "";
-    const body = cur
-      ? inboxDetail(cur, false)
-      : '<div class="ibzero"><p class="ibzh">Inbox zero</p><p>Everything that needed you is answered. Updates keep arriving here.</p></div>';
-    return '<section class="iblistcol">' + inboxList() + "</section>" +
-      '<main class="ibdetail">' + detail + body + "</main>";
-  }
-
-  // A phone's card of an item, the Board's too.  Collapsed: the whole card
-  // is one tap target that opens it.  Open: a container (it holds buttons,
-  // so not a button itself) whose head taps to collapse, and the full desk
-  // detail below -- one open at a time.  O, the Board's: PICK, its act
-  // (`ib:pick'); HEAD, more in its head; WHO, its line under the head;
-  // BODY, in place of the item's detail; AFTER, below it; PHONE, the
-  // actions' compact layout (a phone's).
-  function inboxCard(it, o) {
-    o = o || {};
-    const pick = o.pick || "ib:pick";
-    const who = o.who != null ? o.who : '<span class="ibcardwho">' + esc(it.agent) + (it.cli ? " · " + esc(it.cli) : "") +
-      (it.project ? " · " + esc(leaf(it.project)) : "") + "</span>";
-    const tone = "t-" + esc(it.tone) + (o.need || inboxNeed(it) ? " need" : "");
-    const head = inboxTag(it) + (o.head || "") + '<span class="ibtitle">' + ibPlain(it.title) + "</span>" +
-      '<span class="ibage">' + esc(inboxAge(it.at)) + "</span>";
-    return it.id === inbox.sel
-      ? '<div class="ibcard open ' + tone + '" data-id="' + esc(it.id) + '">' +
-        '<button type="button" class="ibcardhead" data-act="' + pick + '" data-id="' + esc(it.id) + '" aria-expanded="true">' + head + "</button>" + who +
-        '<div class="ibcardbody">' + (o.body != null ? o.body : inboxDetail(it, o.phone !== false)) + (o.after || "") + "</div></div>"
-      : '<button type="button" class="ibcard ' + tone + '" data-act="' + pick + '" data-id="' + esc(it.id) + '" aria-expanded="false">' +
-        '<span class="ibcardhead">' + head + "</span>" + who +
-        (it.preview ? '<span class="ibcardprev">' + ibPlain(it.preview) + "</span>" : "") + "</button>";
-  }
-
-  function inboxPhoneHtml() {
-    const live = inbox.items.filter(inboxPass);
-    const need = live.filter(inboxNeed);
-    const fyi = live.filter((it) => !inboxNeed(it));
-    const filters = INBOX_FILTERS.map(([f, label]) =>
-      '<button type="button" class="ibfilter' + (inbox.filter === f ? " on" : "") + '" data-act="ib:filter" data-f="' + f + '">' + label + "</button>").join("");
-    const card = (it) => inboxCard(it);
-    return (inbox.toast ? '<div class="ibtoast" role="status">' + esc(inbox.toast) +
-            (inbox.undo ? ' <button type="button" class="iblink" data-act="ib:undo">Undo</button>' : "") + "</div>" : "") +
-      '<div class="ibfilters">' + filters + "</div>" +
-      '<div class="ibsec"><h2 class="ibneed">Needs you</h2></div>' +
-      (need.length ? need.map(card).join("")
-        : inbox.got ? '<p class="ibempty">Inbox zero. The herd is moving on its own.</p>' : INBOX_COMING) +
-      (fyi.length ? '<div class="ibsec fyi"><h2>Updates · ' + fyi.length + "</h2></div>" + fyi.map(card).join("") : "");
-  }
-
   // Ask Emacs for the selected item's thread (and, for a report/question,
   // its full last message) -- only on a pick, never on the steady tick.
   function inboxFetchThread(it) {
@@ -6835,29 +6688,23 @@
     if (it) { inboxMarkRead(it); inboxFetchThread(it); }
   }
 
-  // Resolve an item: hide it at once (optimistic), toast, move to the next.
+  // Resolve an item: hide it at once (optimistic), say what was done --
+  // a while, not for good: an empty list is a quiet line -- and close it.
   function inboxResolve(it, msg, undoable) {
     inbox.held.delete(it.id);
     inbox.gone.set(it.id, Date.now() + INBOX_HOLD);
-    const rest = inbox.items.filter((x) => x.id !== it.id);
-    // The Board's list, ranked its own way, closes instead.
-    const next = view === "board" ? null : rest.filter(inboxNeed)[0] || rest[0] || null;
-    inbox.items = rest;
-    inbox.sel = next ? next.id : "";
+    inbox.items = inbox.items.filter((x) => x.id !== it.id);
+    inbox.sel = "";
     inbox.reply = "";
     inbox.replying = "";
     inbox.toast = msg;
     inbox.undo = undoable ? { id: it.id } : null;
     inbox.detail = null;
     inbox.thOpen = {};
-    if (next) inboxFetchThread(next);
-    if (undoable) {
-      const token = it.id;
-      setTimeout(() => { if (inbox.undo && inbox.undo.id === token) { inbox.undo = null; inbox.toast = ""; renderInbox(); } }, 6000);
-    } else if (view === "board") {
-      // Over 要你處理 a while, not for good: an empty list is a quiet line.
-      setTimeout(() => { if (inbox.toast === msg && !inbox.undo) { inbox.toast = ""; renderInbox(); } }, 6000);
-    }
+    const token = it.id;
+    setTimeout(() => {
+      if (undoable ? inbox.undo && inbox.undo.id === token : inbox.toast === msg && !inbox.undo) { inbox.undo = null; inbox.toast = ""; renderInbox(); }
+    }, 6000);
     renderInbox();
   }
 
@@ -6889,8 +6736,8 @@
     }
     renderInbox();
     const said = "Not sent: Emacs did not get it. " + (unmark
-      ? "The report is back in the Inbox, your reply in its box."
-      : "Your answer is back in the question's box in the Inbox.");
+      ? "The report is back on the Board, your reply in its box."
+      : "Your answer is back in the question's box on the Board.");
     setStatus(said, "error");
     return () => {
       const ta = box();
@@ -6939,7 +6786,6 @@
     const id = el.getAttribute("data-id") || inbox.sel;
     // On the Board, a lead's line the Inbox has not sent yet too (`bdNeeds').
     const it = inbox.items.find((x) => x.id === id) || bdNeedExtra.get(id);
-    if (act === "filter") { inbox.filter = el.getAttribute("data-f"); renderInbox(); return; }
     if (act === "undo") {
       if (inbox.undo) {
         emit("inbox-set", { id: inbox.undo.id, done: false });
@@ -6958,9 +6804,8 @@
     }
     if (!it) return;
     if (act === "pick") {
-      // On a phone -- and the Board's list -- a card expands in place;
-      // tapping the open one closes it.
-      if ((inboxNarrow() || view === "board") && id === inbox.sel) { inbox.sel = ""; inbox.detail = null; inbox.thOpen = {}; renderInbox(); return; }
+      // A line opens in place; tapped again, it closes.
+      if (id === inbox.sel) { inbox.sel = ""; inbox.detail = null; inbox.thOpen = {}; renderInbox(); return; }
       inboxSelect(it); renderInbox(); return;
     }
     if (act === "answer") { emit("agent-answer", { name: it.agent, n: +el.getAttribute("data-n") }); inboxResolve(it, "Sent " + el.getAttribute("data-n") + " to " + it.agent, false); return; }
@@ -7016,35 +6861,6 @@
       return;
     }
     if (act === "done") { emit("inbox-set", { id: it.id, done: true }); inboxResolve(it, "Marked read", true); return; }
-  }
-
-  // Desk keys when the Inbox has focus and no text field does.
-  function inboxKey(e) {
-    if (view !== "inbox") return;
-    const el = document.activeElement;
-    if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT")) return;
-    const live = inbox.items.filter(inboxPass);
-    const i = live.findIndex((x) => x.id === inbox.sel);
-    const move = (d) => {
-      const n = live[Math.max(0, Math.min(live.length - 1, (i < 0 ? 0 : i) + d))];
-      if (n) { inboxSelect(n); renderInbox(); }
-    };
-    const cur = inboxCur();
-    if (e.key === "j" || e.key === "ArrowDown") { e.preventDefault(); move(1); }
-    else if (e.key === "k" || e.key === "ArrowUp") { e.preventDefault(); move(-1); }
-    else if (cur && cur.kind === "blocked" && /^[1-9]$/.test(e.key)) {
-      const o = (cur.options || []).find((x) => String(x.n) === e.key);
-      if (o) { e.preventDefault(); emit("agent-answer", { name: cur.agent, n: +e.key }); inboxResolve(cur, "Sent " + e.key + " to " + cur.agent, false); }
-    } else if (cur && e.key === "a" && (cur.kind === "guard" || cur.kind === "proposal")) {
-      e.preventDefault();
-      onInboxAction(cur.kind === "guard" ? "guard-approve" : "prop-approve", { getAttribute: () => cur.id });
-    } else if (cur && e.key === "e" && cur.kind === "guard") { e.preventDefault(); guardKeepDenied(cur); }
-    else if (cur && e.key === "e") { e.preventDefault(); emit("inbox-set", { id: cur.id, done: true }); inboxResolve(cur, "Marked read", true); }
-  }
-
-  function inboxBadge() {
-    const b = $("inbox-n");
-    if (b) { b.textContent = inbox.count ? String(inbox.count) : ""; b.classList.toggle("hidden", !inbox.count); }
   }
 
   // ---- Threads ---------------------------------------------------------
@@ -7571,6 +7387,11 @@
                 // 整組已處理 waits for its second tap ({agent, until}).
                 open: new Set(bdKept(BD_OPEN_KEY)), shut: new Set(bdKept(BD_SHUT_KEY)),
                 ngOpen: new Map(), ngOld: new Set(), armed: null,
+                // The updates, by the card they are on and those on none
+                // (bdUpdatesBy, each draw); 最近回報's groups opened or
+                // closed by hand; the reports whose words were asked for;
+                // what a link asked to open ({id | agent, t}), until it can.
+                upd: { cards: new Map(), loose: [] }, upOpen: new Map(), upAsked: new Set(), at: null,
                 // The project the Board is narrowed to ("" for all), the badge's
                 // counts Emacs looked at while the tab was closed, where the page
                 // was when a name took it to a room, the inline replies.
@@ -7635,6 +7456,16 @@
     if (open) board.open.add(id);
     bdKeep(BD_OPEN_KEY, board.open);
   }
+  // A section closed, as this device left it: most start open, 最近回報
+  // (upd) closed -- kept as "!upd" once opened.
+  const BD_SHUT_FIRST = new Set(["upd"]);
+  function bdIsShut(k) { return BD_SHUT_FIRST.has(k) ? !board.shut.has("!" + k) : board.shut.has(k); }
+  function bdSetShut(k, off) {
+    const key = BD_SHUT_FIRST.has(k) ? "!" + k : k, has = BD_SHUT_FIRST.has(k) ? !off : off;
+    if (has === board.shut.has(key)) return;
+    if (has) board.shut.add(key); else board.shut.delete(key);
+    bdKeep(BD_SHUT_KEY, board.shut);
+  }
   function bdLink(id) {
     return id ? '<button type="button" class="bdilink" data-act="bd:goto" data-id="' + esc(id) + '" title="到這個工作項目">' + esc(id) + "</button>" : "";
   }
@@ -7678,8 +7509,6 @@
   function bdLeadOf(proj) {
     return ((board.meta && board.meta.agents) || []).find((a) => a.role === "lead" && leaf(a.project) === proj) || null;
   }
-  // The badge: items nobody has, and those waiting on Jing by a lead's line.
-  function bdUrgent(c) { return c.status === "orphan" || (c.status === "jing" && (c.needs || []).length > 0); }
   function bdPrState(p) {
     // A 部署 line naming it says more than the forge's MERGED.
     if (p.deployed && p.state !== "DECLINED") return ["已部署", "dep"];
@@ -7688,19 +7517,21 @@
   }
   function bdCross(w) { return w.kind === "handoff" || (w.fromProj && w.toProj && w.fromProj !== w.toProj); }
 
-  // The tab's red count: items nobody has (沒人接), and those waiting on Jing
-  // by a lead's 需要 Jing line -- of those the Board shows, in its window
-  // (board.days).  The tab open, from its own cards; closed, from what Emacs
-  // looked at (boardBadge: herd_board_counts with the same window and the
-  // sidecar's same rules, on news, never the board itself).
+  // The page's one red count, on the Board's tab: as many as 要你處理
+  // lists, of every project -- what needs you of the Inbox's items, the
+  // leads' lines among them, and the items nobody has with no line of
+  // theirs.  The tab open, from its own list; closed, as Emacs counts the
+  // same (boardBadge: `count', the Inbox's look and herd_board_counts'
+  // `bare', in the Board's window, on news, never the board itself).
   function boardBadge() {
     const b = $("board-n");
     if (!b) return;
-    const n = board.got && boardWatching ? Object.values(board.cards).filter(bdUrgent).length
-      : board.peek ? (board.peek.jing || 0) + (board.peek.orphan || 0) : 0;
+    const p = board.peek;
+    const n = boardWatching && (inbox.got || board.got) ? bdNeeds(true).length
+      : p ? (typeof p.count === "number" ? p.count : (p.jing || 0) + (p.orphan || 0)) : 0;
     b.textContent = n ? String(n) : "";
     b.className = "count" + (n ? " badge red" : "");
-    b.title = n ? "沒人接或等 Jing 的工作項目" : "";
+    b.title = n ? "要你處理 " + n + " 件" : "";
   }
 
   function showBoard() {
@@ -7711,8 +7542,8 @@
     app.innerHTML = '<div class="page boardpage"><div class="bdbody"></div></div>';
     board.html = {};
     board.order = "";
-    // The Inbox's push too, first -- only what needs you, all it shows of
-    // the Inbox: 要你處理 is drawn from it, before the board -- a heavier
+    // The Inbox's push too, first -- what needs you whole, the updates by
+    // their heads: 要你處理 is drawn from it, before the board -- a heavier
     // look -- has come.  Asked in the same intent (Emacs starts both):
     // intents go one at a time, and a second one would hold the board back
     // a round trip on a phone's link.
@@ -7725,6 +7556,7 @@
     clearInterval(boardTimer);
     boardTimer = setInterval(() => { if (view === "board") renderBoard(); }, 30000);
     renderBoard();
+    bdAtTry();
   }
 
   // ---- Its parts --------------------------------------------------------
@@ -8255,12 +8087,14 @@
     // Folded, a line or two, one tap target: its title; then how it stands,
     // its projects, how many asks, PRs and waits on Jing -- one nobody has
     // or waiting on Jing marked so, by its tag and its edge's colour.
+    const ups = board.upd.cards.get(c.id) || [], fresh = ups.filter((it) => !it.read).length;
     if (fold) {
       return '<article class="wi st-' + esc(c.status) + " folded" + (c.status === "orphan" || nj ? " urgent" : "") + '" id="bd-w-' + esc(c.id) + '">' +
         '<button type="button" class="wh wfold" data-act="bd:fold" data-id="' + esc(c.id) + '" aria-expanded="false">' +
         '<span class="wt">' + esc(c.title) + "</span>" +
         '<span class="wm"><span class="pill">' + esc(st[0]) + (c.status === "jing" && nj ? " " + nj : "") + "</span>" +
         (c.status !== "jing" && nj ? '<span class="tag t-jing">等 Jing ' + nj + "</span>" : "") +
+        (fresh ? '<span class="tag t-new" title="新回報：打開就讀">● 新回報' + (fresh > 1 ? " " + fresh : "") + "</span>" : "") +
         '<span class="wp">' + esc((c.projects || []).join("、")) + "</span>" +
         '<span class="wn">' + c.asks + " ask" + (c.open ? "（開著 " + c.open + "）" : "") + (c.prs.length ? " · " + c.prs.length + " PR" : "") +
         " · " + esc(bdTime(c.last)) + "</span></span></button></article>";
@@ -8269,6 +8103,7 @@
       '<span class="key">' + esc(c.id) + '</span><span class="pill">' + esc(st[0]) + "</span>" +
       (c.status === "live" && c.jingOf && c.jingOf.length ? '<span class="tag t-jing">等 Jing</span>' : "") +
       (c.cross ? '<span class="tag">跨專案</span>' : "") +
+      (fresh ? '<span class="tag t-new">● 新回報' + (fresh > 1 ? " " + fresh : "") + "</span>" : "") +
       '<span class="n">' + c.asks + " 則 ask" + (c.open ? "（開著 " + c.open + "）" : "") + " · 最後 " + esc(bdTime(c.last)) + "</span></button>";
     const title = '<h3 title="' + esc(c.askTitle ? "第一則 ask：" + c.askTitle : c.named ? "lead 取的名字" : "") + '">' + esc(c.title) + "</h3>";
     const projs = c.projects.map(bdProjTag).join("");
@@ -8282,7 +8117,8 @@
     const dep = c.deploys && c.deploys.length ? c.deploys[c.deploys.length - 1] : null;
     const deploy = dep ? '<div class="bddep"><span class="bl">部署</span><span>' + esc(dep.text) + ' <span class="nmeta">' +
       bdAgent(dep.agent) + " · " + esc(bdTime(dep.at)) + "</span></span></div>" : "";
-    return '<article class="wi st-' + esc(c.status) + '" id="bd-w-' + esc(c.id) + '">' + head + title + meta + prs + bdBlock(c) + deploy + links + bdTimeline(c) + "</article>";
+    return '<article class="wi st-' + esc(c.status) + '" id="bd-w-' + esc(c.id) + '">' + head + title + meta + prs + bdCardUpdates(c) +
+      bdBlock(c) + deploy + links + bdTimeline(c) + "</article>";
   }
 
   function bdBlockLine(c) {
@@ -8503,7 +8339,9 @@
              event: j.event, item: j.item || "", itemTitle: j.itemTitle || "", ask: j.ask || "" };
   }
 
-  function bdNeeds() {
+  // ALL: of every project, not only the one the Board is narrowed to --
+  // the badge's.
+  function bdNeeds(all) {
     const t = Date.now();
     const gone = (id) => (inbox.gone.get(id) || 0) > t;
     const guess = new Map(board.jing.map((j) => [j.id, j.item]));
@@ -8526,6 +8364,7 @@
       else if (!gone("orphan:" + c.id) && !ids.some(gone)) add({ id: "orphan:" + c.id }, 2, c.last, { card: c, item: c.id });
     });
     return out.filter((e) => {
+      if (all) return true;
       const c = e.card || board.cards[e.item];
       if (board.proj && !(c ? bdInProj(c) : leaf(e.it.project || "") === board.proj)) return false;
       return !board.ticket || (c ? bdInTicket(c) : false);
@@ -8603,7 +8442,10 @@
     }
     const it = e.it, at = inboxMs(it.at) || 0;
     if (it.kind === "need") return { name: it.agent, q: bdNeedText(it), ask: it.ask || "", at, want: it.ask ? "reply" : "said", project: it.project };
-    if (it.kind === "question") return { name: it.agent, q: it.preview || it.title, at, want: "said", project: it.project };
+    if (it.kind === "question" || it.kind === "report") return { name: it.agent, q: it.preview || it.title, at, want: "said", project: it.project };
+    // A handoff answered: in its asker's room, the answer as it came back.
+    const ho = /^handoff:(.+)$/.exec(it.id || "");
+    if (ho) return { name: it.agent, q: it.preview, ask: ho[1], at, project: it.project };
     // A menu, a guard's call, a sign-in...: the agent as it is now, its end.
     return { name: it.agent, project: it.project };
   }
@@ -8648,6 +8490,7 @@
       '<span class="ibtitle">' + ibPlain(c ? c.title : it.title) + "</span>" +
       '<span class="ibage">' + esc(inboxAge(c ? c.last : it.at)) + "</span></button>" +
       (bdIsLine(e) ? '<button type="button" class="bdnb ok" data-act="ib:need-done" data-id="' + esc(id) + '" title="你處理好了：不再列為等你">已處理</button>' : "") +
+      (!c && !inboxNeed(it) ? '<button type="button" class="bdnb" data-act="ib:done" data-id="' + esc(id) + '" title="讀過了：不再列出">已讀</button>' : "") +
       bdTalkBtn(bdNeedSpot(e), "到對話", "bdnb") + "</div>" +
       (open ? '<div class="bdnbody">' + bdNeedDetail(e) + "</div>" : "") + "</div>";
   }
@@ -8690,13 +8533,14 @@
     const all = bdNeeds();
     const toast = inbox.toast ? '<div class="ibtoast" role="status">' + esc(inbox.toast) +
       (inbox.undo ? ' <button type="button" class="iblink" data-act="ib:undo">Undo</button>' : "") + "</div>" : "";
-    // Nothing: a quiet line, not a section.
+    // Nothing: a quiet line, not a section.  最近回報 under it either way.
     if (!all.length) return toast + '<p class="bdneednone">' +
-      (inbox.got || board.got ? "現在沒有要你處理的" : "看看有沒有要你處理的…") + "</p>";
+      // None said only once the Inbox's push has come: most of it is that.
+      (inbox.got ? "現在沒有要你處理的" : "看看有沒有要你處理的…") + "</p>" + bdUpdHtml();
     const n = bdNeedCounts(all);
     return '<h2 class="section red">要你處理 <span class="cnt">' + all.length + " 件 · " +
       NEED_RANKS.map((l, i) => (n[i] ? l + " " + n[i] : "")).filter(Boolean).join("、") + "</span></h2>" + toast +
-      '<div class="bdneeds">' + bdNeedGroups(all).map(bdNeedGroupHtml).join("") + "</div>";
+      '<div class="bdneeds">' + bdNeedGroups(all).map(bdNeedGroupHtml).join("") + "</div>" + bdUpdHtml();
   }
 
   // 整組已處理, its second tap: each of the group's lines handled as one is
@@ -8740,6 +8584,164 @@
     again.scrollTop = kept.top;
   }
 
+  // ---- The updates: on their work's card, else 最近回報 ----------------------
+  // What the Inbox called Updates -- a lead's report at the end of its turn,
+  // a handoff answered, a lead the herd started or stopped -- nothing to
+  // decide.  One of work an ask began (the report of a turn an ask or its
+  // answer started, a handoff answered) is on that work's card: the item
+  // its agent was last in, a guess as the Board's waits on Jing are.  A
+  // dot says it is new, folded or not; the card opened shows each whole
+  // and marks it read.  One the user began talking to an agent is of no
+  // work item: under 要你處理, 最近回報, by agent, folded.
+
+  function bdUpdates() {
+    const t = Date.now();
+    return inbox.items.filter((x) => !inboxNeed(x) && !((inbox.gone.get(x.id) || 0) > t));
+  }
+  function bdUpdateOfWork(it) { return it.kind === "handoff" || (it.kind === "report" && it.fromAsk === true); }
+  function bdUpdateItem(it) {
+    let best = null;
+    Object.values(board.cards).forEach((c) => {
+      if ((c.agents || []).includes(it.agent) && (!best || (c.last || 0) > (best.last || 0))) best = c;
+    });
+    return best ? best.id : "";
+  }
+  // Before the board has come, one of work waits for its card.
+  function bdUpdatesBy() {
+    const cards = new Map(), loose = [];
+    bdUpdates().forEach((it) => {
+      const id = bdUpdateOfWork(it) ? (board.got ? bdUpdateItem(it) : null) : "";
+      if (id === null) return;
+      if (!id) { loose.push(it); return; }
+      if (!cards.has(id)) cards.set(id, []);
+      cards.get(id).push(it);
+    });
+    return { cards, loose };
+  }
+
+  // A card's updates, opened: each its tag, who, when, new or not, 到對話,
+  // and its words -- a report's asked for as the card is drawn open.
+  function bdCardUpdates(c) {
+    const ups = board.upd.cards.get(c.id) || [];
+    if (!ups.length) return "";
+    return '<div class="bdupds"><span class="bl">回報</span><div class="bdupdl">' + ups.map((it) => {
+      const tx = inbox.text.get(it.id);
+      const words = it.kind === "report" ? (tx ? tx.report : "") : it.body || it.preview || "";
+      return '<div class="bdupd' + (it.read ? "" : " new") + '" data-id="' + esc(it.id) + '">' +
+        '<div class="bdupdh">' + inboxTag(it) + bdAgent(it.agent) + '<span class="nmeta">' + esc(bdTime(inboxMs(it.at))) + "</span>" +
+        (it.read ? "" : '<span class="tag t-new">新</span><button type="button" class="bddone" data-act="bd:read" data-id="' + esc(it.id) + '">已讀</button>') +
+        bdTalkBtn(bdNeedSpot({ it }), "到對話", "bdtalk-s") + "</div>" +
+        '<div class="bdupdb msg-body">' + (words ? markdown(words) + (tx ? imagesHtml(tx.images) : "")
+          : '<p class="bdempty">' + esc(it.preview || it.title || "") + " · 讀取中…</p>") + "</div></div>";
+    }).join("") + "</div></div>";
+  }
+
+  // The words of the reports on cards drawn open, asked for once each.
+  function bdAskUpdates(ids) {
+    ids.forEach((id) => (board.upd.cards.get(id) || []).forEach((it) => {
+      if (it.kind !== "report" || inbox.text.has(it.id) || board.upAsked.has(it.id)) return;
+      board.upAsked.add(it.id);
+      emit("inbox-detail", { id: it.id, kind: it.kind, agent: it.agent, ask: "", text: true });
+    }));
+  }
+  // A card opened by hand: its updates read.
+  function bdReadCard(id) {
+    (board.upd.cards.get(id) || []).forEach((it) => inboxMarkRead(it));
+  }
+
+  // 最近回報: the updates of no work item, by agent, its newest first.
+  function bdUpdHtml() {
+    const loose = board.upd.loose;
+    if (!loose.length) return "";
+    const unread = loose.filter((it) => !it.read).length;
+    const head = bdSecHead("upd", "最近回報", loose.length + " 則" + (unread ? "，未讀 " + unread : "") + " · 沒有對應的工作項目");
+    if (bdIsShut("upd")) return '<div class="bdupdsec">' + head + "</div>";
+    const by = new Map();
+    loose.forEach((it) => { if (!by.has(it.agent)) by.set(it.agent, []); by.get(it.agent).push(it); });
+    const groups = [...by.entries()].map(([agent, its]) => ({ agent, its: its.sort((a, b) => (inboxMs(b.at) || 0) - (inboxMs(a.at) || 0)) }))
+      .sort((a, b) => (inboxMs(b.its[0].at) || 0) - (inboxMs(a.its[0].at) || 0));
+    return '<div class="bdupdsec">' + head + '<div class="bdneeds bdupdg">' + groups.map((g) => {
+      const open = board.upOpen.get(g.agent) !== false;
+      const n = g.its.filter((it) => !it.read).length;
+      return '<section class="bdng' + (open ? " open" : "") + '" data-agent="' + esc(g.agent) + '">' +
+        '<div class="bdngh"><button type="button" class="bdngt" data-act="bd:upgroup" data-agent="' + esc(g.agent) + '" aria-expanded="' + open + '">' +
+        '<span class="chev">' + (open ? "▾" : "▸") + '</span><span class="ngw">' + esc(g.agent) + "</span>" +
+        '<span class="ngc"><span class="ngn">' + g.its.length + " 則" + (n ? "，未讀 " + n : "") + "</span></span>" +
+        '<span class="ibage">' + esc(inboxAge(g.its[0].at)) + "</span></button>" +
+        '<span class="bdnga">' + bdTalkBtn(bdNeedSpot({ it: g.its[0] }), "到對話 →", "bdnb") + "</span></div>" +
+        (open ? '<div class="bdngb">' + g.its.map((it) => bdNeedRow({ it, rank: 1, at: inboxMs(it.at) || 0 })).join("") + "</div>" : "") +
+        "</section>";
+    }).join("") + "</div></div>";
+  }
+
+  // ---- To one thing on the Board: a link's, an old #inbox's -------------
+  // An item of the Inbox's, by its id: in 要你處理 opened in place, its
+  // group and its earlier lines opened; an update on its card, the card
+  // opened -- else under 最近回報, opened.  False when it is in none.
+  function bdOpenAt(id) {
+    const e = bdNeeds(true).find((x) => x.it.id === id);
+    if (e) {
+      if ((board.proj || board.ticket) && !bdNeeds().some((x) => x.it.id === id)) { board.proj = ""; board.ticket = ""; }
+      // Its group, and its earlier lines if it is one, open with it picked.
+      board.ngOpen.set(bdNeedWho(e), true);
+      if (inbox.sel !== id) { if (e.card) { inbox.sel = id; inbox.detail = null; } else inboxSelect(e.it); }
+      renderBoard();
+      return bdShow('.bdnrow[data-id="' + CSS.escape(id) + '"]');
+    }
+    const it = bdUpdates().find((x) => x.id === id);
+    if (!it) return false;
+    const card = bdUpdateOfWork(it) && bdUpdateItem(it);
+    if (card) {
+      bdGoto(card);
+      bdReadCard(card);
+      bdAskUpdates([card]);
+      renderBoard();
+      return true;
+    }
+    bdSetShut("upd", false);
+    board.upOpen.set(it.agent, true);
+    if (inbox.sel !== id) inboxSelect(it);
+    renderBoard();
+    return bdShow('.bdnrow[data-id="' + CSS.escape(id) + '"]');
+  }
+  // An agent: its group in 要你處理, else in 最近回報, else the card it was
+  // last in.
+  function bdOpenAgent(name) {
+    if (bdNeeds(true).some((e) => bdNeedWho(e) === name)) {
+      board.proj = ""; board.ticket = "";
+      board.ngOpen.set(name, true);
+      renderBoard();
+      return bdShow('.bd-need .bdng[data-agent="' + CSS.escape(name) + '"]');
+    }
+    if (board.upd.loose.some((it) => it.agent === name)) {
+      bdSetShut("upd", false);
+      board.upOpen.set(name, true);
+      renderBoard();
+      return bdShow('.bdupdsec .bdng[data-agent="' + CSS.escape(name) + '"]');
+    }
+    const card = board.got && bdUpdateItem({ agent: name });
+    if (card) { bdGoto(card); return true; }
+    return false;
+  }
+  function bdShow(sel) {
+    const el = app.querySelector(sel);
+    if (!el) return false;
+    el.scrollIntoView({ block: "center" });
+    el.classList.add("hl");
+    setTimeout(() => el.classList.remove("hl"), 1600);
+    return true;
+  }
+  // What a link asked for, tried as what it needs comes -- the Inbox's
+  // push, the board; once both have and it is in neither, said so.
+  function bdAtTry() {
+    const a = board.at;
+    if (!a || view !== "board") return;
+    board.at = null;
+    if (a.id ? bdOpenAt(a.id) : bdOpenAgent(a.agent)) return;
+    if (inbox.got && board.got) setStatus(a.id ? "那一項已處理，或已不在 Board 上" : a.agent + " 現在沒有要你處理的，也沒有新回報");
+    else board.at = a;
+  }
+
   // ---- The stretch: 24 hours or 7 days, for the whole page ----------------
 
   function bdRange(d) { return d > 1 ? Math.round(d) + " 天" : "24 小時"; }
@@ -8749,10 +8751,11 @@
   // Beside the stretch, a chip a section -- its name, how many -- to jump
   // to it (opened, if it was closed).  They wrap: nothing sideways.
   function bdJumps() {
-    const chip = (k, label, n, cls) => '<button type="button" class="bdjchip' + (cls ? " " + cls : "") + (board.shut.has(k) ? " shut" : "") +
+    const chip = (k, label, n, cls) => '<button type="button" class="bdjchip' + (cls ? " " + cls : "") + (bdIsShut(k) ? " shut" : "") +
       '" data-act="bd:jump" data-to="' + k + '">' + esc(label) + (n == null ? "" : " <b>" + n + "</b>") + "</button>";
-    const need = bdNeeds().length;
+    const need = bdNeeds().length, upd = board.upd.loose.length;
     const out = [chip("need", "要你處理", need, need ? "red" : "")];
+    if (upd) out.push(chip("upd", "最近回報", upd));
     if (board.got) {
       const cards = bdCards().filter(bdInFilter);
       out.push(chip("now", "現在", bdWaitsShown().length), chip("items", "工作項目", cards.length),
@@ -8786,6 +8789,8 @@
     if (view !== "board") return;
     const box = app.querySelector(".bdbody");
     if (!box) return;
+    board.upd = bdUpdatesBy();
+    bdAskUpdates([...board.upd.cards.keys()].filter((id) => board.open.has(id)));
     if (!box.querySelector(".bd-top")) {
       box.innerHTML = '<div class="bd-top"></div><div class="bd-need" id="bd-need"></div><div class="bd-main"></div>';
       board.html = {};
@@ -8815,7 +8820,7 @@
     // A section closed: its head alone, nothing of it drawn -- opened, all of it again.
     const shut = {};
     main.querySelectorAll(".bdsecb").forEach((b) => {
-      const k = b.getAttribute("data-sec"), off = (shut[k] = board.shut.has(k));
+      const k = b.getAttribute("data-sec"), off = (shut[k] = bdIsShut(k));
       b.hidden = off;
       const h = main.querySelector('.bdsech[data-sec="' + k + '"]');
       if (h && h.getAttribute("aria-expanded") !== String(!off)) {
@@ -8878,7 +8883,7 @@
 
   // A section's head: a tap folds or opens it, kept for this device.
   function bdSecHead(k, label, cnt) {
-    const off = board.shut.has(k);
+    const off = bdIsShut(k);
     return '<h2 class="section bdsec" id="bd-' + k + '"><button type="button" class="bdsech" data-act="bd:sec" data-sec="' + k +
       '" aria-expanded="' + !off + '"><span class="chev">' + (off ? "▸" : "▾") + "</span>" + esc(label) + "</button>" +
       '<span class="cnt' + (k === "tickets" ? " bd-tn" : "") + '">' + esc(cnt) + "</span></h2>";
@@ -8891,7 +8896,7 @@
     if (board.filter !== "all" && !bdShown([c]).length) board.filter = "all";
     if (board.filter === "all" && !bdAwake(c) && !bdOwnLine(c)) board.openProj.add((c.projects && c.projects[0]) || "其他");
     bdOpenCard(id, true);
-    if (board.shut.delete("items")) bdKeep(BD_SHUT_KEY, board.shut);
+    bdSetShut("items", false);
     renderBoard();
     const card = $("bd-w-" + id);
     if (card) {
@@ -8906,13 +8911,12 @@
     if (act === "jump") {
       // To a section, opened if it was closed.
       const k = el.getAttribute("data-to") || "";
-      if (board.shut.delete(k)) { bdKeep(BD_SHUT_KEY, board.shut); renderBoard(); }
+      if (bdIsShut(k)) { bdSetShut(k, false); renderBoard(); }
       const to = $("bd-" + k);
       if (to) to.scrollIntoView({ block: "start", behavior: "smooth" });
     } else if (act === "sec") {
       const k = el.getAttribute("data-sec") || "";
-      if (!board.shut.delete(k)) board.shut.add(k);
-      bdKeep(BD_SHUT_KEY, board.shut);
+      bdSetShut(k, !bdIsShut(k));
       renderBoard();
     } else if (act === "ngroup") {
       const a = el.getAttribute("data-agent") || "";
@@ -8953,7 +8957,17 @@
       renderBoard();
     } else if (act === "fold") {
       const c = board.cards[id];
+      // Opened: its updates read, their words asked for.
+      if (c && bdFolded(c)) { bdReadCard(id); bdAskUpdates([id]); }
       if (c) bdOpenCard(id, bdFolded(c));
+      renderBoard();
+    } else if (act === "read") {
+      const it = inbox.items.find((x) => x.id === id);
+      if (it) inboxMarkRead(it);
+      renderBoard();
+    } else if (act === "upgroup") {
+      const a = el.getAttribute("data-agent") || "";
+      board.upOpen.set(a, board.upOpen.get(a) === false);
       renderBoard();
     } else if (act === "tl") {
       if (board.tlOpen.has(id)) board.tlOpen.delete(id);
@@ -8971,13 +8985,8 @@
     } else if (act === "thread") {
       showThreads({ ask: el.getAttribute("data-ask") });
     } else if (act === "inbox") {
-      // What needs you is handled at the top: opened there, else the Inbox.
-      const it = bdNeeds().some((e) => e.it.id === id) && (inbox.items.find((x) => x.id === id) || bdNeedExtra.get(id));
-      if (!it) { inbox.sel = id || ""; showInbox(); return; }
-      if (inbox.sel !== id) inboxSelect(it);
-      renderBoard();
-      const to = app.querySelector('.bdnrow[data-id="' + CSS.escape(id) + '"]') || $("bd-need");
-      if (to) to.scrollIntoView({ block: "start", behavior: "smooth" });
+      // What needs you is handled at the top: opened there.
+      if (!bdOpenAt(id || "")) setStatus("那一項已處理，或已不在要你處理");
     } else if (act === "npick") {
       // An item nobody has, in 要你處理: opened in place, one at a time.
       inbox.sel = inbox.sel === id ? "" : id;
@@ -9079,6 +9088,7 @@
       });
       boardBadge();
       renderBoard();
+      bdAtTry();
       // Asked for from the Inbox before the board came: shown now.
       if (go && board.cards[go] && view === "board") {
         board.goto = "";
@@ -9140,33 +9150,41 @@
     // Just the tab's badge, for a page that has not opened it yet.
     threadsBadge: (p) => { threads.live = (p && p.live) || 0; threadsBadge(); },
 
-    // The Inbox items and the Needs-you count, pushed by Emacs every few
-    // seconds (and after an action).  The badge updates whatever the view.
+    // The Inbox's items, pushed by Emacs every few seconds (and after an
+    // action) while the Board is shown: what needs you whole, the updates
+    // by their heads.  The Board's badge counts 要你處理 from them.
     renderInbox: (p) => {
       inbox.got = true;
       const items = (p && p.items) || [];
-      // Only what needs you, while the Board is shown: the updates the page
-      // had are kept, for the Inbox until its own push comes.
-      const ids = new Set(items.map((x) => x.id));
-      inbox.items = p && p.needsOnly ? items.concat(inbox.items.filter((x) => !inboxNeed(x) && !ids.has(x.id))) : items;
+      // What needs you alone (the Board's first push): the updates it had
+      // kept until theirs comes, at once after.
+      inbox.items = p && p.updates === false ? items.concat(inbox.items.filter((x) => !inboxNeed(x) && !items.some((y) => y.id === x.id))) : items;
       inboxKeepHeld();
-      inbox.count = (p && p.count) || 0;
-      if (inbox.sel && !inbox.items.some((x) => x.id === inbox.sel)) { inbox.sel = ""; inbox.detail = null; inbox.thOpen = {}; }
-      inboxBadge();
-      if (view === "inbox" || view === "board") renderInbox();
+      if (inbox.sel && !inbox.items.some((x) => x.id === inbox.sel) && !/^orphan:/.test(inbox.sel)) {
+        inbox.sel = ""; inbox.detail = null; inbox.thOpen = {};
+      }
+      // A report's words kept for the updates still listed.
+      inbox.text.forEach((_, id) => { if (!inbox.items.some((x) => x.id === id)) inbox.text.delete(id); });
+      boardBadge();
+      renderInbox();
+      bdAtTry();
     },
 
     // The selected item's thread and/or full report, fetched by Emacs on the
     // pick (not every tick).  The two arrive as separate pushes, both tagged
     // with the item id, and are merged; a stale push for another item is kept
-    // but shown only when that item is the one selected.
+    // but shown only when that item is the one selected.  A report's words
+    // asked for a card (`text') are kept for it, by item.
     inboxDetailData: (p) => {
       if (!p || !p.for) return;
-      if (!inbox.detail || inbox.detail.for !== p.for) { inbox.detail = { for: p.for }; inbox.thOpen = {}; }
-      if (p.thread) inbox.detail.thread = p.thread;
-      if (typeof p.report === "string" && p.report) inbox.detail.report = p.report;
-      if (Array.isArray(p.images)) inbox.detail.images = p.images;
-      if ((view === "inbox" || view === "board") && p.for === inbox.sel) renderInbox();
+      if (typeof p.report === "string" && p.report) inbox.text.set(p.for, { report: p.report, images: p.images || [] });
+      if (!p.text) {
+        if (!inbox.detail || inbox.detail.for !== p.for) { inbox.detail = { for: p.for }; inbox.thOpen = {}; }
+        if (p.thread) inbox.detail.thread = p.thread;
+        if (typeof p.report === "string" && p.report) inbox.detail.report = p.report;
+        if (Array.isArray(p.images)) inbox.detail.images = p.images;
+      }
+      if (view === "board" && (p.text || p.for === inbox.sel)) renderBoard();
     },
 
     // The room's chat: the poll's recent tail of its timeline, merged in.
@@ -9332,7 +9350,8 @@
     },
 
     showView: (v) => {
-      if (v === "agents") showAgents();
+      if (v === "board" || v === "inbox") showBoard();
+      else if (v === "agents") showAgents();
       else if (v === "docs") showDocs();
       else if (v === "log") showLog();
       else if (v === "memory") showMemory();
@@ -9632,12 +9651,12 @@
 
   // The page is ready -- the end of its load, for the kit's timings
   // (XW.ready) -- once the view it opened on has drawn what Emacs sent
-  // for it: the Inbox its items, the herd, the log...  A view not named
-  // here is, once Emacs has sent anything.  Each of Emacs's calls says
-  // so after it has run; the kit hears only the first that ends a load.
-  const READY_BY = { inbox: "renderInbox", agents: "renderHerd", log: "renderLog", memory: "renderMemory",
-                     sessions: "setContext", search: "setContext", threads: "renderThreads", docs: "renderDocs",
-                     board: "boardPatch" };
+  // for it: the Board what needs you (the Inbox's push, before the board
+  // itself), the herd, the log...  A view not named here is, once Emacs
+  // has sent anything.  Each of Emacs's calls says so after it has run;
+  // the kit hears only the first that ends a load.
+  const READY_BY = { board: "renderInbox", agents: "renderHerd", log: "renderLog", memory: "renderMemory",
+                     sessions: "setContext", search: "setContext", threads: "renderThreads", docs: "renderDocs" };
   Object.keys(window.GM).forEach((fn) => {
     const f = window.GM[fn];
     if (typeof f !== "function") return;
@@ -9813,13 +9832,16 @@
   window.addEventListener("orientationchange", fitViewport);
   fitViewport();
 
-  // Where it was first, so what it shows -- the Inbox, say -- is the
+  // Where it was first, so what it shows -- the Board, say -- is the
   // first thing asked of Emacs; then the rest (ready), which no longer
   // brings the sessions with it (`needSessions').
   restore();
   emit("ready", { lazy: true });
   // The Threads tab's badge, before the tab is opened; the Board's -- of
-  // what the Board would show, in the window this page chose.
+  // what the Board would show, in the window this page chose -- unless the
+  // Board is what it shows: then it counts its own (and asks once it
+  // leaves it, `chrome').  On a phone's link each intent waits for the
+  // one before.
   emit("threads-peek");
-  emit("board-peek", { days: board.days });
+  if (!boardWatching) emit("board-peek", { days: board.days });
 })();

@@ -2699,7 +2699,17 @@ before the tracking loaded), stay out.  A lead is surfaced either way."
     ;; unknown-origin worker: nothing (no backlog)
     (should (null unknown-worker))
     ;; a lead is surfaced even when its turn was not positively user-started
-    (should (equal (ghostherd-tests--inbox-kinds ask-lead) '("report")))))
+    (should (equal (ghostherd-tests--inbox-kinds ask-lead) '("report")))
+    ;; Whether its turn came of an ask: the Board puts its report on that
+    ;; work's card, one the user started under 最近回報.
+    (should (eq (plist-get (car user-report) :fromAsk) :json-false))
+    (should (eq (plist-get (car (ghostherd-inbox--agent-items
+                                  (list :name "lead-gz" :kind "claude" :state "idle" :role "lead" :project "~/gz/"
+                                        :login :json-false :continueAt 0 :prompt :json-false
+                                        :saidFromUser :json-false :saidFromAsk t
+                                        :said "Handed the fix to its author." :saidAt 3000)))
+                           :fromAsk)
+                t))))
 
 (ert-deftest ghostherd-test-inbox-lead-started-for-handoff ()
   "A lead the herd started to take a handoff is an Update, kept until read."
@@ -3577,7 +3587,26 @@ item is fetched by its ask with no report fetch."
        (list (cons 'op "inbox-detail") (cons 'id "ask-failed:1a2b3c4d")
              (cons 'kind "ask-failed") (cons 'agent "rd") (cons 'ask "1a2b3c4d")))
       (should (member '("herd_thread" :ask "1a2b3c4d") asked))
-      (should-not (seq-find (lambda (a) (equal (car a) "herd_link")) asked)))))
+      (should-not (seq-find (lambda (a) (equal (car a) "herd_link")) asked)))
+    ;; A card's reports, with `text': each one's words alone, none dropped
+    ;; for another asked after it, the item picked kept as it was.
+    (setq asked nil pushes nil ghostherd-inbox--detail-req "question:lead-y:1")
+    (cl-letf (((symbol-function 'ghostherd-memory-page--js) (lambda (fn obj) (push (cons fn obj) pushes)))
+              ((symbol-function 'ghostherd-memory-request-async)
+               (lambda (method ok params &optional _err)
+                 (push (cons method params) asked)
+                 (when (equal method "herd_link")
+                   (funcall ok (list :link (list :session (plist-get params :session)
+                                                 :last (concat "words of " (plist-get params :session)))))))))
+      (dolist (who '("lead-a" "lead-b"))
+        (ghostherd-memory-page--handle
+         (list (cons 'op "inbox-detail") (cons 'id (concat "report:" who ":1")) (cons 'kind "report")
+               (cons 'agent who) (cons 'text t))))
+      (should-not (seq-find (lambda (a) (equal (car a) "herd_thread")) asked))
+      (should (equal (mapcar (lambda (p) (list (plist-get (cdr p) :for) (plist-get (cdr p) :report) (plist-get (cdr p) :text)))
+                             (reverse pushes))
+                     '(("report:lead-a:1" "words of lead-a" t) ("report:lead-b:1" "words of lead-b" t))))
+      (should (equal ghostherd-inbox--detail-req "question:lead-y:1")))))
 
 ;;; Images a reply names
 

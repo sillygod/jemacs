@@ -96,14 +96,17 @@ gone as its id, the open asks only when they changed."
 (ert-deftest ghostherd-test-board-watch-brings-the-inbox ()
   "Asked with `inbox', the board's watch starts the Inbox's too, its looks
 first -- one intent, not two a round trip apart on a phone's link; asked
-without, it does not.  On the Board only what needs the user is pushed,
-counted with the rest; the Inbox tab's own watch gets them all again.  The
+without, it does not.  On the Board what needs the user is pushed whole
+-- first alone, drawn at once, the updates at once after -- the updates
+by their heads: a report without its words, which the page asks for as
+it shows one; the count of what needs the user.  A plain
+watch (a page from before the Inbox tab went) gets them whole again.  The
 board let go, the Inbox's watch is the page's to let go."
   (ghostherd-board-test--with
     (let ((ghostherd-inbox--watching nil) (ghostherd-inbox--timer nil) (ghostherd-inbox--sig nil)
-          (ghostherd-inbox--needs-only nil)
+          (ghostherd-inbox--needs-only nil) (ghostherd-inbox--first nil)
           (items (list (list :id "question:a" :kind "question" :group "need" :at 2)
-                       (list :id "report:b" :kind "report" :group "update" :at 1))))
+                       (list :id "report:b" :kind "report" :group "update" :at 1 :body "Long words"))))
       (cl-letf (((symbol-function 'ghostherd-inbox--all) (lambda (&rest _) items)))
         (setq reply (lambda (m _p) (pcase m ("herd_board" (ghostherd-board-test--reply)) ("herd_inbox_state" '(:state nil)))))
         (ghostherd-memory-page--handle '((op . "board-watch") (days . 1)))
@@ -119,9 +122,19 @@ board let go, the Inbox's watch is the page's to let go."
                      (cl-position "herd_board" asked :test #'equal))))
         (let ((p (ghostherd-test--call calls "renderInbox")))
           (should (equal (mapcar (lambda (it) (plist-get it :id)) (append (plist-get p :items) nil)) '("question:a")))
+          (should (eq (plist-get p :updates) :json-false))
           (should (equal (plist-get p :count) 1))
           (should (eq (plist-get p :needsOnly) t)))
         (should (ghostherd-test--call calls "boardPatch"))
+        ;; The updates at once after (the timer's look, here by hand).
+        (should-not ghostherd-inbox--first)
+        (setq calls nil)
+        (ghostherd-inbox--tick)
+        (let ((p (ghostherd-test--call calls "renderInbox")))
+          (should (equal (mapcar (lambda (it) (plist-get it :id)) (append (plist-get p :items) nil)) '("question:a" "report:b")))
+          (should (equal (plist-get (aref (plist-get p :items) 1) :body) ""))
+          (should-not (plist-member p :updates))
+          (should (equal (plist-get p :count) 1)))
         (ghostherd-memory-page--handle '((op . "board-unwatch")))
         (should ghostherd-inbox--watching)
         ;; The Inbox tab: every item again.
@@ -129,6 +142,7 @@ board let go, the Inbox's watch is the page's to let go."
         (ghostherd-memory-page--handle '((op . "inbox-watch")))
         (let ((p (ghostherd-test--call calls "renderInbox")))
           (should (equal (mapcar (lambda (it) (plist-get it :id)) (append (plist-get p :items) nil)) '("question:a" "report:b")))
+          (should (equal (plist-get (aref (plist-get p :items) 1) :body) "Long words"))
           (should-not (plist-member p :needsOnly)))
         (ghostherd-memory-page--handle '((op . "inbox-unwatch")))
         (should-not ghostherd-inbox--watching)
@@ -475,24 +489,40 @@ says how to answer it, through its project."
                          (list "lead" (ghostherd--project-name "/src/a/")))))))))
 
 (ert-deftest ghostherd-test-board-badge-with-the-tab-closed ()
-  "With the Board closed, its badge's counts come from `herd_board_counts'
--- never the board, but of what it would show, in the window the page
-chose (`ghostherd-board--days'): as the page starts, on news at most every
-`ghostherd-board--peek-every', and every `--peek-fallback' with none (an
-item turns 沒人接 by time alone).  With the Board open, none is asked."
+  "With the Board closed, its badge is as many as 要你處理 lists: what
+needs the user of the Inbox's items -- their look, as the Inbox's push
+has it, its state on them merged (one done, or moved to the updates, no
+more) -- and the items nobody has with no need line, `herd_board_counts'
+`bare' -- never the board, but of what it would show, in the window the
+page chose (`ghostherd-board--days'): as the page starts, on news at most
+every `ghostherd-board--peek-every', and every `--peek-fallback' with none
+\(an item turns 沒人接 by time alone).  A sidecar without `bare', or
+without the counts, the needs alone.  With the Board open, none is asked."
   (ghostherd-board-test--with
     (let ((ghostherd-board--peek-timer nil) (ghostherd-board--peek-soon nil) (ghostherd-board--peek-at 0)
-          (ghostherd-board-orphan-hours 6) (timers nil))
-      (cl-letf (((symbol-function 'run-at-time) (lambda (secs rep _fn &rest _) (push (list secs rep) timers) 'a-timer)))
+          (ghostherd-board-orphan-hours 6) (timers nil)
+          (items (list (list :id "question:a" :kind "question" :group "need" :at 3)
+                       (list :id "need:7" :kind "need" :group "need" :at 2)
+                       (list :id "blocked:b" :kind "blocked" :group "need" :at 2)
+                       (list :id "report:c" :kind "report" :group "fyi" :at 1))))
+      (cl-letf (((symbol-function 'run-at-time) (lambda (secs rep _fn &rest _) (push (list secs rep) timers) 'a-timer))
+                ((symbol-function 'ghostherd-inbox--all) (lambda (&rest _) items)))
+        (setq reply (lambda (m _p) (pcase m ("herd_board_counts" '(:jing 2 :orphan 1 :bare 1))
+                                    ;; The blocked one moved to the updates by the user.
+                                    ("herd_inbox_state" '(:state ((:id "blocked:b" :override "update")))))))
+        (ghostherd-memory-page--handle '((op . "board-peek")))
+        (should (equal (mapcar #'car requests) '("herd_pending_proposals" "herd_needs" "herd_inbox_state" "herd_board_counts")))
+        (should (equal (car (last requests)) '("herd_board_counts" (:days 1 :orphan_hours 6))))
+        (should (equal (ghostherd-test--call calls "boardBadge") '(:count 3 :needs 2 :bare 1)))
+        ;; A sidecar from before `bare': the needs alone.
         (setq reply (lambda (m _p) (pcase m ("herd_board_counts" '(:jing 2 :orphan 1)))))
         (ghostherd-memory-page--handle '((op . "board-peek")))
-        (should (equal requests '(("herd_board_counts" (:days 1 :orphan_hours 6)))))
-        (should (equal (ghostherd-test--call calls "boardBadge") '(:jing 2 :orphan 1)))
+        (should (equal (ghostherd-test--call calls "boardBadge") '(:count 3 :needs 3 :bare 0)))
         ;; Of what the Board would show: the window the page chose comes with
         ;; its peek, and is the one later looks use.
         (setq requests nil)
         (ghostherd-memory-page--handle '((op . "board-peek") (days . 7)))
-        (should (equal requests '(("herd_board_counts" (:days 7 :orphan_hours 6)))))
+        (should (equal (car (last requests)) '("herd_board_counts" (:days 7 :orphan_hours 6))))
         (should (= ghostherd-board--days 7))
         (should (member (list ghostherd-board--peek-fallback ghostherd-board--peek-fallback) timers))
         ;; News: one look, after the last by `--peek-every' at most; more news meanwhile, still one.

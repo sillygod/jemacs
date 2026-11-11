@@ -1,4 +1,5 @@
-// An Inbox reply that does not reach Emacs goes back in its item's own
+// A reply from the Board -- to an item the Inbox once had -- that does not
+// reach Emacs goes back in its item's own
 // box -- the image lines with it -- and the item back in the list: a
 // report it marked read is unmarked.  Written since is kept after it.
 // One that reached Emacs after all comes out of the box again.  At the
@@ -6,7 +7,7 @@
 // phone (Emacs refuses the POST).  The replies are made up.
 const path = require("path");
 const { webkit } = require("playwright");
-const { phonePage, sleep } = require("./herdlib");
+const { phonePage, sleep, boardPick } = require("./herdlib");
 const { readTitles } = require("./titlelib");
 const DESK = "file://" + path.join(process.env.LOCAL || path.resolve(__dirname, "../.."), "ghostherd", "ui", "index.html");
 const DESKCTX = { viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2, isMobile: false, hasTouch: false };
@@ -37,8 +38,8 @@ async function shown(page) {
     const ta = document.querySelector(".ibreplybox");
     const st = document.getElementById("status");
     return {
-      rows: Array.from(document.querySelectorAll(".ibrow, button.ibcard, .ibcard.open .ibcardhead")).map((e) => e.getAttribute("data-id")),
-      sel: (document.querySelector(".ibrow.on, .ibcard.open .ibcardhead") || { getAttribute: () => "" }).getAttribute("data-id"),
+      rows: Array.from(document.querySelectorAll(".bd-need .bdnrow")).map((e) => e.getAttribute("data-id")),
+      sel: (document.querySelector(".bd-need .bdnrow.open") || { getAttribute: () => "" }).getAttribute("data-id"),
       box: ta ? { id: ta.getAttribute("data-id"), text: ta.value } : null,
       status: st.hidden ? "" : st.textContent,
     };
@@ -68,13 +69,13 @@ async function shown(page) {
         for (let t = Date.now(); Date.now() - t < (ms || 5000) && !(await pred()); ) await sleep(30);
       };
       await until(() => got.some((i) => i.op === "xwapp-hello"));
-      await page.click('.tab[data-tab="inbox"]');
-      const push = (items) => page.evaluate((it) => GM.renderInbox({ items: it, count: 1 }), items || ITEMS);
+      await page.click('.tab[data-tab="board"]');
+      const push = (items) => page.evaluate((it) => GM.renderInbox({ items: it, count: 1, needsOnly: true }), items || ITEMS);
       await push();
       await sleep(100);
 
       // A report's reply, image and all, that Emacs cannot read.
-      await page.click('.ibrow[data-id="' + R + '"]');
+      await boardPick(page, R);
       await page.click('[data-act="ib:reply-open"][data-id="' + R + '"]');
       await page.evaluate(() => GM.attachImage({ name: "lead-.emacs.d", path: "/tmp/herd-e2e/clip-1.png", thumb: null }));
       await page.fill('.ibreplybox[data-id="' + R + '"]', "A made-up reply that will not get through");
@@ -89,7 +90,7 @@ async function shown(page) {
         s.sel === R && s.box && s.box.id === R && s.box.text === WANT, s);
       check("desk: the report marked read for it is unmarked, after, and is back in the list",
         JSON.stringify(marks(got, R)) === "[true,false]" && s.rows.includes(R), { marks: marks(got, R), rows: s.rows });
-      check("desk: the status line says so", /Not sent/.test(s.status) && /report is back in the Inbox/.test(s.status), s.status);
+      check("desk: the status line says so", /Not sent/.test(s.status) && /report is back on the Board/.test(s.status), s.status);
       // Emacs's push from before it had the unmark does not drop it.
       await push(without(R));
       await sleep(80);
@@ -105,11 +106,13 @@ async function shown(page) {
       check("desk: sent again from its box, it goes through the lead's project, text and image line",
         JSON.stringify(says) === JSON.stringify([WANT]) && JSON.stringify(marks(got, R)) === "[true,false,true]", { says, marks: marks(got, R) });
 
-      // A question's answer lost while the question was picked again and
-      // more written: given back before what was written since.
+      // A question's answer lost: on the Board the question is hidden while
+      // its answer is on its way -- Emacs lists it until its agent takes the
+      // answer -- so nothing is written in its box meanwhile; lost, it is
+      // back, the answer in its box.
       await push();
       await sleep(60);
-      await page.click('.ibrow[data-id="' + Q + '"]');
+      await boardPick(page, Q);
       await page.fill('.ibreplybox[data-id="' + Q + '"]', "first answer");
       let typed = false;
       deaf = () => !typed;
@@ -117,8 +120,8 @@ async function shown(page) {
       await sleep(100);
       await push();            // Emacs still lists it: its agent has not taken the answer
       await sleep(60);
-      await page.click('.ibrow[data-id="' + Q + '"]');
-      await page.fill('.ibreplybox[data-id="' + Q + '"]', "written since");
+      s = await shown(page);
+      check("desk: a question answered is not listed while its answer is on its way", !s.rows.includes(Q), s.rows);
       refuse = (t) => /"op":"agent-prompt"/.test(t);
       const unread0 = got.filter((i) => i.unread).length;
       typed = true;
@@ -126,8 +129,8 @@ async function shown(page) {
       deaf = refuse = null;
       await sleep(120);
       s = await shown(page);
-      check("desk: a lost answer goes back before what was written since in its question's box",
-        s.box && s.box.id === Q && s.box.text === "first answer\n\nwritten since" && /answer is back/.test(s.status), s);
+      check("desk: a lost answer is back in its question's box, the question listed and picked",
+        s.box && s.box.id === Q && s.box.text === "first answer" && s.sel === Q && s.rows.includes(Q) && /answer is back/.test(s.status), s);
       check("desk: a question is not marked or unmarked", marks(got, Q).length === 0, marks(got, Q));
       await page.click('[data-act="ib:done"][data-id="' + Q + '"]');
       await sleep(60);
@@ -136,14 +139,14 @@ async function shown(page) {
       // box, the one being written in is left alone.
       await push(without(Q));
       await sleep(60);
-      await page.click('.ibrow[data-id="' + S + '"]');
+      await boardPick(page, S);
       await page.click('[data-act="ib:reply-open"][data-id="' + S + '"]');
       await page.fill('.ibreplybox[data-id="' + S + '"]', "a made-up reply lost later");
       typed = false;
       deaf = () => !typed;
       await page.click('[data-act="ib:reply"][data-id="' + S + '"]');
       await sleep(100);
-      await page.click('.ibrow[data-id="' + P + '"]');
+      await boardPick(page, P);
       await page.click('[data-act="ib:reply-open"][data-id="' + P + '"]');
       await page.fill('.ibreplybox[data-id="' + P + '"]', "half a reply to another");
       refuse = (t) => /"op":"agent-prompt"/.test(t);
@@ -155,7 +158,7 @@ async function shown(page) {
       check("desk: lost while another reply is written, that one is left as it is",
         s.sel === P && s.box && s.box.id === P && s.box.text === "half a reply to another" && s.rows.includes(S), s);
       await page.click('[data-act="ib:reply-close"][data-id="' + P + '"]');
-      await page.click('.ibrow[data-id="' + S + '"]');
+      await boardPick(page, S);
       await sleep(60);
       s = await shown(page);
       check("desk: and the lost one is in its own box when its report is picked", s.box && s.box.id === S && s.box.text === "a made-up reply lost later", s);
@@ -168,7 +171,7 @@ async function shown(page) {
       // it, takes that back: box emptied, report read and gone again.
       await push();
       await sleep(60);
-      await page.click('.ibrow[data-id="' + P + '"]');
+      await boardPick(page, P);
       await page.click('[data-act="ib:reply-open"][data-id="' + P + '"]');
       await page.fill('.ibreplybox[data-id="' + P + '"]', "a made-up reply Emacs reads late");
       stall = (it) => (it.op === "primary-say" ? 10600 : 0);
@@ -202,12 +205,12 @@ async function shown(page) {
       const { ctx, page, errors } = await phonePage(browser, {
         intents, refuse: (it) => (refuse && it.op === "lead-say" ? 413 : 0),
       });
-      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1 }), ITEMS);
-      await page.tap('.tab[data-tab="inbox"]').catch(() => page.evaluate(() => document.querySelector('.tab[data-tab="inbox"]').click()));
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1, needsOnly: true }), ITEMS);
+      await page.tap('.tab[data-tab="board"]').catch(() => page.evaluate(() => document.querySelector('.tab[data-tab="board"]').click()));
       await sleep(150);
-      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1 }), ITEMS);
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1, needsOnly: true }), ITEMS);
       await sleep(100);
-      await page.tap('button.ibcard[data-id="' + R + '"]');
+      await boardPick(page, R, (sel) => page.tap(sel));
       await sleep(60);
       await page.tap('[data-act="ib:reply-open"][data-id="' + R + '"]');
       await page.fill('.ibreplybox[data-id="' + R + '"]', "a made-up reply Emacs will refuse");

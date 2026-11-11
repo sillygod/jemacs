@@ -1,5 +1,5 @@
 // A project fact made every project's in one approval (ask d197da21).  The
-// proposal shows on the Memory tab and in the Inbox: the fact, its text, its
+// proposal shows on the Memory tab and on the Board (要你處理): the fact, its text, its
 // check -- which moves with it, on or off as it is -- and its counts; it is
 // approved as "Move to every project" by its id, or rejected.  Desk and
 // phone; drives GM.* as Emacs would push and reads the intents back -- no
@@ -7,7 +7,7 @@
 const { webkit } = require("playwright");
 const fs = require("fs");
 const path = require("path");
-const { phonePage } = require("./herdlib");
+const { phonePage, boardPick } = require("./herdlib");
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -87,8 +87,8 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
       const rej = sent(intents, "memory-proposal-reject").pop();
       check(W("Reject sends its id and why"), rej && rej.id === "p-plain" && rej.reason === "keep it this project's", rej);
 
-      // ---- The Inbox: one item, the text and the check, Move to every project ----
-      await page.evaluate(() => document.querySelector('.tab[data-tab="inbox"]').click());
+      // ---- The Board (once the Inbox): one item, the text and the check, Move to every project ----
+      await page.evaluate(() => document.querySelector('.tab[data-tab="board"]').click());
       await page.evaluate((t) => GM.renderInbox({ count: 1, items: [{
         id: "proposal:p-share", group: "need", kind: "proposal", tag: "Proposal", tone: "purple",
         agent: "lead-dp", cli: "claude", project: "-src-dp", at: Date.now() - 60e3,
@@ -97,10 +97,9 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
         preview: "strings | grep -F", facts: ["Grep cli binaries cheaply"], share: true, text: t, check: "off",
         proposalId: "p-share", read: false, override: null }] }), TEXT);
       await sleep(120);
-      if (label === "desk") await page.click('.ibrow[data-id="proposal:p-share"]');
-      else if (await page.$('.ibcard[data-id="proposal:p-share"]')) await page.tap('.ibcard[data-id="proposal:p-share"]');
+      await boardPick(page, "proposal:p-share", label === "desk" ? null : (sel) => page.tap(sel));
       await sleep(120);
-      check(W("the Inbox item shows the fact's text"),
+      check(W("the item on the Board shows the fact's text"),
         await page.evaluate(() => /backtracks at every byte/.test((document.querySelector(".ibprop .shtext") || {}).textContent || "")));
       check(W("and its check, said once"),
         await page.evaluate(() => (document.body.innerText.match(/stays off/g) || []).length === 1));
@@ -115,9 +114,9 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
       await tap(btn);
       await sleep(80);
       const ia = sent(intents, "memory-proposal-approve");
-      check(W("the Inbox's Move approves it by its id"),
+      check(W("the Board's Move approves it by its id"),
         ia.length === before + 1 && ia[ia.length - 1].id === "p-share", ia[ia.length - 1]);
-      check(W("nothing runs off the Inbox's edge"), (await overflow(page)) <= 0, await overflow(page));
+      check(W("nothing runs off the Board's edge"), (await overflow(page)) <= 0, await overflow(page));
       check(W("no page errors"), errors.length === 0, errors);
       await ctx.close();
     }

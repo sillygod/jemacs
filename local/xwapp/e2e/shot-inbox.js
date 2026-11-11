@@ -1,7 +1,8 @@
-// Screenshots of the Inbox tab from fixture data (desk + phone), for review.
+// Screenshots of the Inbox's items on the Board -- 要你處理, 最近回報 --
+// from fixture data (desk + phone), for review.  Once the Inbox tab's.
 const { webkit } = require("playwright");
 const fs = require("fs"); const path = require("path");
-const { phonePage, sleep } = require("./herdlib");
+const { phonePage, sleep, EMPTY_BOARD, boardUnfold } = require("./herdlib");
 const SHOTS = path.join(__dirname, "shots");
 const DESK = { viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2, isMobile: false, hasTouch: false };
 const PHONE = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true };
@@ -35,8 +36,10 @@ const ITEMS = [
 async function shot(browser, name, ctxOpts, sel) {
   const { ctx, page } = await phonePage(browser, { context: ctxOpts });
   await sleep(150);
-  await page.evaluate((it) => GM.renderInbox({ items: it, count: it.filter((x) => x.group === "need").length }), ITEMS);
+  await page.evaluate(([it, b]) => { GM.renderInbox({ items: it, count: it.filter((x) => x.group === "need").length, needsOnly: true }); GM.boardPatch(b); },
+    [ITEMS, EMPTY_BOARD]);
   await sleep(150);
+  await boardUnfold(page);
   if (sel) { await page.click(sel).catch(() => {}); await sleep(120); }
   await page.screenshot({ path: path.join(SHOTS, name) });
   await ctx.close();
@@ -45,8 +48,8 @@ async function shot(browser, name, ctxOpts, sel) {
   fs.mkdirSync(SHOTS, { recursive: true });
   const browser = await webkit.launch();
   try {
-    await shot(browser, "inbox-desk.png", DESK, '.ibrow[data-id="guard:g1"]');
-    await shot(browser, "inbox-desk-proposal.png", DESK, '.ibrow[data-id="proposal:p1"]');
+    await shot(browser, "inbox-desk.png", DESK, '.bdnrow[data-id="guard:g1"] .bdnr');
+    await shot(browser, "inbox-desk-proposal.png", DESK, '.bdnrow[data-id="proposal:p1"] .bdnr');
     await shot(browser, "inbox-phone.png", PHONE, null);
   } finally { await browser.close(); }
   console.log("shots: " + path.join(SHOTS, "inbox-{desk,desk-proposal,phone}.png"));

@@ -110,7 +110,7 @@ CLI still pastes, or works with the paste in its box, it is looked at
 again, =ghostherd-submit-looks= (8) times at most.  Still there after
 that, it is =unsent=: the log, the agent's card ("message not submitted",
 with a /Press Return/ that presses it only while it is still there) and
-the Inbox (Needs you, /Not sent/) say so, and an ask in it fails at
+the Board (要你處理, /Not sent/) say so, and an ask in it fails at
 once.  Only the text it sent counts, so it never submits what you were
 typing.  The turn an ask starts is the ask's even when it starts late
 --- after a Return pressed again, by the herd or by hand: the herd moves
@@ -808,7 +808,7 @@ agents have no =ghostel_cmd=, and a shell profile may rebuild PATH.
   made for it.  One that moved on --- the user's words, another ask,
   or one the herd delivered it since (the tally reads its conversation
   only every ~15 s) --- or is idle is only told.  What it says to that
-  line is no report in the Inbox: a turn the herd's mail starts is not
+  line is no report on the Board: a turn the herd's mail starts is not
   the user's, save the user's own words it carries (a Telegram prompt);
   an answer to an ask the agent made, or the user's verdict on a call
   its guard refused, goes on with the turn before it, the user's or not.
@@ -1128,7 +1128,7 @@ takes its handoffs at once.  The second cap is on those *up* at all
 stops the lead the herd started that has been idle longest and owes
 nothing --- no open ask to it, none of its own, no live agent it
 started, not blocked nor at work, no draft in its box, you not looking
-at it --- logged (=life=) with why, and an Update in the Inbox.  With
+at it --- logged (=life=) with why, and an update on the Board (最近回報).  With
 none such, the handoff waits.  A lead you started is never counted nor
 stopped.  The stopped lead's conversation is kept by project
 (=ghostherd-handoff-leads-file=), and the next lead the herd starts
@@ -1354,7 +1354,7 @@ propose.
 *Make a fact every project's.*  A fact one project's agents found may hold
 everywhere --- how to grep a CLI binary, a trap of the machine.  Its lead
 runs =herd promote propose --fact NAME --every-project=, and the user
-approves it once, in the Inbox or the Memory tab's *Proposals* (the fact's
+approves it once, on the Board (要你處理) or the Memory tab's *Proposals* (the fact's
 text, and its check if it has one); the herd then moves it, nothing for
 anyone to apply:
 - the fact goes to the user store whole --- its text, type, author,
@@ -1681,7 +1681,7 @@ run it again"; the next identical call runs and spends it.  An allowance
 unused for 30 minutes lapses.  The herd log has each step: =guard needs
 approval=, =approved once=, =ran, approved=.
 
-*Keep denied*, beside it --- and the Inbox's /Keep it denied/, and =M-x
+*Keep denied*, beside it --- and /Keep it denied/ on the Board, and =M-x
 ghostherd-guard-reject= --- closes the request: it leaves the card and the
 Inbox, an approval not yet used is taken back, and the agent is told once
 "The user kept this denied: <call>.  Don't retry it; say what you needed
@@ -2100,7 +2100,7 @@ code goes back through /Prompt/.  On its last step --- "Login
 successful. Press Enter to continue" (=ghostherd-login-done-re=), read
 at the screen's foot with no input box there, so the words quoted in a
 reply do not count --- the agent reads as blocked, "signed in: press
-Return to continue", and the card and the Inbox (Needs you, /Login/)
+Return to continue", and the card and the Board (要你處理, /Login/)
 offer /Press Return/.  It is pressed only while that step is still on the
 live screen, read again at the click (=ghostherd-login-continue=);
 moved on, it is refused.  While =/login= is under way the card offers
@@ -2110,7 +2110,7 @@ it holds stays held --- but it no longer reads as a login to run: once
 claude's transcript has a =/login= that went through ("Login
 successful") after the error, the card says "signed in again: its turn
 stopped at the expired login", offers no =/login=, and offers /Continue/,
-as the Inbox does in place of /Login expired/.  Continue sends the
+as the Board does in place of /Login expired/.  Continue sends the
 continue prompt the herd sends after a sleep, in its cause's words
 (=ghostherd-expired-continue-prompt=), so the held ask is answered by
 the turn that goes on (=ghostherd-carry-on=, only while its input box is
@@ -2249,7 +2249,7 @@ turn cut short; an agent lost, used up, unrelayed, untrusted, or whose
 directory went; a quota, an unknown menu, a screen the hook disagreed
 with, or a capture of your own; a slow load or wake of this page.  Not
 your own acts (a kill, a cancel), holds that settle by themselves, nor a
-=/compact='s capture.  It looks back; what needs you now is the Inbox.
+=/compact='s capture.  It looks back; what needs you now is on the Board.
 
 A slow page is a line of its own, kind =timing=: xwapp times each load
 and wake of the page in a browser --- the phone's --- and one past
@@ -2426,8 +2426,11 @@ the hour.  Raising =cleanupPeriodDays= as well keeps the originals.
 ** The herd page
 
 =SPC a h p= (=ghostherd-herd-page=) opens the page on its Agents tab,
-the overlay's overview with the mouse in hand.  Search, Sessions and Log
-are the other tabs (below, and "What happened while you were away").
+the overlay's overview with the mouse in hand.  Loaded with no place
+asked for, the page opens on its Board (below): what needs you on top,
+then the herd's work.  Search, Sessions and Log are the other tabs
+(below, and "What happened while you were away").  The page's one red
+count is the Board's: as many things as need you.
 
 - Usage per CLI on top: each window as a bar of what is used, with its
   reset; a stale or failed reading says why.  It is the sidebar
@@ -2612,13 +2615,13 @@ are the other tabs (below, and "What happened while you were away").
   tap to the conversation drawn is timed (=room= in xwapp's timings); a
   slow one is in the Log, as a slow open is, with what its biggest
   =next= carried when it was big.  The page's snapshots --- the Agents
-  tab's herd, the Inbox, an agent's screen, the badges --- go as the
+  tab's herd, the Board's items, an agent's screen, the badges --- go as the
   last of their kind (xwapp's README): behind a slow =next= only the
   newest of each waits, so a slow one does not make the next slower.
 - The page changes hands --- your phone's tab takes it from Emacs's own
   page, Emacs's page opens again, or the page goes --- and everything
   Emacs watched for the page that had it stops: the Board and its
-  badge's looks, the Inbox, Threads, a room and its sub-agent, the
+  badge's looks, the Board's items, Threads, a room and its sub-agent, the
   Agents tab, a store's facts, an import's progress
   (=ghostherd-memory-page--let-go=, on xwapp's =xwapp-let-go-functions=).
   The page that has it next asks for what it shows; the same tab after
@@ -2665,7 +2668,7 @@ are the other tabs (below, and "What happened while you were away").
   end.  At the desk onto Emacs's kill ring, on the phone onto the
   phone's clipboard.  A turn past 12,000 characters reaches the
   page cut short, and copies so; the transcript has it whole.
-- Each code block in a message --- the room, the Inbox, wherever the
+- Each code block in a message --- the room, the Board, wherever the
   page draws markdown --- has a Copy of its own, for the command an
   agent asks you to run: the block's text exactly, no language tag, no
   newline added.  On the phone a tab on the block's top-right corner,
@@ -2857,7 +2860,42 @@ words are Traditional Chinese.
   come: on a phone's slow link (15 KB/s, 300 ms) 0.77 s from the tap,
   the board at 2.3 s as before, with a board that takes Emacs 1.5 s
   (=herd-board-open.js=).  With nothing in it, a quiet line.  Narrowed
-  as the page is.  The Inbox tab stays, its count too.
+  as the page is.
+- *The Board is the page's home* (ask 8d6e1947): the Inbox tab is gone,
+  and what it had is here.  Its updates --- a lead's report at the end
+  of its turn, a handoff answered, a lead the herd started or stopped,
+  nothing to decide --- are where their work is: one of work an ask began
+  (the report of a turn an ask or its answer started, a handoff answered)
+  on that work's card --- the item its agent was last in, a guess --- a
+  dot (=● 新回報=) while new, folded or not; the card opened shows each
+  whole (its words asked for then, =inbox-detail= with =text=) and marks
+  it read.  One you began talking to an agent is of no work item: under
+  要你處理, *最近回報*, folded, by agent, with =到對話 →= and =已讀=.  The
+  Inbox's push to the Board is what needs you whole, the updates by
+  their heads --- a report without its words --- and, as the Board's
+  watch begins, what needs you alone first, the updates at once after:
+  a herd's updates are a few KB more on a phone's link.
+- *One red count*, on the Board's tab: as many as 要你處理 lists, of every
+  project.  The tab open, the page counts its own list; closed, Emacs
+  counts the same (=board-peek=: the Inbox's items that need you, and
+  the items nobody has with no line of a lead's, =herd_board_counts=
+  =bare=), on news, at most every 30 s.
+- *Its links*: =#board= and the page's home; the Inbox's old ones land on
+  the Board --- =#inbox=, and =#inbox/ID= on that item --- as a push's
+  does: =#board/at/ID= opens what waits on you (its line in 要你處理, its
+  group open) or an update (its card, or its line under 最近回報), and
+  =#board/agent/NAME= the agent's group.  A push to Telegram has an
+  =Open on the Board= button to it (=ghostherd--board-url=: a menu, a
+  guarded call, a failed ask, a relay by their item; a report, a lead
+  started by the agent), and =Open the herd page= opens the Board.  One
+  handled already says so.
+- *What the page costs to load*: the herd page asks xwapp for its
+  scripts lean (=xwapp-create= =:lean=): to a phone, gzip'd, each line of
+  nothing but a =//= comment goes blank --- 38 KB of app.js's 143 KB
+  gzip'd --- the line numbers kept; the xwidget has the file as it is.
+  Loaded on a phone's slow link (15 KB/s, 300 ms), what needs you is
+  drawn at 13.0 s where the Inbox, home at 02e94b8, drew its own at 15.3
+  s; on wifi 0.71 s where it took 0.86 s (=herd-board-open.js=).
 - Four tiles, each saying its stretch (=24 小時內= or =現在=): the items
   by status with what their asks were (cross-project, FYI, relays,
   cancelled or failed); the open asks with the oldest; 要你處理, by kind,
@@ -3195,7 +3233,7 @@ projects.  Read-only: it only shows, and leads where you click.
   before it was) has the commits in its project's main branch that
   name it, =(ask ID)=; none found there is not none made, so it stays
   =code not readable=.
-- From the Inbox, =Open thread= on an item opens the thread of its ask
+- From the Board, =Open in Threads →= on an item opens the thread of its ask
   (a failed ask, an answered handoff) or, for an agent's item, that
   agent's latest.
 - On the desk the tab is the window: the list and the open thread each
@@ -3226,7 +3264,7 @@ its own, where a phone zooms it).  Wherever you read the message:
 - a room, its columns and its chat: what an agent wrote, a sub-agent's
   report, an answer to an ask --- the taker's, and what came back to the
   asker;
-- the Inbox: a report's or a question's words, and the answers in the
+- the Board's items: a report's or a question's words, and the answers in the
   thread under it;
 - the Threads tab: an answer;
 - Telegram: a lead's report (above).

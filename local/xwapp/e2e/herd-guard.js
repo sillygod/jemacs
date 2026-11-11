@@ -4,7 +4,7 @@
 // run by an agent has no button.  Its row and its room's column, on a
 // phone and at a desk.
 const { webkit } = require("playwright");
-const { phonePage, HERD, sleep } = require("./herdlib");
+const { phonePage, HERD, sleep, boardPick, OPEN } = require("./herdlib");
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
 const DESK = { viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2, isMobile: false, hasTouch: false };
@@ -128,24 +128,21 @@ const herd = (guard) => {
         { id: "guard:g8", group: "need", kind: "guard", tag: "Guard", tone: "red", agent: QA, cli: "agy",
         project: DP, title: "Needs your approval", at: now - 30e3, whyLabel: "The guard denied this call", body: "secret file",
         preview: "cat .envrc", code: "cat .envrc", note: "", read: false, override: null, guardId: "g8" }];
-      await page.evaluate(() => document.querySelector('.tab[data-tab="inbox"]').click());
-      await page.evaluate((it) => GM.renderInbox({ items: it, count: 2 }), GI);
+      await page.evaluate(() => document.querySelector('.tab[data-tab="board"]').click());
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: 2, needsOnly: true }), GI);
       await sleep(100);
-      // Desk picks the list row; phone expands the card in place.
-      if (where === "desk") await page.click('.ibrow[data-id="guard:g7"]');
-      else await page.tap('.ibcard[data-id="guard:g7"]');
-      await sleep(100);
-      const scope = where === "desk" ? ".ibdetail" : ".ibcard.open";
+      // Its line on the Board (in 要你處理) opened in place.
+      await boardPick(page, "guard:g7", tap);
+      const scope = OPEN;
       await tap(scope + ' [data-act="ib:done"]');
       await sleep(150);
       const rej = intents.filter((i) => i.op === "guard-reject").map((i) => i.id);
-      check(W("the Inbox's Keep it denied keeps the request denied"), rej.includes("g7"), rej);
-      if (where === "desk") {
-        await page.click('.ibrow[data-id="guard:g8"]');
-        await page.keyboard.press("e");
-        await sleep(150);
-        check(W("and so does e on a guard item"), intents.filter((i) => i.op === "guard-reject").map((i) => i.id).includes("g8"));
-      }
+      check(W("the Board's Keep it denied keeps the request denied"), rej.includes("g7"), rej);
+      // The Inbox's desk key `e' went with it: the other one, by its button.
+      await boardPick(page, "guard:g8", tap);
+      await tap(OPEN + ' [data-act="ib:done"][data-id="guard:g8"]');
+      await sleep(150);
+      check(W("and so for another guard item"), intents.filter((i) => i.op === "guard-reject").map((i) => i.id).includes("g8"));
       check(W("no page errors"), errors.length === 0, errors);
       await ctx.close();
     }
