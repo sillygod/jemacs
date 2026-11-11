@@ -2819,7 +2819,11 @@ words are Traditional Chinese.
 - On top, =24 小時 | 7 天=: the stretch the whole page is of --- the
   items, their asks, the PRs and tickets they name, the map's
   cross-project asks --- kept in your browser; with the project or
-  ticket it is narrowed to, in the same row.
+  ticket it is narrowed to, in the same row, and a chip a section
+  (=要你處理 68 · 現在 3 · 工作項目 63 · PR 62 · 單號 23=), a tap to it
+  --- opened, if it was closed.  They wrap on a phone: nothing sideways.
+- Each section's head (現在, 工作項目, 所有 PR, 所有單號) folds it on a
+  tap; what is closed is kept in your browser, as the stretch is.
 - Then *要你處理*, one list of what needs your hand, each handled right
   there: the Inbox's Needs-you (an agent at a menu, a guarded call, a
   proposal, a question, a sign-in, a failed ask...), the leads' 需要 Jing
@@ -2827,11 +2831,27 @@ words are Traditional Chinese.
   the Inbox's =need:N= item, and an item nobody has whose line is listed
   rides on that line, marked so, with its =交給 lead=.  What stops an
   agent until you act first, then what else needs you, then what nobody
-  has, the newest first in each.  A tap opens one in place, as the
-  Inbox's phone cards do, with the Inbox's own buttons (approve or
-  reject, an option, a reply, Mark read, 已處理): the same as in the
-  Inbox, and gone from it too.  An item nobody has opens to why, its
-  =交給 lead= and the way to its card.  It is drawn from the Inbox's
+  has.  A herd's day leaves a lead's lines open by the dozen --- a
+  report lists what that round needs, a line ends when handled or
+  written again in the same item, and a lead moving from item to item
+  leaves the rest open --- so the list is *by agent*: a group a line,
+  its counts by kind, how new, =到對話 →= and =整組已處理=; a group with
+  what stops its agent first and open (and kept open while you work
+  in it), the rest by their newest, folded.  In a group: what stops
+  the agent, then its latest report's lines (a report's lines share
+  its time) and the Inbox's other waits, then what nobody has; the
+  lines of its earlier reports last, by work item, folded --- =較早的 N
+  件（之後的報告沒再提）=.  Each is one line: its tag, title, age,
+  =已處理= (a lead's line), =到對話=; a tap opens it in place, with the
+  Inbox's own buttons (approve or reject, an option, a reply, Mark
+  read): the same as in the Inbox, and gone from it too --- its title
+  not said twice, a lead's line's item a button.  An item nobody has
+  opens to why, its =交給 lead= and the way to its card.
+  =整組已處理= asks for a second tap within 5 s (=確定？處理 N 件=), then
+  handles the group's 需要 Jing lines --- not what stops its agent, nor
+  what nobody has --- in one =board-need-done= (=ids=; Emacs closes each
+  as it closes one, in turn: a phone's page sends its intents one at a
+  time, a round trip each), and says how many.  It is drawn from the Inbox's
   push --- watched while the Board is shown, only what needs you then,
   asked for in the board's own intent --- before the board itself has
   come: on a phone's slow link (15 KB/s, 300 ms) 0.77 s from the tap,
@@ -2848,8 +2868,12 @@ words are Traditional Chinese.
   a relay dashed; beside it every open ask, =from → to= (=⇢= a
   handoff), how long and whether its taker is at it, the asks made
   answering it nested under it.  A click opens its thread in Threads.
-- One card per item, the live, waiting-on-you, 沒人接 and 收尾 ones first
-  and open.  The default view (全部) shows only those as cards, then the
+- One card per item, the live, waiting-on-you, 沒人接 and 收尾 ones first,
+  each folded to a line or two --- its title; its status, projects, how
+  many asks, PRs and waits on Jing, one waiting on you or nobody's
+  marked so by its colour and tag --- a tap opening it whole, kept open
+  in your browser until folded.  The default view (全部) shows only
+  those as cards, then the
   items at rest of some size -- a lead named it, or it took 3 asks or more
   -- a line each, and folds the rest by project into one line each
   (=shop：零星 23 則 · 最後 33 分前=), a tap away: on a day of the herd's,
@@ -2904,6 +2928,17 @@ words are Traditional Chinese.
   A card waiting on you otherwise names the Inbox's Needs-you items of
   the agent last in it (a guess, said so), opened in 要你處理 on a tap.
   A 部署 line marks the PRs it names *已部署* on their chips.
+- *到對話*, by each line of 要你處理 and each group's head, each 需要 Jing
+  of a card, each ask of its timeline and every open ask: the room of
+  the agent who wrote it (an ask: its taker's, as it came in), at the
+  entry that says it, flashed.  Found as the room's find finds words
+  (=room-find=, the agent's whole conversation): by its first words,
+  else its longest; of the hits, the one of its ask, else what the
+  agent said, nearest its time.  One the room holds is scrolled to; one
+  it does not, the page holding it is read (=room-at=), =Back to latest=
+  under it.  Found nowhere, the room stays at its end and says so.  An
+  agent's name still opens its room at its end.  =← 回 Board= returns
+  to where the Board was.
 - *沒人接*: an item quiet for =ghostherd-board-orphan-hours= (4) with a
   need still open, or whose last ask failed, was cancelled or was left
   unanswered (its taker stopped without one), and nothing open.  The

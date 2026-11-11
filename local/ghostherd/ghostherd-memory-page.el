@@ -4563,7 +4563,10 @@ closed on the Board too (`ghostherd-memory-page--inbox-set')."
                     (if (string-empty-p (or (plist-get n :itemTitle) "")) ""
                       (format "\n\nWork item %s: %s" (plist-get n :item) (plist-get n :itemTitle))))
       :preview (ghostherd-inbox--clip (plist-get n :text) 90)
-      :event (plist-get n :id) :item (or (plist-get n :item) "")))
+      :event (plist-get n :id) :item (or (plist-get n :item) "")
+      ;; The Board's 要你處理 groups a lead's lines by its report (their
+      ;; time) and item, and finds where it wrote one by its ask.
+      :itemTitle (or (plist-get n :itemTitle) "") :ask (or (plist-get n :ask) "")))
    needs))
 
 (defun ghostherd-inbox--all (proposals &optional needs)
@@ -5495,19 +5498,34 @@ both, as a phone's page sends its intents one at a time, a round trip each."
       (setq ghostherd-board--days (max 0.04 (min 7 days)) ghostherd-board--inflight nil)
       (when ghostherd-board--watching (ghostherd-board--tick)))))
 
+(defconst ghostherd-board--need-done-max 200
+  "The most needs one board-need-done closes: a group's lines, the Board's
+整組已處理.")
+
 (defun ghostherd-board--need-done (intent)
-  "The user handled the need INTENT names (an event's number): the sidecar
-closes it, and the board -- and the Inbox -- are looked at again."
-  (let ((id (alist-get 'id intent)))
-    (when (numberp id)
+  "The user handled the need INTENT names (`id', an event's number), or
+the needs it names (`ids': a group's, the Board's 整組已處理): the sidecar
+closes each as it closes one, in turn, and then the board -- and the
+Inbox -- are looked at again, once."
+  (let* ((one (alist-get 'id intent))
+         (many (alist-get 'ids intent))
+         (ids (seq-take (delete-dups (seq-filter #'natnump (append (and (natnump one) (list one))
+                                                                   (and (or (vectorp many) (listp many)) (append many nil)))))
+                        ghostherd-board--need-done-max)))
+    (when ids (ghostherd-board--need-close ids))))
+
+(defun ghostherd-board--need-close (ids)
+  "Close the needs IDS, one after the other; then look again."
+  (if (null ids)
+      (progn
+        (setq ghostherd-board--inflight nil ghostherd-inbox--sig nil)
+        (when ghostherd-board--watching (ghostherd-board--tick))
+        (when ghostherd-inbox--watching (ghostherd-inbox--tick)))
+    (let ((next (lambda (&rest _) (ghostherd-board--need-close (cdr ids))))
+          (fail (ghostherd-memory-page--fail "Handled")))
       (ghostherd-memory-request-async
-       "herd_board_need_close"
-       (lambda (_r)
-         (setq ghostherd-board--inflight nil ghostherd-inbox--sig nil)
-         (when ghostherd-board--watching (ghostherd-board--tick))
-         (when ghostherd-inbox--watching (ghostherd-inbox--tick)))
-       (list :id id)
-       (ghostherd-memory-page--fail "Handled")))))
+       "herd_board_need_close" next (list :id (car ids))
+       (lambda (err) (funcall fail err) (funcall next))))))
 
 (defconst ghostherd-board--peek-every 30
   "Seconds at least between two looks at the badge's counts after news.")

@@ -21,11 +21,21 @@ const herdOf = (agents) => Object.assign({}, HERD, { work: [], asks: [],
   agents: agents.map((a) => agent(a.name, { project: a.project, role: a.role, state: a.role ? "idle" : "working", kind: "claude",
                                             reason: a.role ? "" : "at work" })) });
 
+// Cards start folded: these opened, as a tap on each does (kept so after).
+async function openCards(page, ids) {
+  for (const id of ids) {
+    if (await page.$("#bd-w-" + id + ".folded")) await page.click("#bd-w-" + id + " .wh");
+    await sleep(40);
+  }
+}
+const OPEN = ["c1a2b3", "d4e5f6", "b1c2d3", "c6d7e8"];
+
 async function boardOpen(page, intents, patch) {
   await page.click('.tab[data-tab="board"]');
   await sleep(80);
   await page.evaluate((p) => GM.boardPatch(p), patch || FULL);
   await sleep(150);
+  await openCards(page, OPEN);
 }
 
 (async () => {
@@ -184,6 +194,7 @@ async function boardOpen(page, intents, patch) {
       await sleep(100);
       await page.evaluate((p) => GM.boardPatch(p), FULL);
       await sleep(150);
+      await openCards(page, OPEN);
       await page.$eval('#bd-w-d4e5f6 .blk [data-name="pushfix"]', (b) => b.scrollIntoView({ block: "center" }));
       await sleep(60);
       const at = await page.evaluate(() => document.querySelector("#app").scrollTop);

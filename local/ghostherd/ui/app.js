@@ -3521,6 +3521,7 @@
     markHit(findKey(a.name));
     renderColJump(a.name);
     const conv = herdNow.convs[a.name];
+    bdSpot(findKey(a.name), a.name, conv);
     if (herdNow.jumpPend === "col:" + a.name && conv && !conv.loading) {
       const list = youItems(entries), k = youAt(list, herdNow.jump.col[a.name]);
       if (k < list.length - 1) {
@@ -3763,6 +3764,7 @@
     } else body.scrollTop = keep;
     markHit("chat");
     renderChatJump();
+    bdSpot("chat", chatFindAgent(), c);
     // A `load earlier' fired to reach an older "You" has arrived: step to it.
     if (herdNow.jumpPend === "chat" && c && !c.loading) {
       const list = youItems(entries), k = youAt(list, herdNow.jump.chat);
@@ -7559,9 +7561,16 @@
   // version (boardPatch); an item's timeline when its card is opened
   // (boardTimeline).  Text in Traditional Chinese, Jing's own.
 
+  const BD_OPEN_KEY = "ghostherd.board.open", BD_SHUT_KEY = "ghostherd.board.shut", BD_OPEN_MAX = 200;
   let board = { got: false, v: 0, cards: {}, waits: [], jing: [], meta: { counts: {}, edges: [], days: 1, more: false },
-                error: "", filter: "all", graph: "now", fold: new Map(), tlOpen: new Set(), tlAll: new Set(), tl: {},
+                error: "", filter: "all", graph: "now", tlOpen: new Set(), tlAll: new Set(), tl: {},
                 days: boardDaysKept(), html: {}, order: "", flash: "", goto: "", openProj: new Set(),
+                // The cards opened and the sections closed, kept for this
+                // device (bdKept); 要你處理's groups opened or closed by hand,
+                // each one's earlier lines opened, and the group whose
+                // 整組已處理 waits for its second tap ({agent, until}).
+                open: new Set(bdKept(BD_OPEN_KEY)), shut: new Set(bdKept(BD_SHUT_KEY)),
+                ngOpen: new Map(), ngOld: new Set(), armed: null,
                 // The project the Board is narrowed to ("" for all), the badge's
                 // counts Emacs looked at while the tab was closed, where the page
                 // was when a name took it to a room, the inline replies.
@@ -7573,7 +7582,7 @@
   let boardTimer = 0;
 
   // Each status: its label, its order on the board, and whether its card
-  // starts folded: work going on open, work at rest folded.
+  // started folded before every card did (`bdFolded').
   const BD_STATUS = { live: ["進行中", 0, false], jing: ["等 Jing", 1, false], orphan: ["沒人接", 2, false],
                       tail: ["收尾", 3, false], quiet: ["安靜", 4, true], done: ["完成", 5, true] };
   const BD_PR = { OPEN: ["open", "opn"], MERGED: ["已 merge", "mrg"], DECLINED: ["關閉", "off"], SUPERSEDED: ["被取代", "off"] };
@@ -7588,6 +7597,18 @@
   }
   function boardDaysKeep(d) {
     try { localStorage.setItem("ghostherd.board.days", String(d)); } catch (e) { /* this page keeps it */ }
+  }
+  // The cards this device opened, the newest last, and the sections it
+  // closed: kept as the days are, a list of names each -- storage refused
+  // (a private window), the page keeps them until it goes.
+  function bdKept(key) {
+    try {
+      const v = JSON.parse(localStorage.getItem(key) || "[]");
+      return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+    } catch (e) { return []; }
+  }
+  function bdKeep(key, set) {
+    try { localStorage.setItem(key, JSON.stringify([...set].slice(-BD_OPEN_MAX))); } catch (e) { /* this page keeps it */ }
   }
 
   function bdTime(ms) {
@@ -7606,9 +7627,13 @@
     return Object.values(board.cards).sort((a, b) =>
       (BD_STATUS[a.status] || [0, 9])[1] - (BD_STATUS[b.status] || [0, 9])[1] || (b.last || 0) - (a.last || 0));
   }
-  function bdFolded(c) {
-    const mine = board.fold.get(c.id);
-    return mine === undefined ? !!(BD_STATUS[c.status] || [])[2] : mine;
+  // Every card starts folded to its line or two; one opened stays open on
+  // this device until folded again.
+  function bdFolded(c) { return !board.open.has(c.id); }
+  function bdOpenCard(id, open) {
+    board.open.delete(id);
+    if (open) board.open.add(id);
+    bdKeep(BD_OPEN_KEY, board.open);
   }
   function bdLink(id) {
     return id ? '<button type="button" class="bdilink" data-act="bd:goto" data-id="' + esc(id) + '" title="到這個工作項目">' + esc(id) + "</button>" : "";
@@ -7900,7 +7925,8 @@
       chain(k, depth + 1)).join("");
     const row = (x) => '<div class="wait"><div class="wrow">' + bdAgent(x.from, "who") +
       '<span class="arr">' + (x.kind === "handoff" ? "⇢" : "→") + "</span>" + bdAgent(x.to, "who") +
-      '<span class="age">' + esc(bdTime(x.since)) + " · " + esc(bdAge(x.since)) + " · " + how(x) + "</span>" + ref(x.ask) + "</div>" +
+      '<span class="age">' + esc(bdTime(x.since)) + " · " + esc(bdAge(x.since)) + " · " + how(x) + "</span>" + ref(x.ask) +
+      bdTalkBtn(bdAskSpot(x.ask, x.from, x.to, x.head, x.since), "到對話", "bdtalk-s") + "</div>" +
       '<div class="what">' + esc(x.head) + " " + bdLink(x.item) + "</div>" + chain(x, 0) + "</div>";
     const top = w.filter((x) => !x.under);
     const cross = top.filter(bdCross), inner = top.filter((x) => !bdCross(x));
@@ -7931,7 +7957,26 @@
     return '<span class="bdneed"><span class="ntext">' + esc(n.text || n.title) + "</span>" +
       '<span class="nmeta">' + bdAgent(n.agent) + " · " + esc(bdTime(n.at)) + (withItem && n.item ? " " : "") + "</span>" +
       (withItem ? bdLink(n.item) : "") +
+      bdTalkBtn({ name: n.agent, q: n.text || n.title, ask: n.ask, at: n.at, want: n.ask ? "reply" : "said" }, "到對話", "bdtalk-s") +
       '<button type="button" class="bddone" data-act="bd:need-done" data-event="' + esc(String(n.event || n.id)) + '" title="你處理好了：不再列為等你">已處理</button></span>';
+  }
+
+  // 到對話: a button to where a thing was said -- the room of S.name, at
+  // the entry that says S.q (S.ask the ask it is of, S.at when, S.want
+  // which of its entries: an ask come in, one sent, a reply, what the
+  // agent said).  None for the user, or a name that is no agent.
+  function bdTalkBtn(s, label, cls) {
+    if (!s || !s.name || s.name === "user" || s.name === "Jing" || /^lead of /.test(s.name)) return "";
+    const a = (k, v) => (v ? " data-" + k + '="' + esc(String(v)) + '"' : "");
+    return '<button type="button" class="bdtalk' + (cls ? " " + cls : "") + '" data-act="bd:talk"' + a("name", s.name) +
+      a("q", bdClip(s.q || "", 200)) + a("ask", s.ask) + a("at", s.at ? Math.round(s.at) : "") + a("want", s.want) + a("proj", s.project) +
+      ' title="打開 ' + esc(s.name) + ' 的 room，到寫這件事的那一則">' + esc(label || "到對話") + "</button>";
+  }
+  // Where a timeline's or a wait's ask was said: in its taker's room as it
+  // came in, else -- its taker gone -- in its asker's, as it was sent.
+  function bdAskSpot(ask, from, to, head, at) {
+    const inTo = to && to !== "Jing" && bdAgentInfo(to);
+    return { name: inTo ? to : from, q: head, ask, at, want: inTo ? "ask-in" : "ask-out" };
   }
 
   // What a card waits on, and what can be done from it: 交給 lead for an
@@ -7950,7 +7995,8 @@
       const u = c.unanswered || {};
       const why = u.status === "failed" ? "失敗" : u.status === "cancelled" ? "撤回" : "對方停下沒回答";
       return '<div class="blk"><span class="bl">沒人接</span><span>安靜 ' + esc(age) + "，最後一則 ask " + why + "：" +
-        bdAgent(u.from || "") + " → " + bdAgent(u.to || "") + "：" + esc(u.head || "") + "</span></div>" + bdHand(c);
+        bdAgent(u.from || "") + " → " + bdAgent(u.to || "") + "：" + esc(u.head || "") +
+        bdTalkBtn(bdAskSpot(u.ask, u.from, u.to, u.head, u.at), "到對話", "bdtalk-s") + "</span></div>" + bdHand(c);
     }
     if (c.needs && c.needs.length) {
       return '<div class="blk"><span class="bl">等 Jing</span><span>' + c.needs.map((n) => bdNeedLine(n, false)).join("") + "</span></div>" + bdReply(c);
@@ -7966,7 +8012,7 @@
     if (b.kind === "open") {
       const how = b.working ? "在做" : b.status === "queued" ? "排隊中" : "沒在動";
       return '<div class="blk"><span class="bl">卡在</span><span>等 ' + bdAgent(b.to, "strong") + "（" + how + " · " + esc(bdAge(b.since)) + "）：" +
-        esc(b.head) + "</span></div>";
+        esc(b.head) + bdTalkBtn(bdAskSpot(b.ask, b.from, b.to, b.head, b.since), "到對話", "bdtalk-s") + "</span></div>";
     }
     const lab = b.kind === "failed" ? "失敗" : b.kind === "cancelled" ? "撤回" : "最後";
     return '<div class="blk"><span class="bl">' + lab + "</span><span>" + bdAgent(b.from || "") + (b.kind === "answered" ? " 回覆" : "") +
@@ -8046,6 +8092,106 @@
     if (ta && herdNow.compose[name]) ta.focus();
   }
 
+  // ---- 到對話: from the Board to where a thing was said ---------------------
+  // A line of 要你處理, a card's 需要 Jing or ask: the room of the agent who
+  // wrote it -- or took it -- opened at the entry that says it, flashed.
+  // The entry is found as the room's find finds words (room-find, over the
+  // agent's whole conversation): by its first words, else its longest; of
+  // the hits, the one of its ask (a reply, an ask come in or sent), else
+  // what the agent said, nearest its time.  One the room holds is scrolled
+  // to; one it does not, the page of the conversation holding it is read
+  // (room-at) and shown -- "Back to latest" returns to the end.  Found
+  // nowhere: the room stays at its end, and says so.  回 Board returns to
+  // where the Board was (bdBack).
+
+  function bdTalk(s) {
+    const a = bdAgentInfo(s.name);
+    const project = (a && a.project) || s.project || "";
+    // The board come and the name not in its herd: gone.  Before it, the
+    // Inbox's project for it.
+    if (!s.name || (!a && (board.got || !project))) { setStatus((s.name || "它") + " 已不在 herd 裡（停了），沒有 room 可開"); return; }
+    herdNow.spot = { name: s.name, qs: bdQueries(s.q), ask: s.ask || "", at: +s.at || 0, want: s.want || "", t: Date.now() };
+    bdToRoom(project, s.name);
+  }
+
+  // The words a thing is found by, as the find takes them (two characters
+  // or more, any not ASCII one; each a substring of what was said): its
+  // first few, each cut short, then its longest alone -- a lead's line or
+  // a head is the message less its markdown, which may split a word.
+  function bdQueries(text) {
+    const cut = (w, n) => Array.from(w).slice(0, n).join("");
+    const words = String(text || "").replace(/…$/, "").split(/\s+/).filter((w) => w.length >= 2 || /[^\x00-\x7f]/.test(w));
+    if (!words.length) return [];
+    const first = [];
+    let n = 0;
+    for (const w of words) {
+      if (first.length >= 4 || n >= 30) break;
+      first.push(cut(w, 16));
+      n += Math.min(16, w.length);
+    }
+    const out = [first.join(" ")];
+    const long = cut(words.slice().sort((a, b) => b.length - a.length)[0], 10);
+    if (long !== out[0]) out.push(long);
+    return out;
+  }
+
+  // Of a find's HITS, the one S is: its ask's, of the kind wanted; else
+  // what the agent said, else the herd's line of it, else anyone's -- the
+  // nearest S's time, or the newest.  -1 for none.
+  function bdSpotHit(hits, s) {
+    let best = -1, score = -Infinity;
+    hits.forEach((h, k) => {
+      let v = 0;
+      if (s.ask && h.ask === s.ask) v += 1000;
+      if ((s.want === "reply" && h.role === "herd" && h.kind === "reply") || (s.want === "ask-in" && h.role === "user" && h.kind === "ask") ||
+          (s.want === "ask-out" && h.role === "herd" && h.kind === "ask")) v += 300;
+      v += h.role === "assistant" ? 200 : h.role === "herd" ? 100 : 0;
+      const t = stamp(h.ts);
+      v += s.at && t ? -Math.min(500, Math.abs(t - s.at) / 60000) : k / 1000;
+      if (v > score) { score = v; best = k; }
+    });
+    return best;
+  }
+
+  // Called as a room's body is drawn (renderRoomBody, renderChatBody), KEY
+  // its find's, NAME the agent it is of, CONV what it holds: once that has
+  // come -- the rest of its tail too, or a while gone -- the find, once.
+  function bdSpot(key, name, conv) {
+    const s = herdNow.spot;
+    if (!s || s.name !== name || !conv) return;
+    if (Date.now() - s.t > 60000) { herdNow.spot = null; return; }
+    if (conv.rest > 0 && Date.now() - s.t < 8000) return;
+    herdNow.spot = null;
+    if (conv.none || conv.error) return bdSpotNone(key, s);
+    // Nothing to look for (a menu, a sign-in): its end, where it opens.
+    if (s.qs.length) setTimeout(() => bdSpotFind(key, s, 0), 0);
+  }
+
+  function bdSpotFind(key, s, k) {
+    if (!herdNow.room) return;
+    let F = herdNow.find[key];
+    if (!F) F = herdNow.find[key] = { q: "", name: s.name, res: null, busy: false, cur: -1, list: false, seq: 0 };
+    F.q = s.qs[k];
+    F.open = true;
+    F.list = false;
+    F.note = "";
+    renderStripOf(key);
+    runFind(key, () => {
+      const res = F.res;
+      const i = res && !res.error && res.name === s.name ? bdSpotHit(res.hits || [], s) : -1;
+      if (i >= 0) return findGo(key, i);
+      if (k + 1 < s.qs.length) return bdSpotFind(key, s, k + 1);
+      bdSpotNone(key, s);
+    });
+  }
+
+  function bdSpotNone(key, s) {
+    closeFind(key);
+    const body = findBody(key);
+    if (body) body.scrollTop = body.scrollHeight;
+    setStatus("在 " + s.name + " 的對話裡找不到那一則：停在對話最後面");
+  }
+
   // An item's timeline: its key events first -- the ask that began it, each
   // 需要 Jing and 部署 line, each PR said opened and merged (the forge's
   // time), a request that failed, the closing, what is open -- every ask
@@ -8075,9 +8221,18 @@
         '<span class="kk">' + esc((e.relay ? "轉述" : BD_KIND[e.kind] || e.kind) + (e.auto ? "*" : "")) + "</span>" +
         '<span class="tx">' + (who ? '<span class="ft">' + who + "</span> " : "") + esc(e.head) + st +
         (e.ask ? ' <button type="button" class="ref" data-act="bd:thread" data-ask="' + esc(e.ask) + '" title="在 Threads 打開">' + esc(e.ask) + "</button>" : "") +
-        "</span></li>";
+        bdTalkBtn(bdEventSpot(e), "到對話", "bdtalk-s") + "</span></li>";
     }).join("") + "</ol>" + (rest || all ? '<button type="button" class="bdmore" data-act="bd:tlall" data-id="' + esc(c.id) + '">' +
       (all ? "只看關鍵事件" : "顯示全部（再 " + rest + " 則 ask／回覆）") + "</button>" : "") + "</div>";
+  }
+
+  // Where a timeline's event was said: an ask, as it came in; an answer, a
+  // 需要 Jing line, in the room of whoever wrote it.
+  function bdEventSpot(e) {
+    if (e.kind === "ask" || e.kind === "handoff") return bdAskSpot(e.ask, e.from, e.to, e.head, e.at);
+    if (e.kind === "answer") return { name: e.from, q: e.head, ask: e.ask, at: e.at, want: "reply" };
+    if (e.kind === "need") return { name: e.from, q: e.head, ask: e.ask, at: e.at, want: e.ask ? "reply" : "said" };
+    return null;
   }
 
   // The forge's merge of each of the item's own PRs, among its events.
@@ -8087,22 +8242,36 @@
     return events.concat(merges).sort((a, b) => (a.at || 0) - (b.at || 0));
   }
 
+  // How many things on a card wait on Jing: the leads' lines, else the
+  // Inbox's waits guessed onto it.
+  function bdJingN(c) {
+    return (c.needs || []).length || (c.status === "jing" || c.status === "live" ? (c.jingOf || []).length : 0);
+  }
+
   function bdCard(c) {
     const st = BD_STATUS[c.status] || [c.status, 9, false];
     const fold = bdFolded(c);
-    const quiet = c.status === "quiet" || c.status === "done";
-    const head = '<button type="button" class="wh" data-act="bd:fold" data-id="' + esc(c.id) + '" aria-expanded="' + !fold + '">' +
+    const nj = bdJingN(c);
+    // Folded, a line or two, one tap target: its title; then how it stands,
+    // its projects, how many asks, PRs and waits on Jing -- one nobody has
+    // or waiting on Jing marked so, by its tag and its edge's colour.
+    if (fold) {
+      return '<article class="wi st-' + esc(c.status) + " folded" + (c.status === "orphan" || nj ? " urgent" : "") + '" id="bd-w-' + esc(c.id) + '">' +
+        '<button type="button" class="wh wfold" data-act="bd:fold" data-id="' + esc(c.id) + '" aria-expanded="false">' +
+        '<span class="wt">' + esc(c.title) + "</span>" +
+        '<span class="wm"><span class="pill">' + esc(st[0]) + (c.status === "jing" && nj ? " " + nj : "") + "</span>" +
+        (c.status !== "jing" && nj ? '<span class="tag t-jing">等 Jing ' + nj + "</span>" : "") +
+        '<span class="wp">' + esc((c.projects || []).join("、")) + "</span>" +
+        '<span class="wn">' + c.asks + " ask" + (c.open ? "（開著 " + c.open + "）" : "") + (c.prs.length ? " · " + c.prs.length + " PR" : "") +
+        " · " + esc(bdTime(c.last)) + "</span></span></button></article>";
+    }
+    const head = '<button type="button" class="wh" data-act="bd:fold" data-id="' + esc(c.id) + '" aria-expanded="true">' +
       '<span class="key">' + esc(c.id) + '</span><span class="pill">' + esc(st[0]) + "</span>" +
       (c.status === "live" && c.jingOf && c.jingOf.length ? '<span class="tag t-jing">等 Jing</span>' : "") +
       (c.cross ? '<span class="tag">跨專案</span>' : "") +
       '<span class="n">' + c.asks + " 則 ask" + (c.open ? "（開著 " + c.open + "）" : "") + " · 最後 " + esc(bdTime(c.last)) + "</span></button>";
     const title = '<h3 title="' + esc(c.askTitle ? "第一則 ask：" + c.askTitle : c.named ? "lead 取的名字" : "") + '">' + esc(c.title) + "</h3>";
     const projs = c.projects.map(bdProjTag).join("");
-    if (fold) {
-      return '<article class="wi st-' + esc(c.status) + ' folded" id="bd-w-' + esc(c.id) + '">' + head + title +
-        '<div class="meta">' + projs + (c.prs.length ? '<span class="ag">' + c.prs.length + " 個 PR</span>" : "") +
-        (quiet ? '<span class="ag">' + esc(bdBlockLine(c)) + "</span>" : "") + "</div></article>";
-    }
     const labels = (c.labels || []).map((l) => /^CU-[0-9a-z]+$/.test(l)
       ? '<button type="button" class="tk' + (board.ticket === l.slice(3) ? " sel" : "") + '" data-act="bd:tfilter" data-t="' + esc(l.slice(3)) +
         '" title="只看 ' + esc(l) + '">' + esc(l) + "</button>"
@@ -8320,6 +8489,8 @@
 
   const NEED_STOPS = new Set(["blocked", "guard", "proposal", "question", "login", "login-continue", "carry-on", "unsent", "relay"]);
   const NEED_RANKS = ["會卡住 agent", "需要 Jing", "沒人接"];
+  // How long 整組已處理's first tap waits for its second.
+  const BD_ARM_MS = 5000;
   // The lines of the board's the Inbox has not sent, as items, by id: what
   // the Inbox's actions take them from (onInboxAction).
   let bdNeedExtra = new Map();
@@ -8329,7 +8500,7 @@
              project: j.projectDir || "", title: j.title || "", preview: j.title || "", at: j.at, read: true,
              whyLabel: "A lead's 需要 Jing line",
              body: (j.title || "") + (j.itemTitle ? "\n\nWork item " + j.item + ": " + j.itemTitle : ""),
-             event: j.event, item: j.item || "" };
+             event: j.event, item: j.item || "", itemTitle: j.itemTitle || "", ask: j.ask || "" };
   }
 
   function bdNeeds() {
@@ -8366,21 +8537,153 @@
     return n;
   }
 
-  // One of the list: the Inbox's card -- an item nobody has, drawn as one,
-  // its block (why, 交給 lead) and the way to its card when opened.
-  function bdNeedCard(e) {
-    const narrow = phone();
+  // ---- 要你處理, by agent ---------------------------------------------------
+  // A herd's day leaves a lead's 需要 Jing lines open by the dozen: a lead's
+  // report lists what that round needs, a line closes when handled (or
+  // written again in the same item), and a lead moving from item to item
+  // leaves the rest open.  So the list is folded by whose it is -- an
+  // agent a group, its head its counts, how new, 到對話 and 整組已處理 --
+  // and each a line: its tag, title, age, 已處理, 到對話, a tap opening
+  // it.  A group with what stops an agent first and open; the rest by
+  // their newest, folded.  In a group: what stops it, then what its latest
+  // report asked (and the Inbox's other waits), then what nobody has; the
+  // lines of its earlier reports last, by work item, folded -- its later
+  // reports did not say them again.
+
+  // Whose an entry is: its agent's; an item nobody has, the one its last
+  // ask went to.
+  function bdNeedWho(e) {
+    if (e.card) { const u = e.card.unanswered || {}; return u.to || u.from || (e.card.agents || [])[0] || ""; }
+    return e.it.agent || "";
+  }
+  function bdIsLine(e) { return !e.card && e.it.kind === "need" && !!e.it.event; }
+  // A lead's line's words, whole (its body; its title is cut short).
+  function bdNeedText(it) { return String(it.body || it.title || "").split("\n\nWork item ")[0]; }
+
+  function bdNeedGroups(all) {
+    const by = new Map();
+    all.forEach((e) => {
+      const who = bdNeedWho(e);
+      let g = by.get(who);
+      if (!g) by.set(who, (g = { agent: who, all: [], n: [0, 0, 0], last: 0 }));
+      g.all.push(e);
+      g.n[e.rank]++;
+      g.last = Math.max(g.last, e.at);
+    });
+    const groups = [...by.values()];
+    groups.forEach((g) => {
+      g.lines = g.all.filter(bdIsLine);
+      // Its latest report's: the lines of one message have its time.
+      g.latest = g.lines.reduce((m, e) => Math.max(m, e.at), 0);
+      g.stop = g.all.filter((e) => e.rank === 0);
+      g.now = g.all.filter((e) => e.rank === 1 && (!bdIsLine(e) || e.at === g.latest));
+      g.orph = g.all.filter((e) => e.rank === 2);
+      g.old = g.lines.filter((e) => e.at !== g.latest);
+    });
+    return groups.sort((a, b) => (b.n[0] > 0) - (a.n[0] > 0) || b.last - a.last);
+  }
+
+  // Open: as the user left it; else one with what stops an agent, or the
+  // entry opened (from a card, `bd:inbox') -- and then kept open, not
+  // folded under the hand handling it as its stops go.
+  function bdGroupOpen(g) {
+    const mine = board.ngOpen.get(g.agent);
+    if (mine !== undefined) return mine;
+    const open = g.n[0] > 0 || g.all.some((e) => e.it.id === inbox.sel);
+    if (open) board.ngOpen.set(g.agent, true);
+    return open;
+  }
+  function bdOldOpen(g) { return board.ngOld.has(g.agent) || g.old.some((e) => e.it.id === inbox.sel); }
+
+  // Where an entry was said, for its 到對話.
+  function bdNeedSpot(e) {
+    if (e.card) {
+      const u = e.card.unanswered || {};
+      return Object.assign(bdAskSpot(u.ask, u.from, u.to, u.head, u.at), { name: bdNeedWho(e) });
+    }
+    const it = e.it, at = inboxMs(it.at) || 0;
+    if (it.kind === "need") return { name: it.agent, q: bdNeedText(it), ask: it.ask || "", at, want: it.ask ? "reply" : "said", project: it.project };
+    if (it.kind === "question") return { name: it.agent, q: it.preview || it.title, at, want: "said", project: it.project };
+    // A menu, a guard's call, a sign-in...: the agent as it is now, its end.
+    return { name: it.agent, project: it.project };
+  }
+
+  // An entry's detail, opened: the Inbox's (inboxDetail) less what its
+  // line says already -- its tag and title -- and a lead's line's words
+  // not twice; for an item nobody has, its block and the way to its card.
+  function bdNeedDetail(e) {
+    if (e.card) {
+      const c = e.card;
+      return bdBlock(c) + '<div class="ibacts"><button type="button" class="ibbtn" data-act="bd:goto" data-id="' + esc(c.id) + '">到工作項目 ' +
+        esc(c.id) + "</button></div>";
+    }
+    const it = e.it, narrow = phone();
+    const d = inbox.detail && inbox.detail.for === it.id ? inbox.detail : null;
+    let body = d && d.report ? d.report : String(it.body || "");
+    const title = String(it.title || "").trim();
+    if (!/…$/.test(title) && body.trim().startsWith(title)) body = body.trim().slice(title.length).trim();
+    // A lead's line's item: its button says it.
+    if (it.kind === "need") body = body.replace(/^Work item [\s\S]*$/, "").trim();
+    const meta = '<div class="ibmeta">' + inboxCli(it) + '<span class="ibagent">' + esc(it.agent) + "</span>" +
+      (it.project ? "<span>· " + esc(leaf(it.project)) + "</span>" : "") + (it.state ? "<span>· " + esc(it.state) + "</span>" : "") +
+      "<span>· " + esc(inboxAge(it.at)) + "</span></div>";
+    const acts = it.kind === "need"
+      ? (it.item ? '<div class="ibacts"><button type="button" class="ibbtn" data-act="ib:need-board" data-id="' + esc(it.id) + '">到工作項目 ' +
+          esc(it.item) + (it.itemTitle ? "：" + esc(bdClip(it.itemTitle, 40)) : "") + "</button></div>" : "")
+      : inboxActions(it, narrow);
     const hand = e.orphan ? '<div class="bdneedorph"><span class="tag t-jing">沒人接</span>' +
       "這個工作項目安靜 " + esc(bdAge(e.orphan.last)) + "，沒人接手" + bdHand(e.orphan) + "</div>" : "";
-    if (!e.card) return inboxCard(e.it, { phone: narrow, head: e.orphan ? '<span class="tag t-jing">沒人接</span>' : "", after: hand });
-    const c = e.card;
-    const it = { id: e.it.id, tag: "沒人接", tone: "red", title: c.title, at: c.last, preview: bdBlockLine(c) };
-    return inboxCard(it, {
-      pick: "bd:npick", need: true,
-      who: '<span class="ibcardwho">' + esc(c.id) + " · " + esc((c.projects || []).join("、")) + "</span>",
-      body: bdBlock(c) + '<div class="ibacts"><button type="button" class="ibbtn" data-act="bd:goto" data-id="' + esc(c.id) + '">到工作項目 ' +
-        esc(c.id) + "</button></div>",
-    });
+    return meta + (body ? inboxWhy(it, body, d && d.report ? d.images : null) : "") + acts + hand + inboxThreadInline(it, narrow, d);
+  }
+
+  // One entry, one line: its tag, title, age, 已處理 (a lead's line), 到對話
+  // -- the rest a tap away, opened under it, one at a time.
+  function bdNeedRow(e) {
+    const it = e.it, c = e.card, id = it.id, open = inbox.sel === id;
+    const tone = c ? "red" : it.tone || "";
+    return '<div class="bdnrow' + (open ? " open" : "") + '" data-tone="' + esc(tone) + '" data-id="' + esc(id) + '">' +
+      '<div class="bdnl"><button type="button" class="bdnr" data-act="' + (c ? "bd:npick" : "ib:pick") + '" data-id="' + esc(id) +
+      '" aria-expanded="' + open + '">' + (c ? '<span class="ibtag t-red">沒人接</span>' : inboxTag(it)) +
+      (e.orphan ? '<span class="tag t-jing">沒人接</span>' : "") +
+      '<span class="ibtitle">' + ibPlain(c ? c.title : it.title) + "</span>" +
+      '<span class="ibage">' + esc(inboxAge(c ? c.last : it.at)) + "</span></button>" +
+      (bdIsLine(e) ? '<button type="button" class="bdnb ok" data-act="ib:need-done" data-id="' + esc(id) + '" title="你處理好了：不再列為等你">已處理</button>' : "") +
+      bdTalkBtn(bdNeedSpot(e), "到對話", "bdnb") + "</div>" +
+      (open ? '<div class="bdnbody">' + bdNeedDetail(e) + "</div>" : "") + "</div>";
+  }
+
+  // A group's earlier lines, by work item: the newest item first.
+  function bdNeedOld(g) {
+    const by = new Map();
+    g.old.forEach((e) => { const k = e.it.item || ""; if (!by.has(k)) by.set(k, []); by.get(k).push(e); });
+    return [...by.entries()].map(([item, es]) => {
+      const c = board.cards[item], t = (c && c.title) || es[0].it.itemTitle || "";
+      return '<div class="bdnitem">' + (item ? bdLink(item) + " " + esc(bdClip(t, 60)) : "不在任何工作項目") +
+        ' <span class="cnt">' + es.length + " 件</span></div>" + es.map(bdNeedRow).join("");
+    }).join("");
+  }
+
+  function bdNeedGroupHtml(g) {
+    const open = bdGroupOpen(g);
+    const counts = NEED_RANKS.map((l, i) => (g.n[i] ? '<span class="ngn r' + i + '">' + l + " " + g.n[i] + "</span>" : "")).join("");
+    const armed = board.armed && board.armed.agent === g.agent && board.armed.until > Date.now();
+    const lines = g.lines.length;
+    const all = lines ? '<button type="button" class="bdnb nall' + (armed ? " arm" : "") + '" data-act="bd:nall" data-agent="' + esc(g.agent) + '" title="' +
+      (armed ? "再按一次：這 " + lines + " 件「需要 Jing」都處理掉" : "這組的「需要 Jing」都處理掉（不動會卡住 agent 的）") + '">' +
+      (armed ? "確定？處理 " + lines + " 件" : "整組已處理") + "</button>" : "";
+    // Its 到對話: the latest report, else its newest.
+    const spotOf = g.lines.find((e) => e.at === g.latest) || g.all.slice().sort((a, b) => b.at - a.at)[0];
+    const oldOpen = bdOldOpen(g);
+    const body = !open ? "" : '<div class="bdngb">' + g.stop.concat(g.now, g.orph).map(bdNeedRow).join("") +
+      (g.old.length ? '<button type="button" class="bdnold" data-act="bd:nold" data-agent="' + esc(g.agent) + '" aria-expanded="' + oldOpen + '">' +
+        '<span class="chev">' + (oldOpen ? "▾" : "▸") + "</span>較早的 " + g.old.length + " 件（之後的報告沒再提）</button>" +
+        (oldOpen ? '<div class="bdnolds">' + bdNeedOld(g) + "</div>" : "") : "") + "</div>";
+    return '<section class="bdng' + (open ? " open" : "") + (g.n[0] ? " stop" : "") + '" data-agent="' + esc(g.agent) + '">' +
+      '<div class="bdngh"><button type="button" class="bdngt" data-act="bd:ngroup" data-agent="' + esc(g.agent) + '" aria-expanded="' + open + '">' +
+      '<span class="chev">' + (open ? "▾" : "▸") + '</span><span class="ngw">' + esc(g.agent || "（不知道是誰的）") + "</span>" +
+      '<span class="ngc">' + counts + "</span>" +
+      '<span class="ibage">' + esc(inboxAge(g.last)) + "</span></button>" +
+      '<span class="bdnga">' + bdTalkBtn(bdNeedSpot(spotOf), "到對話 →", "bdnb") + all + "</span></div>" + body + "</section>";
   }
 
   function bdNeedHtml() {
@@ -8393,7 +8696,27 @@
     const n = bdNeedCounts(all);
     return '<h2 class="section red">要你處理 <span class="cnt">' + all.length + " 件 · " +
       NEED_RANKS.map((l, i) => (n[i] ? l + " " + n[i] : "")).filter(Boolean).join("、") + "</span></h2>" + toast +
-      '<div class="bdneeds">' + all.map(bdNeedCard).join("") + "</div>";
+      '<div class="bdneeds">' + bdNeedGroups(all).map(bdNeedGroupHtml).join("") + "</div>";
+  }
+
+  // 整組已處理, its second tap: each of the group's lines handled as one is
+  // (board-need-done, in one intent: a phone's page sends its intents one
+  // at a time, a round trip each), gone from the list at once, said how
+  // many.  What stops an agent, and what nobody has, are left as they are.
+  function bdNeedAllDone(agent) {
+    const g = bdNeedGroups(bdNeeds()).find((x) => x.agent === agent);
+    if (!g || !g.lines.length) return;
+    const ids = g.lines.map((e) => e.it.event), gone = new Set(g.lines.map((e) => e.it.id));
+    emit("board-need-done", { ids });
+    const until = Date.now() + INBOX_HOLD;
+    gone.forEach((id) => { inbox.gone.set(id, until); inbox.held.delete(id); });
+    inbox.items = inbox.items.filter((x) => !gone.has(x.id));
+    if (gone.has(inbox.sel)) { inbox.sel = ""; inbox.detail = null; }
+    const msg = "已處理 " + agent + " 的 " + ids.length + " 件「需要 Jing」";
+    inbox.toast = msg;
+    inbox.undo = null;
+    setTimeout(() => { if (inbox.toast === msg) { inbox.toast = ""; renderInbox(); } }, 6000);
+    renderBoard();
   }
 
   // Drawn as the Inbox is: a reply box being written in found again after,
@@ -8423,10 +8746,26 @@
   // The board come is of another stretch than the one picked: on its way.
   function bdRanging() { return board.got && (board.meta.days > 1 ? 7 : 1) !== board.days; }
 
+  // Beside the stretch, a chip a section -- its name, how many -- to jump
+  // to it (opened, if it was closed).  They wrap: nothing sideways.
+  function bdJumps() {
+    const chip = (k, label, n, cls) => '<button type="button" class="bdjchip' + (cls ? " " + cls : "") + (board.shut.has(k) ? " shut" : "") +
+      '" data-act="bd:jump" data-to="' + k + '">' + esc(label) + (n == null ? "" : " <b>" + n + "</b>") + "</button>";
+    const need = bdNeeds().length;
+    const out = [chip("need", "要你處理", need, need ? "red" : "")];
+    if (board.got) {
+      const cards = bdCards().filter(bdInFilter);
+      out.push(chip("now", "現在", bdWaitsShown().length), chip("items", "工作項目", cards.length),
+        chip("prs", "PR", bdAllPrs(cards).length), chip("tickets", "單號", bdTicketRows(cards).length));
+    }
+    return '<nav class="bdjumps" aria-label="跳到">' + out.join("") + "</nav>";
+  }
+
   function bdTop() {
     const btn = (d) => '<button type="button" class="bdday' + (board.days === d ? " on" : "") + '" data-act="bd:days" data-days="' + d +
       '" aria-pressed="' + (board.days === d) + '">' + bdRange(d) + "</button>";
     return '<div class="bdtop"><div class="bddays" role="group" aria-label="時間範圍：統計、工作項目、PR、單號">' + btn(1) + btn(7) + "</div>" +
+      bdJumps() +
       (board.proj || board.ticket ? '<div class="bdfilter">只看 ' +
         [board.proj ? "<b>" + esc(board.proj) + "</b>" : "", board.ticket ? "<b>" + esc(bdTkName(board.ticket)) + "</b>" : ""].filter(Boolean).join(" 裡 ") +
         " 的" + bdOnlyChips() + "</div>" : "") + "</div>";
@@ -8463,16 +8802,34 @@
     if (!main.querySelector(".bd-strip")) {
       main.removeAttribute("data-wait");
       main.innerHTML = '<div class="bd-strip"></div>' +
-        '<h2 class="section" id="bd-now">現在 <span class="cnt">只列還開著的</span></h2><div class="bd-now"></div>' +
-        '<h2 class="section" id="bd-items">工作項目 <span class="cnt">還有事的在前，同一種依最後動靜</span></h2><div class="bd-chips"></div><div class="bdarea"></div>' +
-        '<h2 class="section" id="bd-prs">所有 PR <span class="cnt">依 repo 分組 · 狀態取自 Bitbucket</span></h2><div class="bd-prs"></div>' +
-        '<h2 class="section" id="bd-tickets">所有單號 <span class="cnt bd-tn"></span></h2><div class="bd-tickets"></div>';
+        bdSecHead("now", "現在", "只列還開著的") + '<div class="bdsecb" data-sec="now"><div class="bd-now"></div></div>' +
+        bdSecHead("items", "工作項目", "還有事的在前，同一種依最後動靜") +
+        '<div class="bdsecb" data-sec="items"><div class="bd-chips"></div><div class="bdarea"></div></div>' +
+        bdSecHead("prs", "所有 PR", "依 repo 分組 · 狀態取自 Bitbucket") + '<div class="bdsecb" data-sec="prs"><div class="bd-prs"></div></div>' +
+        bdSecHead("tickets", "所有單號", "") + '<div class="bdsecb" data-sec="tickets"><div class="bd-tickets"></div></div>';
       Object.keys(board.html).forEach((k) => { if (k !== ".bd-top" && k !== ".bd-need") delete board.html[k]; });
       board.order = "";
     }
     const cards = bdCards().filter(bdInFilter);
     bdSet(box, ".bd-strip", bdStrip(cards));
-    bdSet(box, ".bd-now", bdNow());
+    // A section closed: its head alone, nothing of it drawn -- opened, all of it again.
+    const shut = {};
+    main.querySelectorAll(".bdsecb").forEach((b) => {
+      const k = b.getAttribute("data-sec"), off = (shut[k] = board.shut.has(k));
+      b.hidden = off;
+      const h = main.querySelector('.bdsech[data-sec="' + k + '"]');
+      if (h && h.getAttribute("aria-expanded") !== String(!off)) {
+        h.setAttribute("aria-expanded", String(!off));
+        h.querySelector(".chev").textContent = off ? "▸" : "▾";
+      }
+    });
+    const forget = (...ks) => ks.forEach((k) => delete board.html[k]);
+    if (shut.now) forget(".bd-now"); else bdSet(box, ".bd-now", bdNow());
+    const tk = bdTickets(cards);
+    bdSet(box, ".bd-tn", tk.head);
+    if (shut.prs) forget(".bd-prs"); else bdSet(box, ".bd-prs", bdPrs(cards));
+    if (shut.tickets) forget(".bd-tickets"); else bdSet(box, ".bd-tickets", tk.html);
+    if (shut.items) { forget(".bd-chips"); board.order = ""; return; }
     bdSet(box, ".bd-chips", bdItems(cards));
     const area = box.querySelector(".bdarea");
     const plan = bdPlan(cards);
@@ -8517,10 +8874,14 @@
         board.html["fold:" + f.proj] = h;
       });
     }
-    bdSet(box, ".bd-prs", bdPrs(cards));
-    const tk = bdTickets(cards);
-    bdSet(box, ".bd-tn", tk.head);
-    bdSet(box, ".bd-tickets", tk.html);
+  }
+
+  // A section's head: a tap folds or opens it, kept for this device.
+  function bdSecHead(k, label, cnt) {
+    const off = board.shut.has(k);
+    return '<h2 class="section bdsec" id="bd-' + k + '"><button type="button" class="bdsech" data-act="bd:sec" data-sec="' + k +
+      '" aria-expanded="' + !off + '"><span class="chev">' + (off ? "▸" : "▾") + "</span>" + esc(label) + "</button>" +
+      '<span class="cnt' + (k === "tickets" ? " bd-tn" : "") + '">' + esc(cnt) + "</span></h2>";
   }
 
   // To a card, opened and marked: whatever folds or filter hid it.
@@ -8529,7 +8890,8 @@
     if (!c) { if (id) setStatus("工作項目 " + id + (board.got ? " 不在這段時間裡" + (board.days > 1 ? "" : "：看看 7 天的") : " 還沒讀到")); return; }
     if (board.filter !== "all" && !bdShown([c]).length) board.filter = "all";
     if (board.filter === "all" && !bdAwake(c) && !bdOwnLine(c)) board.openProj.add((c.projects && c.projects[0]) || "其他");
-    board.fold.set(id, false);
+    bdOpenCard(id, true);
+    if (board.shut.delete("items")) bdKeep(BD_SHUT_KEY, board.shut);
     renderBoard();
     const card = $("bd-w-" + id);
     if (card) {
@@ -8542,8 +8904,43 @@
   function onBoardAction(act, el) {
     const id = el.getAttribute("data-id");
     if (act === "jump") {
-      const to = $("bd-" + el.getAttribute("data-to"));
+      // To a section, opened if it was closed.
+      const k = el.getAttribute("data-to") || "";
+      if (board.shut.delete(k)) { bdKeep(BD_SHUT_KEY, board.shut); renderBoard(); }
+      const to = $("bd-" + k);
       if (to) to.scrollIntoView({ block: "start", behavior: "smooth" });
+    } else if (act === "sec") {
+      const k = el.getAttribute("data-sec") || "";
+      if (!board.shut.delete(k)) board.shut.add(k);
+      bdKeep(BD_SHUT_KEY, board.shut);
+      renderBoard();
+    } else if (act === "ngroup") {
+      const a = el.getAttribute("data-agent") || "";
+      const g = bdNeedGroups(bdNeeds()).find((x) => x.agent === a);
+      if (g) board.ngOpen.set(a, !bdGroupOpen(g));
+      renderBoard();
+    } else if (act === "nold") {
+      const a = el.getAttribute("data-agent") || "";
+      const g = bdNeedGroups(bdNeeds()).find((x) => x.agent === a);
+      if (g && bdOldOpen(g)) {
+        board.ngOld.delete(a);
+        if (g.old.some((e) => e.it.id === inbox.sel)) { inbox.sel = ""; inbox.detail = null; }
+      } else board.ngOld.add(a);
+      renderBoard();
+    } else if (act === "nall") {
+      // A second tap within a few seconds does it; the first asks for it.
+      const a = el.getAttribute("data-agent") || "";
+      if (board.armed && board.armed.agent === a && board.armed.until > Date.now()) {
+        board.armed = null;
+        bdNeedAllDone(a);
+        return;
+      }
+      const armed = (board.armed = { agent: a, until: Date.now() + BD_ARM_MS });
+      setTimeout(() => { if (board.armed === armed) { board.armed = null; renderBoard(); } }, BD_ARM_MS + 50);
+      renderBoard();
+    } else if (act === "talk") {
+      bdTalk({ name: el.getAttribute("data-name") || "", q: el.getAttribute("data-q") || "", ask: el.getAttribute("data-ask") || "",
+               at: +el.getAttribute("data-at") || 0, want: el.getAttribute("data-want") || "", project: el.getAttribute("data-proj") || "" });
     } else if (act === "graph") {
       board.graph = el.getAttribute("data-g") === "all" ? "all" : "now";
       renderBoard();
@@ -8556,7 +8953,7 @@
       renderBoard();
     } else if (act === "fold") {
       const c = board.cards[id];
-      if (c) board.fold.set(id, !bdFolded(c));
+      if (c) bdOpenCard(id, bdFolded(c));
       renderBoard();
     } else if (act === "tl") {
       if (board.tlOpen.has(id)) board.tlOpen.delete(id);
@@ -8579,7 +8976,7 @@
       if (!it) { inbox.sel = id || ""; showInbox(); return; }
       if (inbox.sel !== id) inboxSelect(it);
       renderBoard();
-      const to = $("bd-need");
+      const to = app.querySelector('.bdnrow[data-id="' + CSS.escape(id) + '"]') || $("bd-need");
       if (to) to.scrollIntoView({ block: "start", behavior: "smooth" });
     } else if (act === "npick") {
       // An item nobody has, in 要你處理: opened in place, one at a time.

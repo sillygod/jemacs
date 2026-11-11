@@ -1,7 +1,8 @@
 // The Board tab: the herd's work, item by item.  Watched only while shown;
 // the whole once, then the cards that changed, by version -- a version
 // missed asks for the whole again; the map, the open asks nested under the
-// one they were made answering; work going on open, work at rest folded; a
+// one they were made answering; every card folded to a line or two until
+// opened (herd-board-fold.js), work at rest folded by project; a
 // timeline asked for when opened, its FYI and 收到 folded away; the PRs by
 // repository; what needs Jing on top, handled there (herd-board-need.js
 // has it all).  The phone: one column, no
@@ -16,6 +17,13 @@ const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "F
 const DESK = { viewport: { width: 1360, height: 980 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false };
 const SHOTS = process.env.BOARD_SHOTS || "";
 const ops = (intents, op) => intents.filter((i) => i.op === op);
+// Cards start folded: these opened, as a tap on each does.
+async function openCards(page, ids) {
+  for (const id of ids) {
+    if (await page.$("#bd-w-" + id + ".folded")) await page.click("#bd-w-" + id + " .wh");
+    await sleep(40);
+  }
+}
 // The fixture's waits from the Inbox, as the Inbox sends them.
 const INBOX = JING.filter((j) => !j.line).map((j) => ({ id: j.id, kind: j.kind, group: "need", tag: j.tag,
   tone: j.kind === "blocked" ? "warn" : "accent", agent: j.agent, cli: "claude", project: "~/src/" + j.project + "/", title: j.title,
@@ -59,8 +67,8 @@ async function shoot(page, width, file) {
         /會卡住 agent 2/.test(tiles[2].sub) && /需要 Jing 2/.test(tiles[2].sub), tiles[2].sub);
 
       const order = await page.$$eval(".bdarea .wi", (ws) => ws.map((w) => w.id.slice(5) + ":" + w.querySelector(".pill").textContent + (w.classList.contains("folded") ? ":f" : "")));
-      check("desk: on top what needs Jing's eye -- live, waiting on Jing, nobody's, a PR open -- then the items at rest of some size, folded",
-        order.join(" ") === "c1a2b3:進行中 d4e5f6:進行中 e7f8a9:進行中 b1c2d3:等 Jing c6d7e8:沒人接 f0a1b2:收尾 9a8b7c:安靜:f 0f1e2d:完成:f", order);
+      check("desk: on top what needs Jing's eye -- live, waiting on Jing, nobody's, a PR open -- then the items at rest of some size, each folded",
+        order.join(" ") === "c1a2b3:進行中:f d4e5f6:進行中:f e7f8a9:進行中:f b1c2d3:等 Jing 1:f c6d7e8:沒人接:f f0a1b2:收尾:f 9a8b7c:安靜:f 0f1e2d:完成:f", order);
       const folds = await page.$$eval(".bdfoldh", (fs) => fs.map((f) => f.querySelector(".fl").textContent));
       check("desk: the rest at rest, a line a project, the latest first",
         folds.join(" | ") === "shop：零星 3 則 · 最後 40 分前 | billing：零星 3 則 · 最後 1 小時前 | infra：零星 2 則（完成 1） · 最後 5 小時前 | mobile：零星 1 則 · 最後 8 小時前", folds);
@@ -70,6 +78,7 @@ async function shoot(page, width, file) {
       check("desk: a tap opens that project's cards", opened.join() === "51a004,51a005,a3b4c5", opened);
       check("desk: the others stay folded", !(await page.$('.bdfold[data-p="shop"] .wi')));
 
+      await openCards(page, ["c1a2b3", "e7f8a9", "b1c2d3", "c6d7e8"]);
       const c1 = await page.$eval("#bd-w-c1a2b3", (w) => ({
         prs: [...w.querySelectorAll(".bdpr")].map((p) => p.textContent), blk: w.querySelector(".blk").textContent,
         tags: [...w.querySelectorAll(".tk,.pj")].map((t) => t.textContent), tl: w.querySelector(".bdtlb").textContent }));
@@ -156,9 +165,10 @@ async function shoot(page, width, file) {
       await sleep(60);
       check("desk: Handled tells Emacs which need", ops(intents, "board-need-done").map((i) => i.id).join() === "11",
         ops(intents, "board-need-done"));
-      const jl = await page.$$eval(".bdneeds .ibcard", (ls) => ls.map((l) => l.getAttribute("data-id")));
-      check("desk: what needs Jing, on top: what stops an agent first, then the leads' lines", jl.join("|") ===
-        "blocked:pushfix|question:lead-infra:1|need:11|need:12", jl);
+      const jl = await page.$$eval(".bdneeds .bdnrow", (ls) => ls.map((l) => l.getAttribute("data-id")));
+      check("desk: what needs Jing, on top, by agent: what stops an agent first, then the lead's latest line", jl.join("|") ===
+        "blocked:pushfix|question:lead-infra:1|need:11", jl);
+      check("desk: the lead's earlier line under it, folded", /較早的 1 件/.test(await page.textContent('.bdng[data-agent="lead-infra"] .bdnold')));
       check("desk: no 等 Jing section at the foot any more", !(await page.$("#bd-jing")) && !(await page.$(".bd-foot")));
 
       // Filters.
@@ -191,10 +201,13 @@ async function shoot(page, width, file) {
         agent: "lead-infra", cli: "", project: "", title: "在今晚的維護時段跑 rotate.sh", at: Date.now() - 60e3, whyLabel: "A lead's 需要 Jing line",
         body: "在今晚的維護時段跑 rotate.sh", preview: "在今晚的維護時段跑 rotate.sh", state: "", read: false, override: null, event: 11, item: "b1c2d3" }] }));
 
-      // Handled on the Board, as the Inbox handles it: the card opened in place.
+      // Handled on the Board, as the Inbox handles it: its line opened in
+      // place -- its group, nothing in it stopping an agent now, folded.
+      if (!(await page.$('.bdng.open[data-agent="lead-infra"]'))) await page.click('.bdngt[data-agent="lead-infra"]');
+      await sleep(80);
       await page.click('.bdneeds [data-act="ib:pick"][data-id="need:11"]');
       await sleep(80);
-      await page.click('.bdneeds [data-act="ib:need-done"]');
+      await page.click('.bdneeds [data-act="ib:need-done"][data-id="need:11"]');
       await sleep(80);
       check("desk: a need is handled on the Board, as in the Inbox", ops(intents, "board-need-done").length === 2 &&
         ops(intents, "board-need-done")[1].id === 11 && (await page.getAttribute("#app", "data-view")) === "board" &&
@@ -221,11 +234,12 @@ async function shoot(page, width, file) {
       const over = await page.$$eval(".boardpage *", (els) => els.filter((e) => e.getBoundingClientRect().right > window.innerWidth + 1 &&
         !e.closest(".gscroll")).map((e) => e.className || e.tagName).slice(0, 5));
       check("phone: no part of the board past the screen's edge", !over.length, over);
-      const tap = await page.$eval("#bd-w-9a8b7c .wh", (b) => b.getBoundingClientRect().height);
+      const tap = await page.$eval("#bd-w-c1a2b3 .wh", (b) => b.getBoundingClientRect().height);
       const fh = await page.$eval(".bdfoldh", (b) => b.getBoundingClientRect().height);
       check("phone: a project's fold line is a finger's target", fh >= 40, fh);
-      check("phone: a folded card's head is a finger's target", tap >= 28, tap);
+      check("phone: a folded card is a finger's target", tap >= 40, tap);
       if (SHOTS) {
+        await openCards(page, ["c1a2b3"]);
         await page.click('#bd-w-c1a2b3 .bdtlb');
         await page.evaluate((t) => GM.boardTimeline(t), TIMELINE);
         await sleep(150);

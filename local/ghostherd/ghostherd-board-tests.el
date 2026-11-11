@@ -325,6 +325,36 @@ need, and the board is looked at again."
     (ghostherd-memory-page--handle '((op . "inbox-set") (id . "report:lead-a:3") (done . t)))
     (should-not (assoc "herd_board_need_close" requests))))
 
+(ert-deftest ghostherd-test-board-a-group-handled ()
+  "整組已處理: one intent names a group's needs (`ids'); the sidecar closes
+each as it closes one, in turn -- one it could not close said, the rest
+closed all the same -- and the board is looked at again once, after the
+last.  Each once; what is not a need's number is let be."
+  (ghostherd-board-test--with
+    (setq reply (lambda (m _p) (pcase m ("herd_board" (ghostherd-board-test--reply)) (_ nil))))
+    (ghostherd-memory-page--handle '((op . "board-watch")))
+    (setq requests nil calls nil)
+    (let ((real (symbol-function 'ghostherd-memory-request-async)))
+      (cl-letf (((symbol-function 'ghostherd-memory-request-async)
+                 (lambda (method cb &optional params err-cb)
+                   (if (and (equal method "herd_board_need_close") (equal (plist-get params :id) 5))
+                       (progn (setq requests (append requests (list (list method params))))
+                              (funcall err-cb "no need 5"))
+                     (funcall real method cb params err-cb)))))
+        (ghostherd-memory-page--handle '((op . "board-need-done") (ids . [4 5 6 4 "x" -1])))))
+    (should (equal (seq-take requests 3)
+                   '(("herd_board_need_close" (:id 4)) ("herd_board_need_close" (:id 5)) ("herd_board_need_close" (:id 6)))))
+    (should (equal (car (nth 3 requests)) "herd_board"))
+    (should (= 1 (seq-count (lambda (r) (equal (car r) "herd_board")) requests)))
+    (should (string-search "no need 5" (or (ghostherd-test--call calls "showError") "")))
+    ;; One alone, as before; none named, nothing asked.
+    (setq requests nil)
+    (ghostherd-memory-page--handle '((op . "board-need-done") (id . 9)))
+    (should (equal (car requests) '("herd_board_need_close" (:id 9))))
+    (setq requests nil)
+    (ghostherd-memory-page--handle '((op . "board-need-done") (ids . [])))
+    (should-not requests)))
+
 (ert-deftest ghostherd-test-inbox-has-the-leads-needs ()
   "The Inbox lists each need the leads' lines say waits on the user, from
 the sidecar; a sidecar without them leaves the rest as it was."
@@ -336,7 +366,7 @@ the sidecar; a sidecar without them leaves the rest as it was."
         (setq reply (lambda (m _p)
                       (pcase m
                         ("herd_needs" '(:needs ((:id 7 :text "run rotate.sh" :agent "lead-infra" :at 1000
-                                                     :item "w1" :itemTitle "Rotate the certs"))))
+                                                     :item "w1" :itemTitle "Rotate the certs" :ask "abcd0001"))))
                         (_ nil))))
         (ghostherd-inbox--tick)
         (let* ((items (append (plist-get (ghostherd-test--call calls "renderInbox") :items) nil))
@@ -346,6 +376,9 @@ the sidecar; a sidecar without them leaves the rest as it was."
           (should (equal (plist-get it :group) "need"))
           (should (equal (plist-get it :event) 7))
           (should (string-search "Rotate the certs" (plist-get it :body)))
+          ;; The Board's: its item's title, the ask whose answer wrote it.
+          (should (equal (plist-get it :itemTitle) "Rotate the certs"))
+          (should (equal (plist-get it :ask) "abcd0001"))
           (should (= 1 (plist-get (ghostherd-test--call calls "renderInbox") :count))))
         (setq fail "Method not found: herd_needs" calls nil ghostherd-inbox--sig nil)
         (ghostherd-inbox--tick)

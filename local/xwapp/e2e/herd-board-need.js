@@ -43,10 +43,27 @@ const ORPHAN = Object.assign({}, CARDS.find((c) => c.id === "9a8b7c"), { id: "or
   projects: ["billing"], agents: ["lead-billing"], last: now - 300 * min, labels: [], tickets: [],
   unanswered: { status: "failed", from: "lead-billing", to: "ratefix", head: "對帳報表重跑一次" } });
 const BOARD = Object.assign({}, FULL, { cards: FULL.cards.concat([ORPHAN]) });
-const ORDER = ["guard:g1", "blocked:pushfix", "question:lead-infra:1", "proposal:5", "ask-failed:abcd1234", "need:11", "need:12", "orphan:orph01"];
+// By agent: those with what stops them first (certrot, pushfix, lead-infra
+// -- its stops, its latest line, its earlier one), then the newest
+// (lead-shop's failed ask; ratefix, where the item nobody has stopped).
+const ORDER = ["guard:g1", "blocked:pushfix", "question:lead-infra:1", "proposal:5", "need:11", "need:12", "ask-failed:abcd1234", "orphan:orph01"];
 
-const listed = (page) => page.$$eval(".bdneeds .ibcard", (cs) => cs.map((c) => c.getAttribute("data-id")));
-const open = (page) => page.$$eval(".bdneeds .ibcard.open", (cs) => cs.map((c) => c.getAttribute("data-id")));
+// What is listed, in order: every group and its earlier lines opened
+// first (by agent, folded -- herd-board-fold.js has that).
+const listed = async (page) => {
+  // One at a time: each tap draws the list again.
+  for (let k = 0; k < 20; k++) {
+    const more = await page.evaluate(() => {
+      const b = document.querySelector('.bdneeds .bdng:not(.open) .bdngt, .bdneeds .bdnold[aria-expanded="false"]');
+      if (b) b.click();
+      return !!b;
+    });
+    if (!more) break;
+    await sleep(30);
+  }
+  return page.$$eval(".bdneeds .bdnrow", (cs) => cs.map((c) => c.getAttribute("data-id")));
+};
+const open = (page) => page.$$eval(".bdneeds .bdnrow.open", (cs) => cs.map((c) => c.getAttribute("data-id")));
 
 (async () => {
   const browser = await webkit.launch();
@@ -83,7 +100,7 @@ const open = (page) => page.$$eval(".bdneeds .ibcard.open", (cs) => cs.map((c) =
       await page.evaluate((p) => GM.boardPatch(p), BOARD);
       await sleep(150);
       const all = await listed(page);
-      check(W("three sources, each once, in order: what stops an agent, what else needs Jing, what nobody has"),
+      check(W("three sources, each once, by agent: what stops one first, then its latest, its earlier"),
         all.join() === ORDER.join(), all);
       check(W("a lead's line the Inbox has is its item, not a second one"), all.filter((id) => id === "need:11").length === 1);
       check(W("an item nobody has whose line is listed rides on that line, said so"),
@@ -107,14 +124,14 @@ const open = (page) => page.$$eval(".bdneeds .ibcard.open", (cs) => cs.map((c) =
       await tap('.bdneeds [data-act="ib:pick"][data-id="question:lead-infra:1"]');
       await sleep(80);
       check(W("a tap opens a card in place"), (await open(page)).join() === "question:lead-infra:1");
-      await page.click('.bdneeds .ibcard.open .ibreplybox');
-      await page.click('.bdneeds .ibcard.open .ibwhy');
+      await page.click('.bdneeds .bdnrow.open .ibreplybox');
+      await page.click('.bdneeds .bdnrow.open .bdnbody .ibmeta');
       await sleep(60);
       check(W("taps in it -- its box, its words -- leave it open"), (await open(page)).join() === "question:lead-infra:1");
       await tap('.bdneeds [data-act="ib:pick"][data-id="blocked:pushfix"]');
       await sleep(60);
       check(W("another tapped: that one open, one at a time"), (await open(page)).join() === "blocked:pushfix");
-      await tap('.bdneeds .ibcard.open .ibcardhead');
+      await tap('.bdneeds .bdnrow.open .bdnr');
       await sleep(60);
       check(W("its head tapped: closed"), (await open(page)).length === 0);
 
@@ -123,7 +140,7 @@ const open = (page) => page.$$eval(".bdneeds .ibcard.open", (cs) => cs.map((c) =
         if (!(await open(page)).includes(id)) await tap('.bdneeds [data-act="ib:pick"][data-id="' + id + '"]');
         await sleep(60);
         const n = intents.length;
-        await tap('.bdneeds .ibcard.open ' + sel);
+        await tap('.bdneeds .bdnrow.open ' + sel);
         await sleep(100);
         return intents.slice(n).filter((i) => i.op !== "inbox-set" || act === "inbox-set");
       };
@@ -133,7 +150,7 @@ const open = (page) => page.$$eval(".bdneeds .ibcard.open", (cs) => cs.map((c) =
       check(W("a guarded call approved once"), same(sent, [{ op: "guard-approve", id: "g1" }]), sent);
       await tap('.bdneeds [data-act="ib:pick"][data-id="question:lead-infra:1"]');
       await sleep(60);
-      await page.fill('.bdneeds .ibcard.open .ibreplybox', "等今晚的維護時段");
+      await page.fill('.bdneeds .bdnrow.open .ibreplybox', "等今晚的維護時段");
       sent = await did("question:lead-infra:1", "lead-say", '[data-act="ib:reply"]');
       check(W("a question answered, through its lead"), same(sent, [{ op: "lead-say", project: "~/src/infra/", text: "等今晚的維護時段" }]), sent);
       sent = await did("proposal:5", "memory-proposal-reject", '[data-act="ib:prop-reject"]');
@@ -151,10 +168,10 @@ const open = (page) => page.$$eval(".bdneeds .ibcard.open", (cs) => cs.map((c) =
       // ---- An item nobody has -------------------------------------------------
       await tap('.bdneeds [data-act="bd:npick"][data-id="orphan:orph01"]');
       await sleep(80);
-      const orph = await page.$eval('.bdneeds .ibcard.open', (c) => c.textContent);
+      const orph = await page.$eval('.bdneeds .bdnrow.open', (c) => c.textContent);
       check(W("an item nobody has opens to why, with 交給 lead and the way to its card"), /失敗/.test(orph) && /對帳報表重跑一次/.test(orph) &&
-        !!(await page.$('.bdneeds .ibcard.open [data-act="bd:hand"]')) && !!(await page.$('.bdneeds .ibcard.open [data-act="bd:goto"][data-id="orph01"]')), orph);
-      await tap('.bdneeds .ibcard.open [data-act="bd:goto"]');
+        !!(await page.$('.bdneeds .bdnrow.open [data-act="bd:hand"]')) && !!(await page.$('.bdneeds .bdnrow.open [data-act="bd:goto"][data-id="orph01"]')), orph);
+      await tap('.bdneeds .bdnrow.open [data-act="bd:goto"]');
       await sleep(700);
       const seen = await page.evaluate(() => { const c = document.getElementById("bd-w-orph01"); const r = c && c.getBoundingClientRect();
         return !!c && !c.classList.contains("folded") && r.top >= 0 && r.top < window.innerHeight; });
@@ -175,7 +192,7 @@ const open = (page) => page.$$eval(".bdneeds .ibcard.open", (cs) => cs.map((c) =
       await sleep(100);
       const none = await page.evaluate(() => { const p = document.querySelector(".bd-need .bdneednone");
         return { text: p && p.textContent, h: p ? Math.round(p.getBoundingClientRect().height) : 0, head: !!document.querySelector(".bd-need .section"),
-                 cards: document.querySelectorAll(".bdneeds .ibcard").length }; });
+                 cards: document.querySelectorAll(".bdneeds .bdnrow").length }; });
       check(W("nothing left: one quiet line, not a section"), none.text === "現在沒有要你處理的" && none.h > 0 && none.h < 30 && !none.head && !none.cards, none);
       await sleep(6200);
       check(W("what was done is said a while, then the line alone"), !(await page.$(".bd-need .ibtoast")));
@@ -235,7 +252,7 @@ const open = (page) => page.$$eval(".bdneeds .ibcard.open", (cs) => cs.map((c) =
         const wide = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth, w: window.innerWidth,
           over: [...document.querySelectorAll(".bd-need *")].filter((e) => e.getBoundingClientRect().right > window.innerWidth + 1).length }));
         check(W("要你處理 fits the screen, a card open, nothing sideways"), wide.doc <= wide.w && wide.over === 0, wide);
-        const btn = await page.$$eval(".bdneeds .ibcard.open .ibbtn", (bs) => bs.map((b) => Math.round(b.getBoundingClientRect().height)));
+        const btn = await page.$$eval(".bdneeds .bdnrow.open .ibbtn", (bs) => bs.map((b) => Math.round(b.getBoundingClientRect().height)));
         check(W("its buttons a finger's size"), btn.length > 0 && btn.every((x) => x >= 40), btn);
       }
       check(W("no page errors"), !errors.length, errors);
