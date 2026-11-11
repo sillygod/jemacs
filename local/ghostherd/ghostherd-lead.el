@@ -300,6 +300,12 @@ a report with a line of its own for each that applies, the item's id in
 brackets after the word when it covers more than one:
   需要 Jing：what the user must do (\"需要 Jing：無\" once nothing is)
   部署：what went where -- the PR, the environment
+A 需要 Jing line stays open on the user's Board until it is marked
+handled.  One the user has answered -- in this chat or elsewhere -- or
+that you have said again under another item, mark handled yourself:
+\"$GHOSTHERD_HERD\" need done ID... --why \"one line\" (\"$GHOSTHERD_HERD\"
+need list shows their ids; the herd lists yours as a turn begins, when
+one is new).  Never one the user has not dealt with.
 
 When the work needs a change in another project -- an API it serves, a
 config it owns, a bug on its side -- do not edit its checkout, and do

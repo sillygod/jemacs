@@ -250,9 +250,10 @@ asked again until it answers or is abandoned."
 ;;; Phase 2: the leads' lines, nobody's items, the Inbox's needs
 
 (ert-deftest ghostherd-test-board-nobody-has-it ()
-  "An item quiet past `ghostherd-board-orphan-hours' with a lead's need
-open, or whose last ask went nowhere, is nobody's -- `orphan'; quiet less
-long it waits on the user; a live one stays live, a closed one done."
+  "An item quiet past `ghostherd-board-orphan-hours' whose last ask went
+nowhere is nobody's -- `orphan'; one with a lead's need open waits on the
+user however long -- its lead's, never nobody's; a live one stays live, a
+closed one done.  (The rule here is a sidecar's from before it said.)"
   (ghostherd-board-test--with
     (let* ((now (* 1000 (float-time)))
            (old (- now (* 5 3600 1000.0)))
@@ -269,15 +270,15 @@ long it waits on the user; a live one stays live, a closed one done."
       (let ((st (mapcar (lambda (c) (cons (plist-get c :id) (plist-get c :status)))
                         (append (plist-get (ghostherd-test--call calls "boardPatch") :cards) nil))))
         (should (equal (sort st (lambda (a b) (string< (car a) (car b))))
-                       '(("w1" . "orphan") ("w2" . "jing") ("w3" . "orphan") ("w4" . "live") ("w5" . "done") ("w6" . "quiet")))))
+                       '(("w1" . "jing") ("w2" . "jing") ("w3" . "orphan") ("w4" . "live") ("w5" . "done") ("w6" . "quiet")))))
       ;; Its hours are the user's.
       (let ((ghostherd-board-orphan-hours 24))
         (setq calls nil)
         (ghostherd-memory-page--handle '((op . "board-resend")))
-        (should (equal (plist-get (seq-find (lambda (c) (equal (plist-get c :id) "w1"))
+        (should (equal (plist-get (seq-find (lambda (c) (equal (plist-get c :id) "w3"))
                                             (append (plist-get (ghostherd-test--call calls "boardPatch") :cards) nil))
                                   :status)
-                       "jing"))))))
+                       "quiet"))))))
 
 (ert-deftest ghostherd-test-board-nobody-has-it-as-the-sidecar-says ()
   "Whose an item is, the sidecar says when it marks a card `orphan' --
@@ -293,16 +294,49 @@ hours."
            (board (ghostherd-board-test--reply
                    (ghostherd-board-test--card "w1" "quiet" :orphan t :last (- now 60000) :needs need)
                    (ghostherd-board-test--card "w2" "quiet" :orphan nil :last (- now (* 9 3600 1000.0)) :needs need)
-                   (ghostherd-board-test--card "w3" "quiet" :last (- now (* 9 3600 1000.0)) :needs need))))
+                   (ghostherd-board-test--card "w3" "quiet" :last (- now (* 9 3600 1000.0)) :needs need)
+                   (ghostherd-board-test--card "w4" "quiet" :last (- now (* 9 3600 1000.0))
+                                               :unanswered (list :ask "a1" :status "failed")))))
       (setq reply (lambda (m _p) (pcase m ("herd_board" board) (_ nil))))
       (ghostherd-memory-page--handle '((op . "board-watch")))
       (should (equal (plist-get (cadr (car requests)) :orphan_hours) 6))
       (let* ((cards (append (plist-get (ghostherd-test--call calls "boardPatch") :cards) nil))
              (st (mapcar (lambda (c) (cons (plist-get c :id) (plist-get c :status))) cards)))
         (should (equal (sort st (lambda (a b) (string< (car a) (car b))))
-                       '(("w1" . "orphan") ("w2" . "jing") ("w3" . "orphan"))))
+                       '(("w1" . "orphan") ("w2" . "jing") ("w3" . "jing") ("w4" . "orphan"))))
         ;; The page reads it as true or false.
         (should (eq (plist-get (seq-find (lambda (c) (equal (plist-get c :id) "w2")) cards) :orphan) :json-false))))))
+
+(ert-deftest ghostherd-test-board-long-waits-and-lines-leads-marked ()
+  "A card waiting on the user long (`late', 等你 N 小時) says so, true or
+false; the lines leads marked handled themselves (`herd need done') go to
+the page as the board's `ended', an array -- again only when they changed."
+  (ghostherd-board-test--with
+    (let* ((now (* 1000 (float-time)))
+           (need (list (list :id 7 :kind "need" :text "pick one" :agent "lead-a" :at (- now (* 9 3600 1000.0)))))
+           (ended (list (list :id 5 :item "w1" :text "rotate the keys" :agent "lead-a" :by "lead-a"
+                              :why "answered in the chat" :at (- now 600000) :closedAt (- now 60000) :itemTitle "")))
+           (board (append (ghostherd-board-test--reply
+                           (ghostherd-board-test--card "w1" "quiet" :orphan nil :late t :last (- now (* 9 3600 1000.0)) :needs need)
+                           (ghostherd-board-test--card "w2" "quiet" :orphan nil :late nil :last (- now 60000) :needs need))
+                          (list :ended ended))))
+      (setq reply (lambda (m _p) (pcase m ("herd_board" board) (_ nil))))
+      (ghostherd-memory-page--handle '((op . "board-watch")))
+      (let* ((patch (ghostherd-test--call calls "boardPatch"))
+             (cards (append (plist-get patch :cards) nil)))
+        (should (eq (plist-get (seq-find (lambda (c) (equal (plist-get c :id) "w1")) cards) :late) t))
+        (should (eq (plist-get (seq-find (lambda (c) (equal (plist-get c :id) "w2")) cards) :late) :json-false))
+        (should (equal (mapcar (lambda (c) (plist-get c :status)) cards) '("jing" "jing")))
+        (should (vectorp (plist-get patch :ended)))
+        (should (equal (plist-get (aref (plist-get patch :ended) 0) :why) "answered in the chat"))
+        (should (equal (plist-get (aref (plist-get patch :ended) 0) :closedAt) (- now 60000))))
+      ;; Unchanged: not sent again; none: an empty array.
+      (setq calls nil)
+      (ghostherd-board--tick)
+      (should-not (plist-member (ghostherd-test--call calls "boardPatch") :ended))
+      (setq board (plist-put board :ended nil) calls nil)
+      (ghostherd-board--tick)
+      (should (equal (plist-get (ghostherd-test--call calls "boardPatch") :ended) [])))))
 
 (ert-deftest ghostherd-test-board-leads-lines-before-the-inbox ()
   "What waits on the user: the leads' need lines first, newest first --
@@ -452,11 +486,13 @@ orders its keys."
 
 (ert-deftest ghostherd-test-roles-teach-the-board ()
   "Every lead, and primary, is told how to keep the Board right: the item
-an ask goes on with, a relay, closing, and the two fixed lines."
+an ask goes on with, a relay, closing, the two fixed lines, and marking
+its own 需要 Jing lines handled once the user answered them."
   (require 'ghostherd-primary)
-  (dolist (words '("--item ID" "--relay-of\nASK" "item close ID" "需要 Jing：" "部署：" "需要 Jing：無"))
+  (dolist (words '("--item ID" "--relay-of\nASK" "item close ID" "需要 Jing：" "部署：" "需要 Jing：無"
+                   "need done ID... --why" "need list"))
     (should (string-search (replace-regexp-in-string "\\\\n" "\n" words) ghostherd--lead-role)))
-  (dolist (words '("--item ID" "--relay-of ASK" "需要 Jing：" "部署："))
+  (dolist (words '("--item ID" "--relay-of ASK" "需要 Jing：" "部署：" "need done ID... --why"))
     (should (string-search words ghostherd--primary-role))))
 
 ;;; Ways out of the Board: names to rooms, the badge with the tab closed

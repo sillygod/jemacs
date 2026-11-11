@@ -28,7 +28,7 @@ async function openCards(page, ids) {
     await sleep(40);
   }
 }
-const OPEN = ["c1a2b3", "d4e5f6", "b1c2d3", "c6d7e8"];
+const OPEN = ["c1a2b3", "d4e5f6", "b1c2d3", "c6d7e8", "e9f0a1"];
 
 async function boardOpen(page, intents, patch) {
   await page.click('.tab[data-tab="board"]');
@@ -70,8 +70,8 @@ async function boardOpen(page, intents, patch) {
       check("desk: none, no badge", (await page.textContent("#board-n")) === "");
 
       await boardOpen(page, intents);
-      check("desk: with the tab open, the count is its own cards': 沒人接 and 等 Jing by a lead's line",
-        (await page.textContent("#board-n")) === "2");
+      check("desk: with the tab open, the count is its own cards': 等 Jing by a lead's line (long or not) and 沒人接",
+        (await page.textContent("#board-n")) === "3");
 
       // Names are ways to rooms; ids to Threads.
       const row = await page.$eval(".bdwaits .wait .wrow", (r) => ({
@@ -158,19 +158,31 @@ async function boardOpen(page, intents, patch) {
       await page.click('#bd-w-b1c2d3 [data-act="bd:reply-send"]');
       await sleep(80);
       const said = ops(intents, "lead-say").slice(-1)[0] || {};
-      check("desk: a card waiting on Jing answers through the Inbox's way, its lead's project",
-        said.project === P("infra") && said.text === "今晚跑，我來" && !(await page.$("#bd-w-b1c2d3 .bdreply")), said);
+      check("desk: a card waiting on Jing answers through the Inbox's way, its lead's project, saying which lines it answers",
+        said.project === P("infra") && said.text === "（關於工作項目 b1c2d3；你在這裡還開著的「需要 Jing」：#11）\n今晚跑，我來" &&
+        !(await page.$("#bd-w-b1c2d3 .bdreply")), said);
+      // One waited on long: answered from itself as well, to the lead that wrote it.
+      await page.click('#bd-w-c6d7e8 [data-act="bd:reply-open"]');
+      await sleep(60);
+      const ph = await page.getAttribute("#bd-w-c6d7e8 .bdreply textarea", "placeholder");
+      check("desk: one waited on long has the same reply box, to the lead that wrote its line", /寫給 lead-infra（經它的專案 lead）/.test(ph), ph);
+      await page.fill("#bd-w-c6d7e8 .bdreply textarea", "只 API");
+      await page.click('#bd-w-c6d7e8 [data-act="bd:reply-send"]');
+      await sleep(80);
+      const said2 = ops(intents, "lead-say").slice(-1)[0] || {};
+      check("desk: and it goes to its lead, saying which line",
+        said2.project === P("infra") && said2.text === "（關於工作項目 c6d7e8；你在這裡還開著的「需要 Jing」：#12）\n只 API", said2);
 
       // 交給 lead: the lead's room, the message written, not sent.
       const sends = ops(intents, "agent-prompt").length + ops(intents, "lead-say").length;
-      await page.click('#bd-w-c6d7e8 [data-act="bd:hand"]');
+      await page.click('#bd-w-e9f0a1 [data-act="bd:hand"]');
       await sleep(120);
       check("desk: 交給 lead opens that project's lead's room", (ops(intents, "room-watch").slice(-1)[0] || {}).project === P("infra"));
       await page.evaluate((h) => GM.renderHerd(h), herdOf(AGENTS));
       await sleep(250);
       const box = await page.$eval('.rcol[data-name="lead-infra"] textarea.agent-text', (t) => t.value);
-      check("desk: its box holds the message, what is left of it said",
-        box.startsWith("這件沒人接：整理 nginx 的 rate limit 設定（工作項目 c6d7e8）") && box.includes("三個方案選一個"), box);
+      check("desk: its box holds the message, where its last ask went said",
+        box === "這件沒人接：CDN 快取規則改成依路徑（工作項目 e9f0a1）\n最後一則 ask 失敗了：把 CDN 快取規則改成依路徑", box);
       check("desk: and nothing is sent", ops(intents, "agent-prompt").length + ops(intents, "lead-say").length === sends);
       await page.click('[data-act="bd:back"]');
       await sleep(150);
@@ -178,8 +190,13 @@ async function boardOpen(page, intents, patch) {
       const noLead = Object.assign({}, FULL, { v: 9, meta: Object.assign({}, FULL.meta, { agents: AGENTS.filter((a) => a.name !== "lead-infra") }) });
       await page.evaluate((p) => GM.boardPatch(p), noLead);
       await sleep(120);
+      // Its lines' lead gone too: nobody to answer them -- said, and handed on.
+      const left = await page.$eval("#bd-w-c6d7e8", (w) => ({ blk: w.querySelector(".blk").textContent,
+        hand: !!w.querySelector('[data-act="bd:hand"]'), reply: !!w.querySelector('[data-act="bd:reply-open"]') }));
+      check("desk: a line whose lead left the herd says so, handed to the project's lead, no reply box",
+        /寫的 lead-infra 已不在 herd/.test(left.blk) && left.hand && !left.reply, left);
       const rws = ops(intents, "room-watch").length;
-      await page.click('#bd-w-c6d7e8 [data-act="bd:hand"]');
+      await page.click('#bd-w-e9f0a1 [data-act="bd:hand"]');
       await sleep(80);
       check("desk: a project with no lead says so, starts none",
         /infra 現在沒有 lead/.test(await page.textContent("#status")) && ops(intents, "room-watch").length === rws &&
@@ -225,7 +242,7 @@ async function boardOpen(page, intents, patch) {
       check("phone: narrowed to a project, said on top, nothing sideways", /只看 billing/.test(wide.bar) && wide.doc <= wide.w, wide);
       const sub = await page.$eval(".bdtile .sub", (e) => e.textContent);
       check("phone: the items tile counts its own asks, not every project's", /billing 的工作項目共 \d+ 則 ask/.test(sub), sub);
-      const t = await page.$eval('#bd-w-c6d7e8 [data-act="bd:hand"]', (b) => b.getBoundingClientRect().height).catch(() => null);
+      const t = await page.$eval('#bd-w-e9f0a1 [data-act="bd:hand"]', (b) => b.getBoundingClientRect().height).catch(() => null);
       check("phone: 交給 lead is a finger's target", t === null || t >= 30, t);
       if (SHOTS) {
         await page.evaluate(() => { document.querySelector("#app").scrollTop = 0; });

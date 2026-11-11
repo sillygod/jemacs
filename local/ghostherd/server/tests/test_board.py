@@ -31,8 +31,8 @@ def _deliver_all(h):
     return _deliver(h, LEADS)
 
 
-def _items(h, days=1):
-    return {c["id"]: c for c in h.board(days)["items"]}
+def _items(h, days=1, hours=4):
+    return {c["id"]: c for c in h.board(days, hours)["items"]}
 
 
 def _item_of(h, ask_id):
@@ -669,8 +669,9 @@ def test_item_options_an_action_does_not_take_are_refused(monkeypatch, capsys):
 
 def test_board_counts_for_the_tabs_badge(tmp_path):
     """The badge's counts, without the board: an item waiting on the user (a
-    lead's need open, not live), one nobody has (quiet past the hours with
-    a need open or its last ask gone nowhere) -- the same the page shows."""
+    lead's need open, not live -- however long: its lead waits on the user,
+    and says so, `late'), one nobody has (quiet past the hours, its last ask
+    gone nowhere, no need open) -- the same the page shows."""
     h = _store(tmp_path)
     assert h.board_counts() == {"jing": 0, "orphan": 0, "bare": 0}
     need = _lead_answer(h, "需要 Jing：pick a vendor")
@@ -680,15 +681,20 @@ def test_board_counts_for_the_tabs_badge(tmp_path):
     live = _lead_answer(h, "需要 Jing：while it is still at work")
     h.ask("agy-a2", "and more", from_name="lead-a", item=live["id"])
     assert h.board_counts() == {"jing": 1, "orphan": 0, "bare": 0}
-    # Five hours later: quiet past four, both are nobody's.
+    # Five hours later: quiet past four, the one gone nowhere is nobody's;
+    # the need open still waits on the user -- long, not nobody's.
     for a in (need["id"], gone["id"]):
         _backdate(h, a, 5 * 60)
     with h._mu:
         h._conn.execute("UPDATE item_events SET at = ?", ((datetime.now(timezone.utc) - timedelta(hours=5)).isoformat(),))
         h._conn.commit()
     # The one gone nowhere has no need open: 要你處理 lists it apart (bare).
-    assert h.board_counts(orphan_hours=4) == {"jing": 0, "orphan": 2, "bare": 1}
+    assert h.board_counts(orphan_hours=4) == {"jing": 1, "orphan": 1, "bare": 1}
+    cards = _items(h)
+    n, g = cards[_item_of(h, need["id"])], cards[_item_of(h, gone["id"])]
+    assert (n["orphan"], n["late"], g["orphan"], g["late"]) == (False, True, True, False)
     assert h.board_counts(orphan_hours=24) == {"jing": 1, "orphan": 0, "bare": 0}
+    assert _items(h, hours=24)[_item_of(h, need["id"])]["late"] is False
     # Closed by a lead: neither.
     h.item_edit("close", need["id"], by="lead-a")
     assert h.board_counts(orphan_hours=4) == {"jing": 0, "orphan": 1, "bare": 1}
@@ -763,12 +769,12 @@ def test_the_badge_and_the_board_agree_on_every_kind(tmp_path):
             counts = h.board_counts(days, hours)
             assert counts == _badge_of_board(h, days, hours), (days, hours)
             seen.add(tuple(counts.values()))
-    # A day: the need of ten minutes waits on the user; the needs of five
-    # hours and three days, and the ask cancelled five hours ago, are
-    # nobody's -- the one failed an hour ago not yet.  A week adds the two
-    # gone two and three days ago.
-    assert h.board_counts(1, 4) == {"jing": 1, "orphan": 3, "bare": 1}
-    assert h.board_counts(7, 4) == {"jing": 1, "orphan": 5, "bare": 3}
+    # A day: the needs -- of ten minutes, five hours, three days -- wait on
+    # the user, however old; the ask cancelled five hours ago is nobody's,
+    # the one failed an hour ago not yet.  A week adds the two gone two and
+    # three days ago.
+    assert h.board_counts(1, 4) == {"jing": 3, "orphan": 1, "bare": 1}
+    assert h.board_counts(7, 4) == {"jing": 3, "orphan": 3, "bare": 3}
     assert len(seen) > 3
 
 

@@ -44,9 +44,12 @@ const ORPHAN = Object.assign({}, CARDS.find((c) => c.id === "9a8b7c"), { id: "or
   unanswered: { status: "failed", from: "lead-billing", to: "ratefix", head: "對帳報表重跑一次" } });
 const BOARD = Object.assign({}, FULL, { cards: FULL.cards.concat([ORPHAN]) });
 // By agent: those with what stops them first (certrot, pushfix, lead-infra
-// -- its stops, its latest line, its earlier one), then the newest
-// (lead-shop's failed ask; ratefix, where the item nobody has stopped).
-const ORDER = ["guard:g1", "blocked:pushfix", "question:lead-infra:1", "proposal:5", "need:11", "need:12", "ask-failed:abcd1234", "orphan:orph01"];
+// -- its stops, its latest line, its earlier one, waited on long), then the
+// newest (lead-shop's failed ask; ratefix and cdnfix, where the items
+// nobody has stopped).
+const ORDER = ["guard:g1", "blocked:pushfix", "question:lead-infra:1", "proposal:5", "need:11", "need:12", "ask-failed:abcd1234",
+               "orphan:orph01", "orphan:e9f0a1"];
+const NOBODY = ["orphan:orph01", "orphan:e9f0a1"];
 
 // What is listed, in order: every group and its earlier lines opened
 // first (by agent, folded -- herd-board-fold.js has that).
@@ -93,7 +96,7 @@ const open = (page) => page.$$eval(".bdneeds .bdnrow.open", (cs) => cs.map((c) =
       await sleep(100);
       const early = await listed(page);
       check(W("the Inbox's push alone: what needs Jing drawn, the board still being read"),
-        early.join() === ORDER.filter((id) => id !== "need:12" && id !== "orphan:orph01").join() &&
+        early.join() === ORDER.filter((id) => id !== "need:12" && !NOBODY.includes(id)).join() &&
         (await page.textContent(".bd-main")).includes("讀取"), early);
 
       // ---- The board come: all three, each once, in order --------------------
@@ -103,14 +106,27 @@ const open = (page) => page.$$eval(".bdneeds .bdnrow.open", (cs) => cs.map((c) =
       check(W("three sources, each once, by agent: what stops one first, then its latest, its earlier"),
         all.join() === ORDER.join(), all);
       check(W("a lead's line the Inbox has is its item, not a second one"), all.filter((id) => id === "need:11").length === 1);
-      check(W("an item nobody has whose line is listed rides on that line, said so"),
-        await page.$eval('.bdneeds [data-id="need:12"]', (c) => /沒人接/.test(c.textContent)) && !all.includes("orphan:c6d7e8"));
+      check(W("a line on an item quiet for hours says how long it waited on Jing -- not 沒人接, its item not listed apart"),
+        await page.$eval('.bdneeds [data-id="need:12"]', (c) => /等你 7 小時/.test(c.textContent) && !/沒人接/.test(c.textContent)) &&
+        !all.includes("orphan:c6d7e8"));
+      // The lines leads marked handled themselves: folded under the list.
+      const ended = await page.$eval(".bd-need .bdended", (e) => e.textContent);
+      check(W("the lines leads marked handled themselves, under the list, folded, counted"),
+        /lead 自己標為已處理的 2 件/.test(ended) && !(await page.$(".bdended .bdend")), ended);
+      await tap('.bdended [data-act="bd:ended"]');
+      await sleep(60);
+      const ends = await page.$$eval(".bdended .bdend", (es) => es.map((e) => e.textContent));
+      check(W("opened: each line, who marked it, its item, why -- or that it said none"), ends.length === 2 &&
+        /^決定 #409 的扣庫存要不要先上lead-shop · /.test(ends[0]) && /f0a1b2/.test(ends[0]) && /原因：Jing 在對話裡回了：先上$/.test(ends[0]) &&
+        /^staging 憑證要不要一起換lead-infra/.test(ends[1]) && /沒寫原因$/.test(ends[1]), ends);
+      await tap('.bdended [data-act="bd:ended"]');
+      await sleep(40);
       check(W("updates and what was moved to Updates are not here"), !all.includes("report:copybot:1") && !all.includes("login:helmsync"));
       const head = await page.textContent(".bd-need .section");
-      check(W("its head counts them by kind"), /要你處理/.test(head) && /8 件/.test(head) && /會卡住 agent 4/.test(head) &&
-        /需要 Jing 3/.test(head) && /沒人接 1/.test(head), head);
+      check(W("its head counts them by kind"), /要你處理/.test(head) && /9 件/.test(head) && /會卡住 agent 4/.test(head) &&
+        /需要 Jing 3/.test(head) && /沒人接 2/.test(head), head);
       const tile = await page.$eval('.bdtile[data-to="need"]', (t) => ({ big: t.querySelector(".big").textContent, tl: t.querySelector(".tl1").textContent }));
-      check(W("the tile once 等 Jing is 要你處理, its count the list's, a way to it"), tile.big === "8" && /要你處理/.test(tile.tl) &&
+      check(W("the tile once 等 Jing is 要你處理, its count the list's, a way to it"), tile.big === "9" && /要你處理/.test(tile.tl) &&
         !!(await page.$("#bd-need")) && !(await page.$("#bd-jing")), tile);
       const stack = await page.evaluate(() => ["bd-top", "bd-need", "bd-strip"].map((c) => Math.round(document.querySelector("." + c).getBoundingClientRect().top)));
       check(W("on top: the stretch, then 要你處理, then the tiles"), stack[0] < stack[1] && stack[1] < stack[2], stack);
@@ -159,10 +175,27 @@ const open = (page) => page.$$eval(".bdneeds .bdnrow.open", (cs) => cs.map((c) =
       check(W("a failed ask marked read"), same(sent, [{ op: "inbox-set", id: "ask-failed:abcd1234", done: true }]), sent);
       sent = await did("need:11", "board-need-done", '[data-act="ib:need-done"]');
       check(W("a lead's line handled"), same(sent, [{ op: "board-need-done", id: 11 }]), sent);
+      // A line waited on long, opened: its lead waits on Jing -- answered on
+      // its card, to that lead; no 交給 lead.
+      await tap('.bdneeds [data-act="ib:pick"][data-id="need:12"]');
+      await sleep(60);
+      const lateOpen = await page.$eval(".bdneeds .bdnrow.open", (c) => c.textContent);
+      check(W("opened, a line waited on long says its lead waits on Jing, and how to answer it"),
+        /等你 7 小時/.test(lateOpen) && /lead-infra 在等你回/.test(lateOpen) &&
+        !!(await page.$('.bdneeds .bdnrow.open [data-act="bd:reply-go"]')) && !(await page.$('.bdneeds .bdnrow.open [data-act="bd:hand"]')), lateOpen);
+      await tap('.bdneeds .bdnrow.open [data-act="bd:reply-go"]');
+      await sleep(700);
+      const toCard = await page.evaluate(() => { const c = document.getElementById("bd-w-c6d7e8"); const r = c && c.getBoundingClientRect();
+        return { open: !!c && !c.classList.contains("folded"), box: !!(c && c.querySelector(".bdreply textarea")), seen: !!r && r.bottom > 0 && r.top < window.innerHeight }; });
+      check(W("回覆 takes it to its card, in view, the reply box to its lead open"), toCard.open && toCard.box && toCard.seen, toCard);
+      // (Its box let go first: headless WebKit aborts when a focused box is drawn away.)
+      await page.evaluate(() => document.activeElement && document.activeElement.blur());
+      await tap('#bd-w-c6d7e8 [data-act="bd:reply-close"]');
+      await sleep(60);
       sent = await did("need:12", "board-need-done", '[data-act="ib:need-done"]');
       check(W("a lead's line only the board had, handled the same"), same(sent, [{ op: "board-need-done", id: 12 }]), sent);
       const left = await listed(page);
-      check(W("each handled is gone from the list at once"), left.join() === "orphan:orph01", left);
+      check(W("each handled is gone from the list at once"), left.join() === NOBODY.join(), left);
       check(W("and says what was done"), /已處理/.test(await page.textContent(".bd-need")));
 
       // ---- An item nobody has -------------------------------------------------
@@ -182,12 +215,12 @@ const open = (page) => page.$$eval(".bdneeds .bdnrow.open", (cs) => cs.map((c) =
       // A push sent before Emacs had the actions: the handled stay out a while.
       await page.evaluate((items) => GM.renderInbox({ items, count: 6 }), ITEMS);
       await sleep(80);
-      check(W("a push from before the actions does not bring them back"), (await listed(page)).join() === "orphan:orph01", await listed(page));
+      check(W("a push from before the actions does not bring them back"), (await listed(page)).join() === NOBODY.join(), await listed(page));
       await page.evaluate((items) => GM.renderInbox({ items, count: 0 }), ITEMS.filter((x) => !handled.includes(x.id)));
       // The board looked at again: the lines closed, the item whose line it
       // was at rest, the other one's ask asked again.
       await page.evaluate((p) => GM.boardPatch(Object.assign({}, p, { v: 2, jing: p.jing.filter((j) => j.id !== "need:11" && j.id !== "need:12"),
-        cards: p.cards.filter((c) => c.id !== "orph01").map((c) => (c.id === "c6d7e8" ? Object.assign({}, c, { status: "quiet", needs: [] })
+        cards: p.cards.filter((c) => c.id !== "orph01" && c.id !== "e9f0a1").map((c) => (c.id === "c6d7e8" ? Object.assign({}, c, { status: "quiet", needs: [], late: false })
           : c.id === "b1c2d3" ? Object.assign({}, c, { needs: [] }) : c)) })), BOARD);
       await sleep(100);
       const none = await page.evaluate(() => { const p = document.querySelector(".bd-need .bdneednone");
@@ -252,6 +285,29 @@ const open = (page) => page.$$eval(".bdneeds .bdnrow.open", (cs) => cs.map((c) =
         check(W("要你處理 fits the screen, a card open, nothing sideways"), wide.doc <= wide.w && wide.over === 0, wide);
         const btn = await page.$$eval(".bdneeds .bdnrow.open .ibbtn", (bs) => bs.map((b) => Math.round(b.getBoundingClientRect().height)));
         check(W("its buttons a finger's size"), btn.length > 0 && btn.every((x) => x >= 40), btn);
+        // 標為已處理 a finger's target; a card waited on long, its reply box
+        // open, and the lines leads marked handled, opened: within the screen.
+        const marks = await page.$$eval('.bdneeds [data-act="ib:need-done"], .bdneeds [data-act="bd:nall"]',
+          (bs) => bs.map((b) => ({ t: b.textContent, h: Math.round(b.getBoundingClientRect().height) })));
+        check(W("標為已處理, one line or a group's, a finger's target"), marks.length >= 2 &&
+          marks.every((m) => m.h >= 36 && /標為已處理|確定？標/.test(m.t)), marks);
+        if (await page.$("#bd-w-c6d7e8.folded")) await tap("#bd-w-c6d7e8 .wh");
+        await sleep(60);
+        await tap('#bd-w-c6d7e8 [data-act="bd:reply-open"]');
+        await sleep(80);
+        await page.evaluate(() => document.activeElement && document.activeElement.blur());
+        if (!(await page.$('.bdended [data-act="bd:ended"][aria-expanded="true"]'))) await tap('.bdended [data-act="bd:ended"]');
+        await sleep(80);
+        const fit = await page.evaluate(() => {
+          const over = (sel) => [...document.querySelectorAll(sel)].filter((e) => e.getBoundingClientRect().right > window.innerWidth + 1)
+            .map((e) => e.className || e.tagName).slice(0, 4);
+          const c = document.getElementById("bd-w-c6d7e8");
+          return { doc: document.documentElement.scrollWidth, w: window.innerWidth, card: over("#bd-w-c6d7e8 *"), ended: over(".bdended *"),
+                   box: !!(c && c.querySelector(".bdreply textarea")), mark: Math.round((c.querySelector('[data-act="bd:need-done"]') || { getBoundingClientRect: () => ({ height: 0 }) }).getBoundingClientRect().height),
+                   ends: document.querySelectorAll(".bdended .bdend").length };
+        });
+        check(W("a card waited on long, its reply box open, and the lines leads marked handled fit the screen"),
+          fit.doc <= fit.w && !fit.card.length && !fit.ended.length && fit.box && fit.mark >= 36 && fit.ends === 2, fit);
       }
       check(W("no page errors"), !errors.length, errors);
       await ctx.close();

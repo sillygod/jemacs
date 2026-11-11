@@ -2140,21 +2140,13 @@ body.typing .rfoot textarea:not(:placeholder-shown) ~ .use { display: none; }
 .boardpage .bdneed + .bdneed { border-top: 1px dashed var(--line); margin-top: 2px; padding-top: 3px; }
 .boardpage .bdneed .ntext { font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
 .boardpage .nmeta { color: var(--muted); font-size: 11px; font-family: var(--mono); }
-.boardpage .bddone { margin-left: auto; font-size: 11.5px; color: var(--plus); border: 1px solid rgba(63,185,80,.5); border-radius: 5px;
-  background: none; padding: 1px 8px; cursor: pointer; white-space: nowrap; }
-.boardpage .bddone:hover { border-color: var(--plus); }
-.boardpage .bddone:disabled { opacity: .5; cursor: default; }
 .boardpage .bddep { display: flex; gap: 8px; margin-top: 5px; font-size: 12.5px; }
 .boardpage .bddep .bl { --c: var(--plus); }
 .boardpage .bddep > span:last-child { min-width: 0; overflow-wrap: anywhere; }
 .boardpage .ji.line { border-left-color: var(--minus); }
-.boardpage .ji .bddone { margin-top: 4px; }
 .boardpage .jl + .wl-h, .boardpage .phase2 + .wl-h { margin-top: 10px; }
 .boardpage .wl-h { font-size: 11.5px; color: var(--muted); margin: 8px 0 4px; font-weight: 600; }
 .boardpage .wl-h.red { color: var(--minus); }
-@media (max-width: 640px) {
-  .boardpage .bddone { min-height: 30px; padding: 2px 12px; }
-}
 
 /* The default view: what needs Jing's eye on top; items at rest that are
    of some size a line each; the rest folded by project, a tap away. */
@@ -2365,10 +2357,46 @@ body.typing .rfoot textarea:not(:placeholder-shown) ~ .use { display: none; }
 .boardpage .bdupd { border-left: 2px solid var(--line); padding-left: 8px; min-width: 0; }
 .boardpage .bdupd.new { border-left-color: var(--accent); }
 .boardpage .bdupdh { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
-.boardpage .bdupdh .bddone { margin-left: 0; }
 .boardpage .bdupdb { margin-top: 4px; line-height: 1.55; overflow-wrap: anywhere; max-height: 420px; overflow-y: auto; }
 .boardpage .bdupdb > :first-child { margin-top: 0; }
 .boardpage .bdupdb > :last-child { margin-bottom: 0; }
 .boardpage .bdupdsec { margin-top: 14px; }
 .boardpage .bdupdsec > .section { margin: 0 0 8px; }
 .boardpage .bdnrow.hl, .boardpage .bdng.hl { box-shadow: 0 0 0 2px var(--accent); border-radius: 8px; transition: box-shadow .3s; }
+
+/* Marking something handled is a button, not a state (ask fd5ad907): a
+   verb on a raised, filled face -- never the green outline a status
+   wears.  On cards, in 要你處理 and on a whole group alike. */
+.boardpage .bdmark { display: inline-flex; align-items: center; justify-content: center; margin-left: auto; font-size: 12px;
+  font-weight: 600; color: var(--text); background: rgba(127,127,127,.16); border: 1px solid rgba(139,148,158,.6);
+  border-radius: 6px; padding: 2px 10px; cursor: pointer; white-space: nowrap; flex: none;
+  box-shadow: 0 1px 0 rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.06); }
+.boardpage .bdmark:hover { background: rgba(127,127,127,.26); border-color: var(--text); }
+.boardpage .bdmark:active { transform: translateY(1px); box-shadow: none; }
+.boardpage .bdmark:disabled { opacity: .5; cursor: default; transform: none; }
+.boardpage .bdnb.bdmark { margin-left: 0; color: var(--text); border-color: rgba(139,148,158,.6); }
+.boardpage .bdnb.bdmark.nall { color: var(--text); }
+.boardpage .bdnb.bdmark.nall.arm { color: #fff; background: var(--minus); border-color: var(--minus); }
+.boardpage .ji .bdmark { margin-top: 4px; }
+.boardpage .bdupdh .bdmark { margin-left: 0; }
+@media (max-width: 640px) {
+  .boardpage .bdmark { min-height: 30px; padding: 2px 12px; }
+}
+@media (pointer: coarse) {
+  .boardpage .bdmark { min-height: 36px; }
+}
+
+/* 等你 N 小時: a lead's 需要 Jing open on an item quiet for hours -- the
+   lead waits on Jing, its reply box at hand; not 沒人接. */
+.boardpage .tag.t-late { color: var(--minus); border-color: rgba(248,81,73,.7); background: rgba(248,81,73,.08); font-weight: 600; }
+.boardpage .blk.late .bl { font-weight: 600; background: rgba(248,81,73,.1); }
+.boardpage .blk .lateq { display: block; color: var(--muted); font-size: 12px; }
+.boardpage .wi.late.folded.urgent { border-color: rgba(248,81,73,.65); }
+
+/* The lines leads marked handled themselves: who, why, when. */
+.boardpage .bdended { margin: 4px 0 8px; }
+.boardpage .bdend { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 5px 2px; border-top: 1px solid var(--line);
+  font-size: 12.5px; min-width: 0; }
+.boardpage .bdend .ntext { min-width: 0; overflow-wrap: anywhere; color: var(--muted); text-decoration: line-through; }
+.boardpage .bdend .endwhy { flex-basis: 100%; color: var(--text); font-size: 12px; overflow-wrap: anywhere; }
+.boardpage .bdtl .nst.byl { border-style: solid; color: var(--text); white-space: normal; }

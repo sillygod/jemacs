@@ -56,7 +56,7 @@ async function shoot(page, width, file) {
       check("desk: the section counts them", /5 個單號 · 對不上 2/.test(await page.textContent(".bd-tn")));
       const noneRow = await page.textContent(".bdtknone");
       check("desk: a row for the items with no ticket, and their projects",
-        /沒有單號/.test(noneRow) && /11 件/.test(noneRow) && /shop/.test(noneRow) && /infra/.test(noneRow), noneRow);
+        /沒有單號/.test(noneRow) && /12 件/.test(noneRow) && /shop/.test(noneRow) && /infra/.test(noneRow), noneRow);
 
       // A row opened: its items' cards.
       await page.click('.bdtk[data-t="86c002"] .bdtkh .bdtkname');
@@ -108,7 +108,7 @@ async function shoot(page, width, file) {
         top: [...document.querySelectorAll(".bdarea .wi")].map((w) => w.id.slice(5)),
         tickets: document.querySelectorAll(".bdtks .bdtk").length }));
       check("desk: the no-ticket row narrows to the items with none",
-        /只看 沒有單號的/.test(bare.chip) && bare.top.join() === "e7f8a9,b1c2d3,9a8b7c" && bare.tickets === 0, bare);
+        /只看 沒有單號的/.test(bare.chip) && bare.top.join() === "e7f8a9,b1c2d3,e9f0a1,9a8b7c" && bare.tickets === 0, bare);
       await page.click(".bdtknone");
       await sleep(80);
       check("desk: tapped again, cleared", !(await page.$(".bdonlyt")));

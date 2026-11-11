@@ -20,6 +20,9 @@ What a check may do, and no more:
   check must never stop work.
 - Shell calls only: claude's Bash, grok's run_terminal_command, agy's
   run_command.
+- Besides: a note the herd keeps for a grok agent -- one its turn's start
+  could not hand it (`keep_note') -- goes to it with a call it lets
+  through, as context beside the call's result (`take_note').
 - Read here, from files: never the sidecar, before the answer.  The rules
   are the herd's own store, outside any repo -- `<lint dir>/user.json' for
   every agent, `<lint dir>/<project slug>.json' for a project's -- and only
@@ -723,9 +726,53 @@ def report(cli, key, rule, command, timeout=2):
     return False
 
 
+# A note for a grok agent, kept for its next shell call: grok drops what
+# its UserPromptSubmit hook says, but adds a PreToolUse hook's
+# `additionalContext' beside the call's result (grok 1.0.77's own hook
+# docs).  One file an agent, in the temp directory its CLI gives both
+# hooks -- found without `tempfile' or `hashlib', a few ms each on every
+# shell call -- named by its name's bytes, so no two names share one;
+# written and read the user's alone, never through a link.
+
+def note_file(session):
+    tmp = os.environ.get("TMPDIR") or os.environ.get("TEMP") or os.environ.get("TMP") or "/tmp"
+    return os.path.join(tmp, "ghostherd-note-%s.txt" % session.encode("utf-8").hex()[:200])
+
+
+def keep_note(session, note):
+    "Keep NOTE for SESSION's next shell call (`take_note'), over any kept before."
+    path = note_file(session)
+    tmp = path + ".tmp"
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(note)
+    os.replace(tmp, path)
+
+
+def take_note(session=None):
+    "The note kept for SESSION (this agent's), once: gone as it is read.  None for none."
+    session = (session if session is not None else os.environ.get("GHOSTHERD_SESSION", "")).strip()
+    if not session:
+        return None
+    path = note_file(session)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, encoding="utf-8") as f:
+            note = f.read()
+        os.remove(path)
+    except OSError:
+        return None
+    return note or None
+
+
 def hook(stdin=None, stdout=None):
     """`herd lint': claude's and grok's PreToolUse hook on a shell call.  A
-    deny, or nothing at all (no decision); always exit 0."""
+    deny, or nothing at all (no decision) -- with a note kept for this
+    agent (`take_note'), if any, as context; always exit 0."""
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     try:
@@ -734,6 +781,14 @@ def hook(stdin=None, stdout=None):
     except Exception:  # noqa: BLE001 -- fail open: a broken check stops nothing
         return 0
     if hit is None:
+        try:
+            note = take_note()
+        except Exception:  # noqa: BLE001
+            note = None
+        if note:
+            stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": note}},
+                                    ensure_ascii=False) + "\n")
+            stdout.flush()
         return 0
     cli, key, rule, command = hit
     stdout.write(json.dumps(answer(cli, rule), ensure_ascii=False) + "\n")

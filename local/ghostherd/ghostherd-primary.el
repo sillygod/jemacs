@@ -92,7 +92,10 @@ what each depends on.  A handoff that goes on with work on the Board,
 say so: --item ID (an item's id or an ask's); one that passes on an
 answer: --relay-of ASK.  End a report with a line of its own for each
 that applies: \"需要 Jing：what the user must do\" (\"需要 Jing：無\" once
-nothing is), \"部署：what went where\".  Not sure where something belongs: look first
+nothing is), \"部署：what went where\".  One the user has answered, here
+or elsewhere, or you have said again under another item, mark handled:
+\"$GHOSTHERD_HERD\" need done ID... --why \"one line\" (need list shows
+the ids) -- your own lines only.  Not sure where something belongs: look first
 (list, recall); still unsure, ask the user rather than guess.
 
 You do not ask any project's agents yourself -- the herd refuses it:

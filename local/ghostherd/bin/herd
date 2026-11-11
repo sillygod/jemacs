@@ -27,6 +27,7 @@ Usage:
   herd item [list [--days N] [--json] | show ID [--json] | rename ID TITLE | merge ID INTO
              | split ASK... [--title T] | move ID ASK... | label ID LABEL... [--remove]
              | close ID | reopen ID]
+  herd need [list [--json] | done ID... [--why TEXT]]
 
 TO is an agent's name, or a kind -- claude, grok, agy -- to take that
 kind's agent in your project.  TEXT `-', or left out, reads stdin.
@@ -148,6 +149,13 @@ approves it on the page; then it is on for every agent of the fact's
 store (--user: every agent), until the user turns it off.  The fact
 stays a memory.  `lint check COMMAND' says which rule would deny
 COMMAND here -- or, with --rule FILE, whether that candidate would.
+
+`need list' prints your 需要 Jing lines still open on the user's Board,
+oldest first: each its id, item and words.  `need done ID...' marks
+yours handled -- the user answered it, in the chat or elsewhere, or you
+said it again under another item -- with --why saying which, in a line:
+the Board shows it, and your name.  Only your own lines; another's is
+refused.  As a turn begins the herd tells you of yours, when one is new.
 
 Exit status: 0 answered, 1 error, 2 usage, 3 the answer comes to you
 as a message instead (still open when --timeout ran out, or answered
@@ -636,6 +644,47 @@ def cmd_item(args):
         say("item %s: %s" % (out["item"], {"label": "labels changed", "close": "closed", "reopen": "reopened"}[act]))
     print(out["item"])
     return 0
+
+
+NEED_OPTIONS = {"json": ("list",), "why": ("done",)}
+
+
+def cmd_need(args):
+    """A lead's own 需要 Jing lines: those still open, and marking them handled."""
+    act, rest = args.action, args.ids
+    for opt, takers in NEED_OPTIONS.items():
+        if getattr(args, opt) not in (None, False) and act not in takers:
+            raise HerdError("need %s takes no --%s (only %s does); nothing changed" % (act, opt, " and ".join(takers)))
+    if act == "list":
+        if rest:
+            raise HerdError("usage: herd need list [--json]")
+        out = rpc("herd_need_list", {"by": me()})
+        if args.json:
+            print(json.dumps(out, indent=2, ensure_ascii=False))
+            return 0
+        if not out["lines"]:
+            say("no 需要 Jing line of %s is open" % ("anyone's" if me() == "user" else "yours"))
+            return 0
+        for e in out["lines"]:
+            print("%-6s  %-8s  %4s  %s%s" % (e["id"], e["item"] or "-", _ago(e["at"]),
+                                            "[%s] " % e["agent"] if me() == "user" else "", e["text"]))
+        return 0
+    if not rest:
+        raise HerdError("usage: herd need done ID... [--why TEXT]  (ids from: herd need list)")
+    ids = []
+    for x in rest:
+        x = x.strip().lstrip("#")
+        if not (x.isascii() and x.isdigit()):
+            raise HerdError("%s is not a line's id -- herd need list shows them; nothing changed" % x)
+        ids.append(int(x))
+    out = rpc("herd_need_done", {"ids": ids, "by": me(), "why": args.why or ""})
+    if out["closed"]:
+        say("marked handled: %s%s" % (" ".join(str(i) for i in out["closed"]),
+                                     " -- " + args.why.strip() if (args.why or "").strip() else ""))
+    for sk in out["skipped"]:
+        say("%s not closed: %s" % (sk["id"], sk["why"]))
+    say("%d of yours still open" % out["open"])
+    return 0 if out["closed"] or not out["skipped"] else 1
 
 
 def cmd_list(_args):
@@ -1287,10 +1336,30 @@ def _remember(session, news):
         pass
 
 
+def note_answer(cli, session, note):
+    """How a CLI's hook at a turn's start hands the agent NOTE -- what the
+    herd tells it then (a lead's 需要 Jing lines still open): claude's
+    UserPromptSubmit as context for the prompt; agy's PreInvocation as a
+    system message, as its steps; grok's UserPromptSubmit cannot (its
+    output is dropped), so the note waits in a file for its next shell
+    call's check, whose PreToolUse can (`herd_lint.take_note').  The
+    object to print, or None."""
+    if cli == "agy":
+        return {"injectSteps": [{"systemMessage": {"systemMessage": note}}]}
+    if cli == "grok":
+        try:
+            _lint_module().keep_note(session, note)
+        except Exception:  # noqa: BLE001 -- a hook must never fail its CLI
+            pass
+        return None
+    return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": note}}
+
+
 def cmd_hook(args):
     p = _payload()
     agy = _cli(p) == "agy" or args.event in AGY_EVENTS
     session = os.environ.get("GHOSTHERD_SESSION", "").strip()
+    said = None
     try:
         if session:
             news = {k: v for k, v in hook_report(p, args.event).items() if v}
@@ -1303,9 +1372,13 @@ def cmd_hook(args):
                                               ancestors=ancestors, **extra), timeout=3)
                 if not (out or {}).get("ignored"):
                     _remember(session, news)
+                    if (out or {}).get("note") and news.get("state") == "working":
+                        said = note_answer("agy" if agy else news.get("cli"), session, out["note"])
     except Exception as exc:  # noqa: BLE001 -- a hook must never fail its CLI
         say("hook: %s" % exc)
-    if agy:
+    if said is not None:
+        print(json.dumps(said, ensure_ascii=False))
+    elif agy:
         print("{}")
     return 0
 
@@ -1874,6 +1947,12 @@ def main(argv=None):
     p.add_argument("--remove", action="store_true", help="label: take the labels off")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_item)
+    p = sub.add_parser("need", help="your 需要 Jing lines still open, and marking them handled")
+    p.add_argument("action", nargs="?", default="list", choices=("list", "done"))
+    p.add_argument("ids", nargs="*", metavar="ID")
+    p.add_argument("--why", help="done: why, in a line -- the user answered it, or it moved to another item")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_need)
     p = sub.add_parser("remember", help="write a fact to the herd's shared memory")
     p.add_argument("text", nargs="?")
     p.add_argument("--type", choices=("project", "feedback", "reference", "user"),

@@ -53,10 +53,18 @@ const CARDS = [
     first: now - 500 * min, last: now - 300 * min, agents: ["lead-billing", "taxaudit"], projects: ["billing"], labels: ["CU-86b2k1", "CU-86c002"],
     prs: [pr("billing", 90, "MERGED", "reconcile: --dry-run", { of: "a3b4c5" })],
     block: { kind: "answered", ask: "6b6b6b6b", from: "taxaudit", to: "lead-billing", since: now - 300 * min, head: "#90 merge 了" } }),
-  card("c6d7e8", "orphan", "整理 nginx 的 rate limit 設定", {
+  // Quiet seven hours, its lead's 需要 Jing open: it waits on Jing, long
+  // (`late', 等你 7 小時) -- its lead's, not nobody's.
+  card("c6d7e8", "jing", "整理 nginx 的 rate limit 設定", {
     asks: 3, first: now - 700 * min, last: now - 420 * min, agents: ["lead-infra", "ratefix"], projects: ["infra"], labels: ["CU-86c003"],
+    late: true,
     needs: [{ id: 12, kind: "need", text: "三個方案選一個：全站、只 API、只登入", agent: "lead-infra", ask: "7c7c7c7c", at: now - 420 * min }],
     block: { kind: "answered", ask: "7c7c7c7c", from: "ratefix", to: "lead-infra", since: now - 420 * min, head: "列好三個方案，等 lead 決定" } }),
+  // Nobody has it (沒人接): its last ask failed, six hours ago, no line open.
+  card("e9f0a1", "orphan", "CDN 快取規則改成依路徑", {
+    asks: 2, failed: 1, first: now - 500 * min, last: now - 380 * min, agents: ["lead-infra", "cdnfix"], projects: ["infra"],
+    unanswered: { ask: "4f4f4f4f", from: "lead-infra", to: "cdnfix", status: "failed", at: now - 380 * min, head: "把 CDN 快取規則改成依路徑" },
+    block: { kind: "failed", ask: "4f4f4f4f", from: "cdnfix", to: "lead-infra", since: now - 380 * min, head: "cdnfix 不在了" } }),
   card("9a8b7c", "quiet", "mobile 要 billing 的退款 webhook", {
     asks: 3, relays: 1, cross: true, first: now - 380 * min, last: now - 260 * min, agents: ["lead-billing", "lead-shop", "lead-mobile"],
     projects: ["billing", "shop", "mobile"],
@@ -94,7 +102,8 @@ const JING = [
     title: "在今晚的維護時段，照順序逐個 namespace 跑 rotate.sh", agent: "lead-infra", at: now - 35 * min, ask: null,
     replyVia: "lead", projectDir: P("infra") },
   { id: "need:12", event: 12, kind: "need", tag: "需要 Jing", line: true, item: "c6d7e8", itemTitle: "整理 nginx 的 rate limit 設定",
-    title: "三個方案選一個：全站、只 API、只登入", agent: "lead-infra", at: now - 420 * min, ask: "7c7c7c7c" },
+    title: "三個方案選一個：全站、只 API、只登入", agent: "lead-infra", at: now - 420 * min, ask: "7c7c7c7c",
+    replyVia: "lead", projectDir: P("infra") },
   { id: "question:lead-infra:1", kind: "question", tag: "Question", agent: "lead-infra", project: "infra",
     title: "rotate.sh 要現在跑，還是等今晚的維護時段？", preview: "腳本寫好了，staging 三個 namespace 逐個跑", at: now - 30 * min, item: "b1c2d3", guess: true },
   { id: "blocked:pushfix", kind: "blocked", tag: "Permission", agent: "pushfix", project: "mobile",
@@ -132,7 +141,14 @@ const TICKETS = [
   tk("86c003", null, null, null, null, { url: null, error: "the token was refused" }),
 ];
 
-const FULL = { v: 1, base: 0, full: true, cards: CARDS, drop: [], waits: WAITS, jing: JING, meta: META, tickets: TICKETS };
+// The lines leads marked handled themselves (`herd need done'): who, why.
+const ENDED = [
+  { id: 8, item: "f0a1b2", itemTitle: "", text: "決定 #409 的扣庫存要不要先上", agent: "lead-shop", by: "lead-shop",
+    why: "Jing 在對話裡回了：先上", at: now - 200 * min, closedAt: now - 50 * min },
+  { id: 6, item: "b1c2d3", itemTitle: "", text: "staging 憑證要不要一起換", agent: "lead-infra", by: "lead-infra",
+    why: "", at: now - 300 * min, closedAt: now - 90 * min },
+];
+const FULL = { v: 1, base: 0, full: true, cards: CARDS, drop: [], waits: WAITS, jing: JING, meta: META, tickets: TICKETS, ended: ENDED };
 
 const TIMELINE = {
   id: "c1a2b3", last: CARDS[0].last, asksOf: [],
@@ -143,10 +159,12 @@ const TIMELINE = {
     { kind: "ask", at: now - 140 * min, ask: "bb22bb22", from: "lead-shop", to: "cartfix", head: "#412 開好之後回一句收到即可", fold: "fyi", relay: false, status: "answered", key: false },
     { kind: "answer", at: now - 139 * min, ask: "bb22bb22", from: "cartfix", to: "lead-shop", head: "收到", fold: "ack", auto: false, key: false },
     { kind: "need", at: now - 130 * min, ask: "cc33cc33", from: "lead-shop", to: "Jing", head: "同意先上 billing #88", key: true, state: "done", event: 9 },
+    { kind: "need", at: now - 120 * min, ask: "cc33cc33", from: "lead-shop", to: "Jing", head: "確認 region 欄位的名字", key: true, state: "done", event: 10,
+      by: "lead-shop", why: "Jing 在對話裡回了", closedAt: now - 100 * min },
     { kind: "deploy", at: now - 80 * min, ask: "1a1a1a1a", from: "lead-billing", to: "", head: "billing #88 → production 三站", key: true, event: 21 },
     { kind: "handoff", at: now - 14 * min, ask: "1a1a1a1a", from: "lead-shop", to: "lead-billing", head: "billing 的稅率 API 要多回傳 region 欄位", fold: null, relay: false, status: "delivered", key: true },
     { kind: "ask", at: now - 9 * min, ask: "1c1c1c1c", from: "lead-billing", to: "taxaudit", head: "盤點各區的稅率差異，寫成一張對照表", fold: null, relay: false, status: "delivered", key: true },
   ],
 };
 
-module.exports = { FULL, CARDS, WAITS, JING, META, TIMELINE, AGENTS, TICKETS, P, now };
+module.exports = { FULL, CARDS, WAITS, JING, META, TIMELINE, AGENTS, TICKETS, ENDED, P, now };

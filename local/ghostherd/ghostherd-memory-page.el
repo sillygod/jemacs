@@ -5219,10 +5219,11 @@ that has not opened the tab."
 ;; and what waits on the user: its leads' "需要 Jing" lines the sidecar
 ;; keeps, and -- the fallback -- the Inbox's Needs-you items, by agent, put
 ;; on the item that agent was last in.  An item quiet for
-;; `ghostherd-board-orphan-hours' with a need still open, or whose last
-;; ask went nowhere, is `沒人接' (orphan) -- the sidecar says which, by the
-;; rule its badge counts by (herd_board_counts), so the tab's count is the
-;; same open or closed.
+;; `ghostherd-board-orphan-hours' whose last ask went nowhere, no need
+;; open, is `沒人接' (orphan); one with a need still open waits on the
+;; user, long (`late', 等你 N 小時) -- its lead's, never nobody's.  The
+;; sidecar says which, by the rule its badge counts by
+;; (herd_board_counts), so the tab's count is the same open or closed.
 ;;
 ;; Sent only while the tab is shown, and in parts: the page holds the
 ;; board as a version, each card by its id; a tick sends the cards that
@@ -5232,9 +5233,10 @@ that has not opened the tab."
 ;; card is opened (board-timeline), never with the list.
 
 (defcustom ghostherd-board-orphan-hours 4
-  "Hours an item on the Board may be quiet with a request still open --
-a lead's \"需要 Jing\" not handled, or its last ask failed, cancelled or
-left unanswered -- before it is shown as nobody's (沒人接)."
+  "Hours an item on the Board may be quiet before it is shown as nobody's
+\(沒人接) -- its last ask failed, cancelled or left unanswered, and no
+\"需要 Jing\" of its lead's open -- or, a \"需要 Jing\" still open, as
+waiting on you long (等你 N 小時)."
   :type 'number
   :group 'ghostherd-memory-page)
 
@@ -5253,11 +5255,11 @@ on): a hash table, or nil for nothing yet.")
   "When a look began and has not answered: one at a time.")
 
 (defconst ghostherd-board--bools '(:named :cross :working :own :unsure :draft :relay :auto :pinned :more :read :guess :full
-                                   :line :key :done :loading :orphan)
+                                   :line :key :done :loading :orphan :late)
   "Keys that are true or false: the reply reads JSON false as nil.")
 (defconst ghostherd-board--lists
   '(:items :labels :agents :projects :prs :links :waits :edges :events :asksOf :cards :drop :jing :jingOf
-    :needs :deploys :tickets)
+    :needs :deploys :tickets :ended)
   "Keys that are arrays: the reply reads [] as nil.")
 
 (defconst ghostherd-board--need-kinds
@@ -5327,14 +5329,15 @@ likely about.  A guess, said so on the page."
 
 (defun ghostherd-board--orphan-p (c now)
   "Non-nil when card C, at NOW (seconds), is nobody's: not live, not done,
-quiet past `ghostherd-board-orphan-hours', with a request still open -- a
-lead's need not handled, or its last ask went nowhere.  As the sidecar
-marks it (`orphan', board.urgent: what the badge counts with the tab
-closed); a sidecar from before that says nothing, and the rule is here."
+no lead's need open, its last ask gone nowhere, and quiet past
+`ghostherd-board-orphan-hours'.  As the sidecar marks it (`orphan',
+board.urgent: what the badge counts with the tab closed); a sidecar from
+before that says nothing, and the rule is here."
   (if (plist-member c :orphan)
       (and (plist-get c :orphan) t)
     (and (not (member (plist-get c :status) '("live" "done")))
-         (or (plist-get c :needs) (plist-get c :unanswered))
+         (not (plist-get c :needs))
+         (plist-get c :unanswered)
          (> (- now (/ (or (plist-get c :last) 0) 1000.0)) (* 3600 ghostherd-board-orphan-hours)))))
 
 (defun ghostherd-board--cards (result needs)
@@ -5467,6 +5470,8 @@ Each part is kept as sent (`ghostherd-board--sent')."
     (dolist (part (list (cons 'waits (plist-get result :waits))
                         (cons 'jing (ghostherd-board--jing result needs (plist-get result :items)))
                         (cons 'tickets (ghostherd-board--tickets (plist-get result :items)))
+                        ;; The lines leads marked handled themselves (`herd need done').
+                        (cons 'ended (plist-get result :ended))
                         (cons 'meta (list :counts (plist-get result :counts) :edges (plist-get result :edges)
                                           :days (plist-get result :days) :more (plist-get result :more)
                                           :agents (ghostherd-board--agents)

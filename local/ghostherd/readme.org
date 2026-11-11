@@ -2818,7 +2818,8 @@ words are Traditional Chinese.
   nobody picked up looks as quiet as work finished.  The page adds
   *收尾* (its asks answered, a PR of its own still open, by the forge),
   *等 Jing* (a lead's need open in it, or the Inbox has something of
-  yours from an agent in it) and *沒人接* (below).
+  yours from an agent in it) --- *等你 N 小時* once quiet that long with a
+  need open (below) --- and *沒人接* (below).
 - On top, =24 小時 | 7 天=: the stretch the whole page is of --- the
   items, their asks, the PRs and tickets they name, the map's
   cross-project asks --- kept in your browser; with the project or
@@ -2831,26 +2832,27 @@ words are Traditional Chinese.
   there: the Inbox's Needs-you (an agent at a menu, a guarded call, a
   proposal, a question, a sign-in, a failed ask...), the leads' 需要 Jing
   lines, and the items nobody has (沒人接) --- each once: a lead's line is
-  the Inbox's =need:N= item, and an item nobody has whose line is listed
-  rides on that line, marked so, with its =交給 lead=.  What stops an
+  the Inbox's =need:N= item; one on an item quiet for hours is marked
+  =等你 N 小時=, and opened says its lead waits on you, with =回覆 <lead>=
+  (to its card, the reply box open).  What stops an
   agent until you act first, then what else needs you, then what nobody
   has.  A herd's day leaves a lead's lines open by the dozen --- a
   report lists what that round needs, a line ends when handled or
   written again in the same item, and a lead moving from item to item
   leaves the rest open --- so the list is *by agent*: a group a line,
-  its counts by kind, how new, =到對話 →= and =整組已處理=; a group with
+  its counts by kind, how new, =到對話 →= and =整組標為已處理=; a group with
   what stops its agent first and open (and kept open while you work
   in it), the rest by their newest, folded.  In a group: what stops
   the agent, then its latest report's lines (a report's lines share
   its time) and the Inbox's other waits, then what nobody has; the
   lines of its earlier reports last, by work item, folded --- =較早的 N
   件（之後的報告沒再提）=.  Each is one line: its tag, title, age,
-  =已處理= (a lead's line), =到對話=; a tap opens it in place, with the
+  =標為已處理= (a lead's line), =到對話=; a tap opens it in place, with the
   Inbox's own buttons (approve or reject, an option, a reply, Mark
   read): the same as in the Inbox, and gone from it too --- its title
   not said twice, a lead's line's item a button.  An item nobody has
   opens to why, its =交給 lead= and the way to its card.
-  =整組已處理= asks for a second tap within 5 s (=確定？處理 N 件=), then
+  =整組標為已處理= asks for a second tap within 5 s (=確定？標 N 件=), then
   handles the group's 需要 Jing lines --- not what stops its agent, nor
   what nobody has --- in one =board-need-done= (=ids=; Emacs closes each
   as it closes one, in turn: a phone's page sends its intents one at a
@@ -2963,10 +2965,17 @@ words are Traditional Chinese.
   than one (its role says so).  The herd keeps them as the item's
   events, from its answers to asks and the reports that end its turns
   (a report's go to the item of the ask it was answering, else of the
-  last it asked).  A need ends when you mark it 已處理 --- on the Board,
-  or in the Inbox, where each shows as a 需要 Jing item --- when its lead
-  writes need lines in that item again (what is still needed it says
-  again; =需要 Jing：無= ends them all), or when the item is closed.
+  last it asked).  A need ends when you mark it handled --- =標為已處理=,
+  a button: on its card, its line in 要你處理, or a whole group's ---
+  when its lead marks it handled itself (=herd need done=, below: you
+  answered it in the chat, or it said it again under another item),
+  when its lead writes need lines in that item again (what is still
+  needed it says again; =需要 Jing：無= ends them all), or when the item
+  is closed.  The lines leads marked handled themselves leave 要你處理
+  and are listed folded under it, =lead 自己標為已處理的 N 件=: each its
+  words, who marked it, when, its item, why; its card's timeline says
+  =lead-x 標為已處理：why= (yours, =Jing 標為已處理=).  Nothing ends a
+  line by its words looking like another's.
   A card waiting on you otherwise names the Inbox's Needs-you items of
   the agent last in it (a guess, said so), opened in 要你處理 on a tap.
   A 部署 line marks the PRs it names *已部署* on their chips.
@@ -2981,10 +2990,15 @@ words are Traditional Chinese.
   under it.  Found nowhere, the room stays at its end and says so.  An
   agent's name still opens its room at its end.  =← 回 Board= returns
   to where the Board was.
-- *沒人接*: an item quiet for =ghostherd-board-orphan-hours= (4) with a
-  need still open, or whose last ask failed, was cancelled or was left
-  unanswered (its taker stopped without one), and nothing open.  The
-  sidecar says which (=board.urgent=), the rule the badge counts by.
+- *沒人接*: an item quiet for =ghostherd-board-orphan-hours= (4) whose
+  last ask failed, was cancelled or was left unanswered (its taker
+  stopped without one), nothing open and no 需要 Jing of its lead's open:
+  nobody has it --- its card's =交給 lead= hands it on.  One quiet that
+  long with a need open is not nobody's: its lead waits on you.  It is
+  *等你 N 小時* (from its oldest line open; days past two), red as 等 Jing,
+  answered from its card to the lead that wrote the line, as 等 Jing is.
+  The sidecar says which (=board.urgent=, =board.late=), the rule the
+  badge counts by.
 - A card's timeline shows its *key events* first: the ask that began
   it, each 需要 Jing (and how it ended) and 部署 line, each PR an answer
   said was opened and each own PR's merge (the forge's time: GitHub's,
@@ -3003,12 +3017,16 @@ From the Board:
   Board to it (cards, open asks, folds, PRs, what waits on you); the
   chip =只看 shop ✕=, or the project again, clears it.
 - A 沒人接 card's =交給 lead= opens its project's lead's room with the
-  lead's box holding =這件沒人接：<title>（工作項目 <id>）= and the need
-  left open or the ask that went nowhere -- you read it and send it; a
-  project with no lead says so, none is started.  A card waiting on you
-  is answered from itself, the Inbox's way for that item (a lead's
+  lead's box holding =這件沒人接：<title>（工作項目 <id>）= and the ask
+  that went nowhere -- you read it and send it; a project with no lead
+  says so, none is started.  A card waiting on you, long or not, is
+  answered from itself, the Inbox's way for that item (a lead's
   question through its lead, another agent's to it), and a lead's
-  =需要 Jing= through that lead.
+  =需要 Jing= through that lead --- the reply naming the lines it has
+  open there, =（關於工作項目 <id>；你在這裡還開著的「需要 Jing」：#N）=, for
+  it to mark handled those you answered.  One whose lead has left the
+  herd has nobody to answer: its card says so and hands it to the
+  project's lead now (=交給 lead=, its lines in the message).
 - The tab's red count is the items nobody has and those waiting on you
   by a lead's line, of those the Board shows -- its window, a day or
   seven, as you chose it: what the tab says closed is what it shows
@@ -3048,6 +3066,25 @@ An ID is an item's or an ask's (the item it is in).  What a lead put
 somewhere stays there; a worker's change is refused.  An option an action
 does not take (=--title= on a merge, =--remove= on a close ...) is
 refused, nothing changed, rather than dropped.
+
+A lead's own 需要 Jing lines:
+
+#+begin_src sh
+  herd need                          # yours still open, oldest first: id, item, how long, words
+  herd need done 298 299 --why "Jing 在對話裡回了"   # marked handled, by you, for that
+#+end_src
+
+Only the lines it wrote: another's is refused, each said why, as is one
+no longer open; from a plain shell (=user=) it lists every lead's, and
+closes none --- you mark them on the Board.  As a lead's turn begins the
+herd hands it its lines still open --- id, item, words, ten at most ---
+and how to close those you answered or it said again elsewhere: only
+when one is new to it in that conversation, never every turn, never a
+turn more.  claude takes it as its prompt hook's context, agy as a
+system message among its =PreInvocation= steps; grok's prompt hook
+cannot add any, so it waits in a file for grok's next shell call, whose
+check (=herd lint=, its =PreToolUse=) hands it on, once.  A running lead
+needs no restart: the hooks are the ones it has.
 
 *** Threads: who is talking to whom
 
