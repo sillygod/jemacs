@@ -106,8 +106,12 @@ another site's page, gets nothing.
   blank, its newline kept, so an error's line is the file's; under an
   ETag of their own (=-lean-gz=).  Only for scripts with no string or
   template running over a line, where a line starting =//= would be
-  data.  The herd's app.js: 143 KB gzip'd → 105 KB, a phone's slow link
-  some 2.5 s less on every load.  Plain (the xwidget, a browser that
+  data --- looked at first (=xwapp--lean-unsafe=): a line of code with an
+  odd number of backticks, or ending in a backslash, and the script goes
+  whole, said once a version (=xwapp-lean-refused-functions=; the herd
+  logs it).  Wrong, the look only sends whole a script that could have
+  gone lean.  The herd's app.js: 143 KB gzip'd → 105 KB, a phone's slow
+  link some 2.5 s less on every load.  Plain (the xwidget, a browser that
   takes no gzip), the file as it is.
 - *What changes, too, through the proxy.*  A =next= carries what the
   page shows --- the herd's Inbox 44 KB, its sessions 389 KB --- over
@@ -709,6 +713,18 @@ ClickUp write changes only the fixture's copy of the task.  The browser
 reaches that Emacs through a proxy doing what =tailscale serve= does ---
 forwarding to the socket, not the loopback port --- so a page opens as
 it would on the phone.
+
+That Emacs keeps off your own state.  Its HOME is the run's directory
+(=appslib.js='s =guardEnv=): =~/.ghostherd=, =user-emacs-directory=, the
+CLIs' transcripts, its tmux server (=TMUX_TMPDIR=) are the run's; the
+herd's ones (=e2e/herd-room.el= ...) name its =~/.ghostherd= paths there
+too.  And it loads =e2e/e2e-guard.el= first: a file name handler on
+your own =~/.ghostherd=, =~/.emacs.d/emacs-home=, =~/.claude=, =~/.grok=
+and =~/.gemini= --- not the checkout under test, which may be a worktree
+under them --- notes each file it would look at, read or write there,
+and the run fails when it noted any (=stop=; =e2e-guard.js= tests the
+guard).  Emacs's own file operations only: a process it runs is not
+seen.
 
 #+begin_src sh
   cd ~/.emacs.d/local/xwapp/e2e

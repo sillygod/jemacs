@@ -48,7 +48,9 @@ const emacsLog = (dir) => {
 const TMUX = "xwapp-e2e-herd-open-" + process.pid;
 let keyboard = null;
 const inTerminal = (env, el) => {
-  const vars = ["E2E_DIR", "E2E_PORT", "E2E_LOCAL"].map((k) => k + "='" + env[k] + "'").join(" ");
+  // Its home the run's too (appslib's guardEnv): tmux's server has yours.
+  const vars = ["E2E_DIR", "E2E_PORT", "E2E_LOCAL", "HOME", "E2E_REAL_HOME", "XDG_CONFIG_HOME", "GROK_HOME", "TMUX_TMPDIR"]
+    .map((k) => k + "='" + env[k] + "'").join(" ");
   execFileSync("tmux", ["-L", TMUX, "-f", "/dev/null", "new-session", "-d", "-s", "e2e", "-x", "100", "-y", "30",
     `env ${vars} ${process.env.EMACS || "emacs"} -nw -Q --eval '(setq native-comp-jit-compilation nil)' -l '${el}'`]);
   // One client in control mode types every key: a tmux started for each

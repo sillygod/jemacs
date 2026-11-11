@@ -2893,6 +2893,10 @@ words are Traditional Chinese.
   scripts lean (=xwapp-create= =:lean=): to a phone, gzip'd, each line of
   nothing but a =//= comment goes blank --- 38 KB of app.js's 143 KB
   gzip'd --- the line numbers kept; the xwidget has the file as it is.
+  A script with a line of code that might be inside a string (an odd
+  number of backticks: a backtick in code is written =\x60=) goes whole,
+  said in the log once (=herd page: app.js goes to a phone whole, not
+  lean=); a test holds ui/*.js to it.
   Loaded on a phone's slow link (15 KB/s, 300 ms), what needs you is
   drawn at 13.0 s where the Inbox, home at 02e94b8, drew its own at 15.3
   s; on wifi 0.71 s where it took 0.86 s (=herd-board-open.js=).

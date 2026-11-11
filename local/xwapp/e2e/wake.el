@@ -10,6 +10,9 @@
 ;; what reached Emacs.  Started by appslib.js, as apps.el is.
 (require 'cl-lib)
 (defvar e2e-here (file-name-directory (or load-file-name buffer-file-name)))
+;; First: what of your own state this Emacs would still reach, noted (its
+;; HOME is the run's: appslib's `guardEnv').
+(load (expand-file-name "e2e-guard" e2e-here) nil t)
 (defvar e2e-dir (getenv "E2E_DIR"))
 (defvar e2e-local (or (getenv "E2E_LOCAL") (expand-file-name "../.." e2e-here)))
 (defvar e2e-tree (expand-file-name "tree/" e2e-dir))

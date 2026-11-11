@@ -1607,6 +1607,43 @@ ask, as they are."
       (should (equal (xwapp-test--gunzip (xwapp-test--body (xwapp-test--raw (xwapp-test--at app "xwapp/ui/xwapp.js") gz))) js))
       (xwapp--put app :lean nil))))
 
+(ert-deftest xwapp-test-browser-lean-only-when-safe ()
+  "A script with a line of code that may be inside a string -- an odd
+number of backticks, a template running over the line, or a backslash at
+its end -- goes whole though its app asked it lean: its `//' line inside
+the template is data, sent as it is.  Said once for each version of the
+file (`xwapp-lean-refused-functions'), however often it is asked for.
+A backtick in a comment line, or an even number in code, is no matter."
+  (skip-unless (and (executable-find "gzip") (zlib-available-p)))
+  (xwapp-test--gzipping
+    (let* ((told nil)
+           (xwapp-lean-refused-functions (list (lambda (a f why) (push (list a (file-name-nondirectory f) why) told))))
+           (xwapp--lean-refused (make-hash-table :test 'equal))
+           (pad (apply #'concat (make-list 40 "// A comment line, `quoted' as Emacs quotes.\nvar x = \"`a`\";\n")))
+           (template (concat pad "var page = `\n<p>a page</p>\n// not a comment: the template's own line\n`;\n"))
+           (cont (concat pad "var s = \"one line \\\n// and its next, still the string\";\n"))
+           (path (xwapp-test--at app "app/ui/app.js"))
+           (gz '(("Accept-Encoding" . "gzip"))))
+      (xwapp--put app :lean t)
+      ;; A plain script with backticks in comments and an even number in code: lean.
+      (should-not (xwapp--lean-unsafe pad))
+      (with-temp-file (expand-file-name "app/ui/app.js" root) (insert pad))
+      (should (equal (xwapp-test--gunzip (xwapp-test--body (xwapp-test--raw path gz))) (xwapp--lean pad)))
+      (should-not told)
+      (pcase-dolist (`(,script ,why) `((,template "a template string") (,cont "a string may run on")))
+        (setq told nil)
+        (clrhash xwapp--gzipped)
+        (with-temp-file (expand-file-name "app/ui/app.js" root) (insert script))
+        (set-file-times (expand-file-name "app/ui/app.js" root) (time-add nil (random 1000)))
+        (dotimes (_ 2)
+          (should (equal (xwapp-test--gunzip (xwapp-test--body (xwapp-test--raw path gz))) script))
+          (clrhash xwapp--gzipped))
+        (should (= (length told) 1))
+        (should (eq (nth 0 (car told)) app))
+        (should (equal (nth 1 (car told)) "app.js"))
+        (should (string-match-p why (nth 2 (car told)))))
+      (xwapp--put app :lean nil))))
+
 (ert-deftest xwapp-test-browser-gzipd-files-have-their-own-etag ()
   "The gzip'd bytes and the plain ones are other bytes, so each has an
 ETag of its own, strong: a browser that has one is answered 304 for it,

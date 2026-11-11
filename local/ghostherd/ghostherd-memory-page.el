@@ -106,6 +106,17 @@ last ready said: it is sent their count alone until then.  See
 ;; Made once, so a reload of this file sets it on the app it made then.
 (when (fboundp 'xwapp-set-lean) (xwapp-set-lean ghostherd-memory-page--app t))
 
+(defun ghostherd-memory-page--lean-refused (app file why)
+  "Log that the page's script FILE goes to a phone whole, not lean, WHY
+says: a line of it may be inside a string (`xwapp--lean-unsafe'), so its
+comment lines stay -- a slower load on a phone's link until that line
+is written otherwise (a backtick in code as \\x60, say)."
+  (when (eq app ghostherd-memory-page--app)
+    (ghostherd--log-add "herd" 'life (format "herd page: %s goes to a phone whole, not lean -- %s"
+                                             (file-name-nondirectory file) why))))
+
+(add-hook 'xwapp-lean-refused-functions #'ghostherd-memory-page--lean-refused)
+
 (defconst ghostherd-memory-page--image-name
   "[0-9a-f]\\{32\\}\\(?:\\.t\\.jpg\\|\\.png\\|\\.jpg\\|\\.gif\\|\\.webp\\)"
   "The name of an image the sidecar copied from a reply (server/images.py):
